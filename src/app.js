@@ -3393,23 +3393,46 @@ function saveNsConfig(patch) {
 }
 
 // Fat/protein per meal aren't tracked anywhere upstream (Nightscout
-// treatments don't carry them), so this is its own small local log —
-// same client-side-only pattern as NS_CONFIG_KEY — that suggestMacroMealDose
-// reads back to personalize the split-dose guide once there's enough of it.
-const MACRO_LOG_KEY = 'fitl00p:macro_meal_log';
-const MACRO_LOG_MAX = 200;
-
-function loadMacroMealLog() {
-  try {
-    const raw = localStorage.getItem(MACRO_LOG_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch { return []; }
+// treatments don't carry them), so this is its own table — diabetes_meals,
+// RLS-scoped to auth.uid() same as every other per-user table — that
+// suggestMacroMealDose reads back to personalize the split-dose guide once
+// there's enough history. Nightscout stays the source of truth for
+// glucose/bolus/basal; only the macro-tagged meal entries live here.
+async function fetchMacroMealLog() {
+  if (!currentUser) return [];
+  const { data, error } = await db
+    .from('diabetes_meals')
+    .select('eaten_at, carbs_g, fat_g, protein_g')
+    .eq('user_id', currentUser.id)
+    .order('eaten_at', { ascending: false })
+    .limit(200);
+  if (error) {
+    console.error('fetchMacroMealLog error:', error.message);
+    return [];
+  }
+  return (data || []).map(r => ({
+    time: new Date(r.eaten_at).getTime(),
+    carbs: Number(r.carbs_g),
+    fat: Number(r.fat_g),
+    protein: Number(r.protein_g),
+  }));
 }
 
-function recordMacroMeal(entry) {
-  const log = loadMacroMealLog();
-  log.push(entry);
-  localStorage.setItem(MACRO_LOG_KEY, JSON.stringify(log.slice(-MACRO_LOG_MAX)));
+async function recordMacroMeal(entry, doseResult) {
+  if (!currentUser) return;
+  const { error } = await db.from('diabetes_meals').insert({
+    user_id: currentUser.id,
+    eaten_at: new Date(entry.time).toISOString(),
+    carbs_g: entry.carbs,
+    fat_g: entry.fat,
+    protein_g: entry.protein,
+    suggested_units: doseResult?.suggestedUnits ?? null,
+    upfront_units: doseResult?.upfrontUnits ?? null,
+    delayed_units: doseResult?.delayedUnits ?? null,
+    delay_minutes: doseResult?.guide?.delayMinutes ?? null,
+    dose_source: doseResult?.source ?? null,
+  });
+  if (error) console.error('recordMacroMeal error:', error.message);
 }
 
 $('btnDxGoToSettings')?.addEventListener('click', () => navigateTo('settings'));
@@ -3644,7 +3667,7 @@ $('btnDxMealDose')?.addEventListener('click', async () => {
     const data = await fetchDiabetesData();
     if (!data) return;
     const now = Date.now();
-    const input = { ...data, settings: dxSettings(), activities: { workouts: [] }, macroMealLog: loadMacroMealLog() };
+    const input = { ...data, settings: dxSettings(), activities: { workouts: [] }, macroMealLog: await fetchMacroMealLog() };
 
     if (fat <= 0 && protein <= 0) {
       const r = DiabetesEngine.suggestMealDose(input, carbs, now);
@@ -3693,7 +3716,7 @@ $('btnDxMealDose')?.addEventListener('click', async () => {
       `;
     }
 
-    recordMacroMeal({ time: now, carbs, fat, protein });
+    await recordMacroMeal({ time: now, carbs, fat, protein }, r);
   } catch (err) {
     el.dxMealDoseBody.innerHTML = `<p class="empty-state" style="color:var(--red)">${escapeHtml(err.message)}</p>`;
   }
