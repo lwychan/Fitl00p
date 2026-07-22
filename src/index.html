@@ -1,0 +1,1420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>fitl00p</title>
+
+  <!-- PWA -->
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#111318">
+  <meta name="mobile-web-app-capable" content="yes">
+
+  <!-- Apple PWA -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="fitl00p">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+
+  <!-- SEO / Share -->
+  <meta name="description" content="Track your weight, food, and training — all in one place.">
+  <meta property="og:title" content="fitl00p">
+  <meta property="og:description" content="Track your weight, food, and training — all in one place.">
+  <meta property="og:image" content="/icon-512.png">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<!-- ═══ AUTH SCREEN ═══════════════════════════════════════════ -->
+<div id="screenAuth" class="screen screen--auth" hidden>
+  <div class="auth-outer">
+
+    <!-- Feature showcase (left/top panel) -->
+    <div class="auth-features">
+      <div class="auth-brand auth-brand--hero">
+        <div class="brand-wordmark">
+            <div class="brand-mark"><svg width="26" height="26" viewBox="0 0 26 26" fill="none"><rect width="26" height="26" rx="7" fill="var(--ink)"/><path d="M13 13 A3.4 3.4 0 1 1 9.6 9.6 A3.4 3.4 0 1 1 13 13 A3.4 3.4 0 1 1 16.4 16.4 A3.4 3.4 0 1 1 13 13 Z" stroke="var(--logo-accent,#C8F000)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+            <div class="brand-name"><span class="brand-fit">fit</span><span class="brand-loop">l00p</span></div>
+          </div>
+        <p class="auth-tagline">Your personal fitness command centre</p>
+      </div>
+      <div class="feature-tiles">
+        <div class="feature-tile">
+          <span class="feature-tile__icon">⌚</span>
+          <div class="feature-tile__body">
+            <span class="feature-tile__title">Apple Health sync</span>
+            <span class="feature-tile__sub">Weight, sleep, HRV, SpO2 and glucose pulled automatically from your Apple Watch</span>
+          </div>
+        </div>
+        <div class="feature-tile">
+          <span class="feature-tile__icon">🔋</span>
+          <div class="feature-tile__body">
+            <span class="feature-tile__title">Body battery score</span>
+            <span class="feature-tile__sub">Daily 1–100 readiness score built from your sleep quality, HRV, resting HR and fuelling</span>
+          </div>
+        </div>
+        <div class="feature-tile">
+          <span class="feature-tile__icon">🏋️</span>
+          <div class="feature-tile__body">
+            <span class="feature-tile__title">Injury-aware workouts</span>
+            <span class="feature-tile__sub">Exercises automatically substituted based on your injuries — no guesswork needed</span>
+          </div>
+        </div>
+        <div class="feature-tile">
+          <span class="feature-tile__icon">📈</span>
+          <div class="feature-tile__body">
+            <span class="feature-tile__title">Weight trajectory</span>
+            <span class="feature-tile__sub">See your actual progress vs projected pace — know exactly if you're on track</span>
+          </div>
+        </div>
+        <div class="feature-tile">
+          <span class="feature-tile__icon">🎯</span>
+          <div class="feature-tile__body">
+            <span class="feature-tile__title">Goal-tailored routines</span>
+            <span class="feature-tile__sub">Push/Pull/Legs or full body — programmes built for your equipment, goal and time</span>
+          </div>
+        </div>
+        <div class="feature-tile">
+          <span class="feature-tile__icon">😴</span>
+          <div class="feature-tile__body">
+            <span class="feature-tile__title">Sleep & recovery</span>
+            <span class="feature-tile__sub">HRV, SpO2, respiratory rate and wrist temperature tracked nightly from your Apple Watch</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Auth form (right/bottom panel) -->
+    <div class="auth-shell">
+      <div class="auth-brand auth-brand--mobile">
+        <div class="brand-wordmark">
+            <div class="brand-mark"><svg width="26" height="26" viewBox="0 0 26 26" fill="none"><rect width="26" height="26" rx="7" fill="var(--ink)"/><path d="M13 13 A3.4 3.4 0 1 1 9.6 9.6 A3.4 3.4 0 1 1 13 13 A3.4 3.4 0 1 1 16.4 16.4 A3.4 3.4 0 1 1 13 13 Z" stroke="var(--logo-accent,#C8F000)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+            <div class="brand-name"><span class="brand-fit">fit</span><span class="brand-loop">l00p</span></div>
+          </div>
+      </div>
+
+      <div class="auth-tabs">
+        <button class="auth-tab auth-tab--active" data-tab="signin">Sign in</button>
+        <button class="auth-tab" data-tab="signup">Create account</button>
+      </div>
+
+      <!-- Sign in -->
+      <form class="auth-form" id="formSignin" novalidate>
+        <div class="field">
+          <label for="siEmail">Email</label>
+          <input type="email" id="siEmail" placeholder="you@example.com" autocomplete="email" required>
+        </div>
+        <div class="field">
+          <label for="siPassword">Password</label>
+          <input type="password" id="siPassword" placeholder="••••••••" autocomplete="current-password" required>
+        </div>
+        <button type="submit" class="btn btn--primary btn--full" id="btnSignin">Sign in</button>
+        <p class="auth-msg" id="msgSignin"></p>
+        <button type="button" class="btn-link" id="btnForgot">Forgot password?</button>
+      </form>
+
+      <!-- Sign up -->
+      <form class="auth-form" id="formSignup" novalidate hidden>
+        <div class="field">
+          <label for="suName">Display name</label>
+          <input type="text" id="suName" placeholder="Lewis" autocomplete="name">
+        </div>
+        <div class="field">
+          <label for="suEmail">Email</label>
+          <input type="email" id="suEmail" placeholder="you@example.com" autocomplete="email" required>
+        </div>
+        <div class="field">
+          <label for="suPassword">Password <span class="field-hint">min. 8 characters</span></label>
+          <input type="password" id="suPassword" placeholder="••••••••" autocomplete="new-password" required minlength="8">
+        </div>
+        <button type="submit" class="btn btn--primary btn--full" id="btnSignup">Create account</button>
+        <p class="auth-msg" id="msgSignup"></p>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ PENDING APPROVAL SCREEN ════════════════════════════ -->
+<div id="screenPending" class="screen screen--auth" hidden>
+  <div class="auth-shell">
+    <div class="auth-brand">
+      <div class="brand-wordmark">
+            <div class="brand-mark"><svg width="26" height="26" viewBox="0 0 26 26" fill="none"><rect width="26" height="26" rx="7" fill="var(--ink)"/><path d="M13 13 A3.4 3.4 0 1 1 9.6 9.6 A3.4 3.4 0 1 1 13 13 A3.4 3.4 0 1 1 16.4 16.4 A3.4 3.4 0 1 1 13 13 Z" stroke="var(--logo-accent,#C8F000)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+            <div class="brand-name"><span class="brand-fit">fit</span><span class="brand-loop">l00p</span></div>
+          </div>
+    </div>
+    <div class="pending-state" id="pendingState">
+      <div class="pending-icon">⏳</div>
+      <h2 class="pending-title">Request sent</h2>
+      <p class="pending-sub">Your account is awaiting approval. You'll be able to sign in as soon as an admin approves your request.</p>
+      <button class="btn btn--ghost btn--small" id="btnPendingSignout">Sign out</button>
+    </div>
+    <div class="pending-state" id="rejectedState" hidden>
+      <div class="pending-icon">❌</div>
+      <h2 class="pending-title">Request not approved</h2>
+      <p class="pending-sub">Your access request was not approved. Contact the admin if you think this is a mistake.</p>
+      <button class="btn btn--ghost btn--small" id="btnRejectedSignout">Sign out</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ ONBOARDING SCREEN ══════════════════════════════════ -->
+<div id="screenOnboard" class="screen screen--onboard" hidden>
+  <div class="onboard-shell">
+
+    <!-- Header -->
+    <div class="onboard-header">
+      <div class="brand-wordmark">
+            <div class="brand-mark"><svg width="26" height="26" viewBox="0 0 26 26" fill="none"><rect width="26" height="26" rx="7" fill="var(--ink)"/><path d="M13 13 A3.4 3.4 0 1 1 9.6 9.6 A3.4 3.4 0 1 1 13 13 A3.4 3.4 0 1 1 16.4 16.4 A3.4 3.4 0 1 1 13 13 Z" stroke="var(--logo-accent,#C8F000)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+            <div class="brand-name"><span class="brand-fit">fit</span><span class="brand-loop">l00p</span></div>
+          </div>
+      <div class="onboard-progress" id="onboardProgress">
+        <div class="onboard-step-dot active" data-step="0"></div>
+        <div class="onboard-step-dot" data-step="1"></div>
+        <div class="onboard-step-dot" data-step="2"></div>
+        <div class="onboard-step-dot" data-step="3"></div>
+      </div>
+    </div>
+
+    <!-- Steps container -->
+    <div class="onboard-steps" id="onboardSteps">
+
+      <!-- Step 1: Welcome -->
+      <div class="onboard-step active" id="obStep0">
+        <div class="onboard-emoji">👋</div>
+        <h1 class="onboard-title">Welcome to fitl00p</h1>
+        <p class="onboard-sub">Let's set up your profile in about a minute. You can change everything later in Settings.</p>
+        <div class="onboard-fields">
+          <div class="field">
+            <label for="obName">What should we call you?</label>
+            <input type="text" id="obName" placeholder="Your name" autocomplete="given-name">
+          </div>
+          <div class="field">
+            <label>Preferred weight unit</label>
+            <div class="onboard-pills" id="obUnit">
+              <button class="pill active" data-val="kg">kg</button>
+              <button class="pill" data-val="lbs">lbs</button>
+            </div>
+          </div>
+          <div class="field">
+            <label>Do you use an Apple Watch or Apple Health?</label>
+            <div class="onboard-pills" id="obAppleHealth">
+              <button class="pill" data-val="yes">Yes</button>
+              <button class="pill" data-val="no">No, I'll enter data manually</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2: Goal & Training -->
+      <div class="onboard-step" id="obStep1">
+        <div class="onboard-emoji">🎯</div>
+        <h1 class="onboard-title">What's your main goal?</h1>
+        <p class="onboard-sub">This shapes your workout routines and calorie targets.</p>
+        <div class="onboard-fields">
+          <div class="onboard-goal-cards" id="obGoal">
+            <button class="goal-card" data-val="weight_loss">
+              <span class="goal-card__icon">🔥</span>
+              <span class="goal-card__label">Weight Loss</span>
+              <span class="goal-card__sub">High reps, short rest</span>
+            </button>
+            <button class="goal-card" data-val="tone">
+              <span class="goal-card__icon">💪</span>
+              <span class="goal-card__label">Tone</span>
+              <span class="goal-card__sub">Moderate weight, definition</span>
+            </button>
+            <button class="goal-card" data-val="strength">
+              <span class="goal-card__icon">🏋️</span>
+              <span class="goal-card__label">Strength</span>
+              <span class="goal-card__sub">Heavy compound lifts</span>
+            </button>
+          </div>
+          <div class="field">
+            <label>Session length</label>
+            <div class="onboard-pills" id="obDuration">
+              <button class="pill" data-val="20">20 min</button>
+              <button class="pill" data-val="30">30 min</button>
+              <button class="pill active" data-val="45">45 min</button>
+              <button class="pill" data-val="60">60 min</button>
+            </div>
+          </div>
+          <label class="onboard-toggle">
+            <input type="checkbox" id="obFullBody">
+            <span class="onboard-toggle__track"></span>
+            <span class="onboard-toggle__label">
+              Full body every day
+              <span class="onboard-toggle__sub">4 varied full body sessions instead of Push/Pull/Legs</span>
+            </span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Step 3: Equipment -->
+      <div class="onboard-step" id="obStep2">
+        <div class="onboard-emoji">🏋️</div>
+        <h1 class="onboard-title">What equipment do you have?</h1>
+        <p class="onboard-sub">Select all that apply — your routines will be tailored to what you have access to.</p>
+        <div class="onboard-equipment" id="obEquipment">
+          <button class="equip-card" data-val="commercial_gym">
+            <span class="equip-card__icon">🏢</span>
+            <span class="equip-card__label">Commercial Gym</span>
+            <span class="equip-card__sub">Full machines, cables, free weights</span>
+          </button>
+          <button class="equip-card" data-val="home_dumbbell">
+            <span class="equip-card__icon">💪</span>
+            <span class="equip-card__label">Dumbbells</span>
+            <span class="equip-card__sub">Home dumbbell set</span>
+          </button>
+          <button class="equip-card" data-val="home_barbell">
+            <span class="equip-card__icon">🔩</span>
+            <span class="equip-card__label">Barbell</span>
+            <span class="equip-card__sub">Home barbell & plates</span>
+          </button>
+          <button class="equip-card" data-val="home_kettlebells">
+            <span class="equip-card__icon">🫧</span>
+            <span class="equip-card__label">Kettlebells</span>
+            <span class="equip-card__sub">Home kettlebell set</span>
+          </button>
+          <button class="equip-card" data-val="home_bodyweight">
+            <span class="equip-card__icon">🤸</span>
+            <span class="equip-card__label">Bodyweight only</span>
+            <span class="equip-card__sub">No equipment needed</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Step 4: Injuries & Weight plan -->
+      <div class="onboard-step" id="obStep3">
+        <div class="onboard-emoji">📊</div>
+        <h1 class="onboard-title">Almost there</h1>
+        <p class="onboard-sub">Any injuries to work around? And optionally set a weight goal to track your progress.</p>
+        <div class="onboard-fields">
+          <div class="field">
+            <label>Injuries to avoid <span class="field-hint">exercises will be automatically substituted</span></label>
+            <div class="onboard-injuries" id="obInjuries">
+              <button class="injury-pill" data-val="wrist">🤝 Wrist</button>
+              <button class="injury-pill" data-val="shoulder">💪 Shoulder</button>
+              <button class="injury-pill" data-val="rotator_cuff">🔄 Rotator Cuff</button>
+              <button class="injury-pill" data-val="elbow">🦾 Elbow</button>
+              <button class="injury-pill" data-val="knee">🦵 Knee</button>
+              <button class="injury-pill" data-val="lower_back">🔙 Lower Back</button>
+              <button class="injury-pill" data-val="hip">🦴 Hip</button>
+              <button class="injury-pill" data-val="ankle">👟 Ankle</button>
+              <button class="injury-pill" data-val="neck">🧣 Neck</button>
+              <button class="injury-pill" data-val="hamstring">🦵 Hamstring</button>
+            </div>
+          </div>
+          <div class="field-grid">
+            <div class="field">
+              <label for="obCurrentWeight">Current weight</label>
+              <input type="number" id="obCurrentWeight" placeholder="75.0" step="0.1" inputmode="decimal">
+            </div>
+            <div class="field">
+              <label for="obTargetWeight">Target weight</label>
+              <input type="number" id="obTargetWeight" placeholder="70.0" step="0.1" inputmode="decimal">
+            </div>
+          </div>
+          <div class="field">
+            <label for="obTargetDate">Target date <span class="field-hint">optional</span></label>
+            <input type="date" id="obTargetDate">
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Navigation -->
+    <div class="onboard-nav">
+      <button class="btn btn--ghost" id="obBack" hidden>← Back</button>
+      <button class="btn btn--primary" id="obNext">Continue →</button>
+    </div>
+
+    <p class="onboard-saving" id="obSaving" hidden>Setting up your profile…</p>
+
+  </div>
+</div>
+
+<!-- ═══ APP SHELL ════════════════════════════════════════════ -->
+<div id="screenApp" class="screen screen--app" hidden>
+
+  <header class="appbar">
+    <div class="appbar__brand">
+      <!-- fitl00p logo — accent colour controlled by --logo-accent CSS variable per theme -->
+      <div class="brand-wordmark">
+        <div class="brand-mark">
+          <svg width="26" height="26" viewBox="0 0 26 26" fill="none">
+            <!-- Infinity/loop glyph — two circles meeting at centre -->
+            <rect width="26" height="26" rx="7" fill="var(--ink)"/>
+            <path d="M13 13 A3.4 3.4 0 1 1 9.6 9.6 A3.4 3.4 0 1 1 13 13 A3.4 3.4 0 1 1 16.4 16.4 A3.4 3.4 0 1 1 13 13 Z" stroke="var(--logo-accent, #C8F000)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <div class="brand-name">
+          <span class="brand-fit">fit</span><span class="brand-loop">l00p</span>
+        </div>
+      </div>
+    </div>
+    <nav class="appbar__nav" id="appNav"></nav>
+    <div class="appbar__right">
+      <span class="appbar__user" id="appbarUser"></span>
+      <button class="appbar__signout" id="btnSignoutHeader" aria-label="Sign out" title="Sign out">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+          <polyline points="16 17 21 12 16 7"/>
+          <line x1="21" y1="12" x2="9" y2="12"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- ── DASHBOARD ─────────────────────────────────────────── -->
+  <div class="view" id="viewDashboard">
+    <div class="view-inner">
+
+      <div class="dash-grid">
+
+        <!-- Weight plan card — compact with inline mini chart -->
+        <div class="card card--plan">
+          <div class="card-eyebrow">Weight plan</div>
+          <div class="plan-compact-row">
+            <div class="plan-compact-stats">
+              <div class="plan-compact-weights">
+                <span class="plan-cw" id="dCurrentWeight">—</span>
+                <span class="plan-cw-unit" id="dCurrentUnit">kg</span>
+                <span class="plan-arrow">→</span>
+                <span class="plan-tw" id="dTargetWeight">—</span>
+                <span class="plan-tw-unit" id="dTargetUnit">kg</span>
+              </div>
+              <div class="progress-track" style="margin:8px 0 6px">
+                <div class="progress-track__fill" id="dProgressFill"></div>
+              </div>
+              <span class="progress-track__label" id="dProgressLabel">Set a plan in Settings</span>
+              <div class="plan-stats" id="dPlanStats" hidden>
+                <div class="plan-stat">
+                  <span class="plan-stat__label">🍽️ Eat target</span>
+                  <span class="plan-stat__val plan-stat__val--hero" id="dCalTarget">—</span>
+                </div>
+                <div class="plan-stat">
+                  <span class="plan-stat__label">🔥 Deficit needed</span>
+                  <span class="plan-stat__val" id="dDeficitNeeded">—</span>
+                </div>
+                <div class="plan-stat">
+                  <span class="plan-stat__label">📉 Weekly pace</span>
+                  <span class="plan-stat__val" id="dWeeklyPace">—</span>
+                </div>
+              </div>
+            </div>
+            <div class="plan-mini-chart">
+              <div class="chart-skeleton chart-skeleton--mini" id="dashChartSkeleton">
+                <div class="skeleton-bar" style="height:50%"></div>
+                <div class="skeleton-bar" style="height:65%"></div>
+                <div class="skeleton-bar" style="height:55%"></div>
+                <div class="skeleton-bar" style="height:75%"></div>
+                <div class="skeleton-bar" style="height:70%"></div>
+                <div class="skeleton-bar" style="height:85%"></div>
+              </div>
+              <canvas id="dashChart" height="80" hidden></canvas>
+              <p class="chart-empty chart-empty--mini" id="dashChartEmpty" hidden>No data yet</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Today summary card -->
+        <div class="card card--today">
+          <div class="card-eyebrow">Today <span id="dTodayDate" class="card-eyebrow-date"></span></div>
+          <div class="today-metrics" id="dTodayMetrics">
+            <div class="today-metric">
+              <span class="today-metric__icon">⚖️</span>
+              <span class="today-metric__val" id="dTodayWeight">—</span>
+              <span class="today-metric__unit" id="dTodayWeightUnit">kg</span>
+              <span class="today-metric__label">Weight</span>
+            </div>
+            <div class="today-metric">
+              <span class="today-metric__icon">👟</span>
+              <span class="today-metric__val" id="dTodaySteps">—</span>
+              <span class="today-metric__label">Steps</span>
+            </div>
+            <div class="today-metric">
+              <span class="today-metric__icon">🍽️</span>
+              <span class="today-metric__val" id="dTodayCals">—</span>
+              <span class="today-metric__unit">kcal</span>
+              <span class="today-metric__label">Eaten</span>
+            </div>
+            <div class="today-metric">
+              <span class="today-metric__icon">🔥</span>
+              <span class="today-metric__val" id="dTodayBurn">—</span>
+              <span class="today-metric__unit">kcal</span>
+              <span class="today-metric__label">Burn</span>
+            </div>
+            <div class="today-metric">
+              <span class="today-metric__icon">📍</span>
+              <span class="today-metric__val" id="dTodayDistance">—</span>
+              <span class="today-metric__unit">km</span>
+              <span class="today-metric__label">Distance</span>
+            </div>
+          </div>
+          <button class="btn btn--ghost btn--small dash-log-btn" id="dLogTodayBtn" style="font-size:12px;color:var(--ink-3)">
+            Last synced: <span id="dLastSync">checking…</span>
+          </button>
+          <div class="goal-rings" id="dGoalRings">
+            <div class="ring-wrap">
+              <div class="ring ring--steps">
+                <svg width="54" height="54" viewBox="0 0 54 54">
+                  <circle class="ring-bg" cx="27" cy="27" r="23"/>
+                  <circle class="ring-fill" id="rSteps" cx="27" cy="27" r="23" stroke-dasharray="144.51" stroke-dashoffset="144.51"/>
+                </svg>
+                <div class="ring-text" id="rStepsPct">0%</div>
+              </div>
+              <span>Steps</span>
+            </div>
+            <div class="ring-wrap">
+              <div class="ring ring--cal">
+                <svg width="54" height="54" viewBox="0 0 54 54">
+                  <circle class="ring-bg" cx="27" cy="27" r="23"/>
+                  <circle class="ring-fill" id="rCal" cx="27" cy="27" r="23" stroke-dasharray="144.51" stroke-dashoffset="144.51"/>
+                </svg>
+                <div class="ring-text" id="rCalPct">0%</div>
+              </div>
+              <span>Eaten</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Body battery card -->
+        <div class="card card--battery">
+          <div class="card-eyebrow">Body battery</div>
+          <div class="battery-wrap" id="bodyBatteryWrap">
+            <div class="battery-gauge">
+              <div class="battery-shell">
+                <div class="battery-fill" id="batteryFill"></div>
+                <div class="battery-nub"></div>
+              </div>
+              <div class="battery-score" id="batteryScore">—</div>
+            </div>
+            <div class="battery-detail" id="batteryDetail">
+              <div class="battery-meta" id="batteryMeta">Connect Apple Health for your score</div>
+              <div class="battery-factors" id="batteryFactors"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Last workout card -->
+        <div class="card card--last-workout">
+          <div class="card-eyebrow">Last workout</div>
+          <div id="dLastWorkout" class="last-workout-content">
+            <p class="empty-state">No workouts logged yet.</p>
+          </div>
+        </div>
+
+        <!-- Health metrics tiles — full width -->
+        <!-- Net calories + weekly deficit card -->
+        <div class="card card--net-cals">
+          <div class="card-eyebrow">Calorie balance</div>
+          <div class="net-cals-row">
+            <div class="net-cal-stat">
+              <div class="net-cal-stat__label">Today's balance</div>
+              <div class="net-cal-stat__val" id="dNetCals">—</div>
+              <div class="net-cal-stat__unit">kcal net</div>
+            </div>
+            <div class="net-cal-divider"></div>
+            <div class="net-cal-stat">
+              <div class="net-cal-stat__label">Last 7 days</div>
+              <div class="net-cal-stat__val" id="dWeeklyDeficit">—</div>
+              <div class="net-cal-stat__unit">kcal</div>
+            </div>
+            <div class="net-cal-divider"></div>
+            <div class="net-cal-stat">
+              <div class="net-cal-stat__label">Est. fat change (7d)</div>
+              <div class="net-cal-stat__val" id="dFatLost">—</div>
+              <div class="net-cal-stat__unit">kg this week</div>
+            </div>
+          </div>
+          <!-- Burn breakdown: Active / Resting / Total -->
+          <div class="burn-breakdown">
+            <div class="burn-item">
+              <span class="burn-item__label">⚡ Active</span>
+              <span class="burn-item__val" id="dBurnActive">—</span>
+            </div>
+            <div class="burn-item">
+              <span class="burn-item__label">🌙 Resting</span>
+              <span class="burn-item__val" id="dBurnResting">—</span>
+            </div>
+            <div class="burn-item burn-item--total">
+              <span class="burn-item__label">🔥 Total</span>
+              <span class="burn-item__val" id="dBurnTotal">—</span>
+            </div>
+          </div>
+          <div class="net-cals-bar-wrap">
+            <p class="net-cals-explainer" id="dBalanceExplainer" style="font-size:11px;color:var(--ink-3);margin:8px 0 10px;line-height:1.5;"></p>
+            <div class="net-cals-bar" id="dNetCalsBar">
+              <div class="net-cals-bar__fill" id="dNetCalsBarFill"></div>
+              <div class="net-cals-bar__zero"></div>
+            </div>
+            <div class="net-cals-bar-labels">
+              <span>🍽️ Eaten</span>
+              <span id="dNetCalsBreakdown"></span>
+              <span>🔥 Burned</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Health metric tiles -->
+        <div class="card card--health-tiles">
+          <div class="card-eyebrow">
+            Overnight vitals &amp; fitness
+            <span class="card-eyebrow-sub" id="healthTilesDate"></span>
+          </div>
+          <div class="health-tiles" id="healthTiles">
+            <div class="health-tile" id="tileSpo2">
+              <div class="health-tile__icon">🫁</div>
+              <div class="health-tile__label">SpO2</div>
+              <div class="health-tile__val" id="tileSpo2Val">—</div>
+              <div class="health-tile__unit">%</div>
+              <canvas class="health-tile__spark" id="sparkSpo2" width="80" height="28"></canvas>
+            </div>
+            <div class="health-tile" id="tileResp">
+              <div class="health-tile__icon">💨</div>
+              <div class="health-tile__label">Resp rate</div>
+              <div class="health-tile__val" id="tileRespVal">—</div>
+              <div class="health-tile__unit">brpm</div>
+              <canvas class="health-tile__spark" id="sparkResp" width="80" height="28"></canvas>
+            </div>
+            <div class="health-tile" id="tileVo2">
+              <div class="health-tile__icon">❤️‍🔥</div>
+              <div class="health-tile__label">VO2 Max</div>
+              <div class="health-tile__val" id="tileVo2Val">—</div>
+              <div class="health-tile__unit">mL/kg/min</div>
+              <canvas class="health-tile__spark" id="sparkVo2" width="80" height="28"></canvas>
+            </div>
+            <div class="health-tile" id="tileHr">
+              <div class="health-tile__icon">❤️</div>
+              <div class="health-tile__label">Avg heart rate</div>
+              <div class="health-tile__val" id="tileHrVal">—</div>
+              <div class="health-tile__unit">bpm</div>
+              <canvas class="health-tile__spark" id="sparkHr" width="80" height="28"></canvas>
+            </div>
+            <div class="health-tile" id="tileGlucose">
+              <div class="health-tile__icon">🩸</div>
+              <div class="health-tile__label">Glucose</div>
+              <div class="health-tile__val" id="tileGlucoseVal">—</div>
+              <div class="health-tile__unit">mmol/L</div>
+              <canvas class="health-tile__spark" id="sparkGlucose" width="80" height="28"></canvas>
+            </div>
+            <div class="health-tile" id="tileFitnessAge">
+              <div class="health-tile__icon">🧬</div>
+              <div class="health-tile__label">Fitness age</div>
+              <div class="health-tile__val" id="tileFitnessAgeVal">—</div>
+              <div class="health-tile__unit">years</div>
+              <canvas class="health-tile__spark" id="sparkFitnessAge" width="80" height="28"></canvas>
+            </div>
+          </div>
+          <p class="health-tiles-empty" id="healthTilesEmpty">Connect Apple Health Auto Export to see your overnight vitals and fitness metrics.</p>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ── DAILY LOG ──────────────────────────────────────────── -->
+  <div class="view" id="viewLog" hidden>
+    <div class="view-inner view-inner--narrow">
+      <div class="view-head">
+        <h1 class="view-title">Daily log</h1>
+        <input type="date" id="logDate" class="date-picker">
+      </div>
+
+      <form id="logForm" class="log-form" novalidate>
+
+        <div class="log-section">
+          <div class="log-section__title">Body</div>
+          <div class="log-row">
+            <label for="logWeight">Weight</label>
+            <div class="log-input-group">
+              <input type="number" id="logWeight" step="0.1" placeholder="0.0" inputmode="decimal">
+              <span class="log-unit" id="logWeightUnit">kg</span>
+            </div>
+            <span class="apple-badge" id="weightAppleBadge" hidden>⌚ Apple Health</span>
+          </div>
+          <div class="log-row">
+            <label for="logSteps">Steps</label>
+            <div class="log-input-group">
+              <input type="number" id="logSteps" step="1" placeholder="0" inputmode="numeric">
+              <span class="log-unit">steps</span>
+            </div>
+            <div class="log-goal-bar">
+              <div class="mini-bar"><div class="mini-bar__fill mini-bar__fill--steps" id="stepsBar"></div></div>
+              <span class="log-goal-label"><span id="stepsPct">0</span>% of <span id="stepsGoalLabel">10,000</span></span>
+            </div>
+            <span class="apple-badge" id="stepsAppleBadge" hidden>⌚ Apple Health</span>
+          </div>
+          <div class="log-row">
+            <label for="logActiveCal">Active calories burnt</label>
+            <div class="log-input-group">
+              <input type="number" id="logActiveCal" step="1" placeholder="0" inputmode="numeric">
+              <span class="log-unit">kcal</span>
+            </div>
+            <span class="apple-badge" id="activeCalAppleBadge" hidden>⌚ Apple Health</span>
+          </div>
+        </div>
+
+        <div class="log-section">
+          <div class="log-section__title">
+            Calories by meal
+
+          </div>
+          <div id="appleCalBanner" class="apple-cal-banner" hidden>
+            <span>⌚</span>
+            <span>Apple Health: <strong id="appleCalValue">—</strong> kcal logged today</span>
+            <span class="apple-badge-note">Manual entries below will be saved too</span>
+          </div>
+          <div class="meal-grid">
+            <div class="meal-field">
+              <label for="mBreakfast">Breakfast</label>
+              <input type="number" id="mBreakfast" step="1" placeholder="0" inputmode="numeric">
+            </div>
+            <div class="meal-field">
+              <label for="mLunch">Lunch</label>
+              <input type="number" id="mLunch" step="1" placeholder="0" inputmode="numeric">
+            </div>
+            <div class="meal-field">
+              <label for="mDinner">Dinner</label>
+              <input type="number" id="mDinner" step="1" placeholder="0" inputmode="numeric">
+            </div>
+            <div class="meal-field">
+              <label for="mSnacks">Snacks</label>
+              <input type="number" id="mSnacks" step="1" placeholder="0" inputmode="numeric">
+            </div>
+          </div>
+          <div class="cal-summary">
+            <div class="cal-summary__item">
+              <span class="cal-summary__label">Total</span>
+              <span class="cal-summary__val" id="calTotal">0 kcal</span>
+            </div>
+            <div class="cal-summary__item">
+              <span class="cal-summary__label">Target</span>
+              <span class="cal-summary__val cal-summary__val--target" id="calTarget">— kcal</span>
+            </div>
+          </div>
+          <div class="mini-bar mini-bar--cal-full"><div class="mini-bar__fill mini-bar__fill--cal" id="calBar"></div></div>
+        </div>
+
+        <div class="log-section">
+          <div class="log-section__title">Notes</div>
+          <textarea id="logNotes" rows="2" placeholder="Optional notes for the day…"></textarea>
+        </div>
+
+        <div class="log-actions">
+          <button type="submit" class="btn btn--primary" id="btnSaveLog">Save entry</button>
+          <span class="save-status" id="logStatus"></span>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ── WORKOUT ────────────────────────────────────────────── -->
+  <div class="view" id="viewWorkout" hidden>
+    <div class="view-inner view-inner--narrow">
+
+      <!-- Step 1: Routine picker -->
+      <div id="workoutPicker">
+        <div class="view-head">
+          <h1 class="view-title">Workout</h1>
+          <button type="button" class="btn btn--ghost btn--small" id="btnWorkoutHistory">History →</button>
+        </div>
+        <div class="routine-filters">
+          <select id="routineFilterSplit" class="split-select">
+            <option value="">All splits</option>
+            <option value="Push">Push</option>
+            <option value="Pull">Pull</option>
+            <option value="Legs">Legs</option>
+            <option value="Full Body">Full Body</option>
+            <option value="Cardio">Cardio</option>
+          </select>
+        </div>
+        <div id="readinessBanner" class="readiness-banner" hidden></div>
+        <div id="routineList" class="routine-list">
+          <p class="empty-state">Loading routines…</p>
+        </div>
+      </div>
+
+      <!-- Step 2: Active workout (after selecting a routine) -->
+      <div id="workoutActive" hidden>
+        <div class="view-head">
+          <button type="button" class="btn btn--ghost btn--small" id="btnBackToPicker">← Routines</button>
+          <div class="view-head-actions">
+            <input type="date" id="workoutDate" class="date-picker">
+          </div>
+        </div>
+
+        <div class="active-workout-header" id="activeWorkoutHeader"></div>
+        <div id="activeExerciseList"></div>
+
+        <div class="workout-toolbar">
+          <button type="button" class="btn btn--primary" id="btnSaveWorkout">Save workout</button>
+        </div>
+        <span class="save-status" id="workoutStatus"></span>
+      </div>
+
+      <!-- history panel -->
+      <div id="workoutHistoryPanel" hidden>
+        <div class="view-head">
+          <h2 class="view-title view-title--sub">History</h2>
+          <div class="view-head-actions">
+            <select id="historyFilterSplit" class="split-select">
+              <option value="">All splits</option>
+              <option value="Push">Push</option>
+              <option value="Pull">Pull</option>
+              <option value="Legs">Legs</option>
+              <option value="Full Body">Full Body</option>
+              <option value="Cardio">Cardio</option>
+              <option value="Other">Other</option>
+            </select>
+            <button type="button" class="btn btn--ghost btn--small" id="btnCloseHistory">← Back</button>
+          </div>
+        </div>
+        <div id="strengthProgress" class="strength-progress"></div>
+        <div id="workoutHistoryList" class="workout-history-list"></div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ── HISTORY ────────────────────────────────────────────── -->
+  <div class="view" id="viewHistory" hidden>
+    <div class="view-inner">
+      <div class="view-head">
+        <h1 class="view-title">Daily history</h1>
+        <button class="btn btn--ghost btn--small" id="btnExportCsv">Export CSV</button>
+      </div>
+      <div class="card">
+        <div class="chart-wrap">
+          <canvas id="historyChart" height="200"></canvas>
+          <p class="chart-empty" id="historyChartEmpty">Log weight entries to see your trend.</p>
+        </div>
+        <div id="historyVariance" class="history-variance" hidden></div>
+        <div class="history-legend">
+          <span class="legend-item legend-item--actual">— Actual</span>
+          <span class="legend-item legend-item--proj">- - Projected</span>
+          <span class="legend-item legend-item--ahead">▪ Ahead</span>
+          <span class="legend-item legend-item--behind">▪ Behind</span>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Weight</th>
+              <th>Steps</th>
+              <th>Consumed</th>
+              <th>Burned</th>
+            </tr>
+          </thead>
+          <tbody id="historyTableBody">
+            <tr class="table-empty"><td colspan="5">No entries yet.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── SETTINGS ───────────────────────────────────────────── -->
+  <div class="view" id="viewSettings" hidden>
+    <div class="view-inner view-inner--narrow">
+      <h1 class="view-title">Settings</h1>
+
+      <div class="settings-section">
+        <div class="settings-section__title">Appearance</div>
+        <div class="theme-picker" id="themePicker">
+          <button class="theme-btn" data-theme="slate" title="Slate — dark charcoal + electric lime">
+            <div class="theme-swatch swatch--slate"></div>
+            <span class="theme-label">Slate</span>
+          </button>
+          <button class="theme-btn" data-theme="obsidian" title="Obsidian — deep black + teal">
+            <div class="theme-swatch swatch--obsidian"></div>
+            <span class="theme-label">Obsidian</span>
+          </button>
+          <button class="theme-btn" data-theme="aurora" title="Aurora — warm parchment + coral">
+            <div class="theme-swatch swatch--aurora"></div>
+            <span class="theme-label">Aurora</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section__title">Profile</div>
+        <div class="field">
+          <label for="setDisplayName">Display name</label>
+          <input type="text" id="setDisplayName" placeholder="Your name">
+        </div>
+        <div class="field">
+          <label for="setUnit">Weight unit</label>
+          <select id="setUnit">
+            <option value="kg">Kilograms (kg)</option>
+            <option value="lb">Pounds (lb)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section__title">Daily goals</div>
+        <div class="field">
+          <label for="setTdee">Daily calorie target <span class="field-hint">TDEE — used to calculate weight plan</span></label>
+          <input type="number" id="setTdee" placeholder="2200" step="50" inputmode="numeric">
+        </div>
+        <div class="field">
+          <label for="setStepsGoal">Steps goal</label>
+          <input type="number" id="setStepsGoal" placeholder="10000" step="500" inputmode="numeric">
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section__title">Weight plan</div>
+        <div class="field-grid">
+          <div class="field">
+            <label for="setPlanStart">Current weight</label>
+            <input type="number" id="setPlanStart" step="0.1" inputmode="decimal" placeholder="e.g. 107.5">
+          </div>
+          <div class="field">
+            <label for="setPlanTarget">Target weight</label>
+            <input type="number" id="setPlanTarget" step="0.1" inputmode="decimal" placeholder="e.g. 100.0">
+          </div>
+          <div class="field">
+            <label for="setPlanStartDate">Start date</label>
+            <input type="date" id="setPlanStartDate">
+          </div>
+          <div class="field">
+            <label for="setPlanTargetDate">Target date</label>
+            <input type="date" id="setPlanTargetDate">
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section__title">Body stats <span class="field-hint">used for BMR &amp; eat target calculation</span></div>
+        <div class="field-grid">
+          <div class="field">
+            <label for="setHeight">Height (cm)</label>
+            <input type="number" id="setHeight" placeholder="180" step="1" inputmode="numeric">
+          </div>
+          <div class="field">
+            <label for="setAge">Age</label>
+            <input type="number" id="setAge" placeholder="34" step="1" inputmode="numeric">
+          </div>
+        </div>
+        <div class="field">
+          <label for="setSex">Sex <span class="field-hint">for BMR formula</span></label>
+          <select id="setSex">
+            <option value="male">Male</option>
+            <option value="female">Female</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section__title">Training profile</div>
+        <div class="field">
+          <label for="setGoal">Goal</label>
+          <select id="setGoal">
+            <option value="weight_loss">Weight Loss</option>
+            <option value="tone">Tone</option>
+            <option value="strength">Strength Gain</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="setDuration">Session duration</label>
+          <select id="setDuration">
+            <option value="20">20 minutes</option>
+            <option value="30">30 minutes</option>
+            <option value="45">45 minutes</option>
+            <option value="60">60 minutes</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Equipment <span class="field-hint">select all that apply</span></label>
+          <div class="checkbox-grid" id="setEquipment">
+            <label class="checkbox-option"><input type="checkbox" value="commercial_gym"> Commercial Gym</label>
+            <label class="checkbox-option"><input type="checkbox" value="home_bodyweight"> Home — Bodyweight</label>
+            <label class="checkbox-option"><input type="checkbox" value="home_kettlebells"> Home — Kettlebells</label>
+            <label class="checkbox-option"><input type="checkbox" value="home_barbell"> Home — Barbell</label>
+            <label class="checkbox-option"><input type="checkbox" value="home_dumbbell"> Home — Dumbbell</label>
+          </div>
+        </div>
+        <div class="field">
+          <label>Injuries to avoid <span class="field-hint">exercises will be substituted automatically</span></label>
+          <div class="checkbox-grid" id="setInjuries">
+            <label class="checkbox-option"><input type="checkbox" value="wrist"> Wrist</label>
+            <label class="checkbox-option"><input type="checkbox" value="shoulder"> Shoulder</label>
+            <label class="checkbox-option"><input type="checkbox" value="rotator_cuff"> Rotator Cuff</label>
+            <label class="checkbox-option"><input type="checkbox" value="elbow"> Elbow (Tennis/Golfer's)</label>
+            <label class="checkbox-option"><input type="checkbox" value="knee"> Knee</label>
+            <label class="checkbox-option"><input type="checkbox" value="lower_back"> Lower Back</label>
+            <label class="checkbox-option"><input type="checkbox" value="hip"> Hip</label>
+            <label class="checkbox-option"><input type="checkbox" value="ankle"> Ankle</label>
+            <label class="checkbox-option"><input type="checkbox" value="neck"> Neck / Cervical</label>
+            <label class="checkbox-option"><input type="checkbox" value="hamstring"> Hamstring</label>
+          </div>
+        </div>
+        <div class="field">
+          <label class="checkbox-option checkbox-option--full">
+            <input type="checkbox" id="setPreferFullBody">
+            <span>Full body every day <span class="field-hint">shows 4 different full body sessions instead of Push/Pull/Legs</span></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section__title">Rest timers <span class="field-hint">seconds between sets</span></div>
+        <div class="field-grid">
+          <div class="field">
+            <label for="setRestWeightLoss">Weight loss</label>
+            <input type="number" id="setRestWeightLoss" placeholder="30" step="5" inputmode="numeric">
+          </div>
+          <div class="field">
+            <label for="setRestTone">Tone</label>
+            <input type="number" id="setRestTone" placeholder="60" step="5" inputmode="numeric">
+          </div>
+          <div class="field">
+            <label for="setRestStrength">Strength</label>
+            <input type="number" id="setRestStrength" placeholder="120" step="5" inputmode="numeric">
+          </div>
+        </div>
+      </div>
+      <div class="settings-actions">
+        <button class="btn btn--primary" id="btnSaveSettings">Save settings</button>
+        <span class="save-status" id="settingsStatus"></span>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section__title">Apple Health sync</div>
+        <label class="settings-toggle-row" style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+          <input type="checkbox" id="setUsesAppleHealth">
+          <span>I use an Apple Watch / Apple Health</span>
+        </label>
+        <div id="appleHealthSyncControls">
+          <p style="font-size:13px;color:var(--ink-3);line-height:1.6">
+            Connect the <strong>Health Auto Export</strong> app on your iPhone to automatically sync sleep, HRV, resting heart rate, steps and blood glucose into fitl00p.
+          </p>
+          <div id="healthKeyStatus" class="health-key-status">
+            <span class="health-key-dot" id="healthKeyDot"></span>
+            <span id="healthKeyLabel">Checking…</span>
+          </div>
+          <div class="health-key-actions">
+            <button class="btn btn--primary btn--small" id="btnGenerateKey">Generate API key</button>
+            <button class="btn btn--ghost btn--small btn--danger" id="btnRevokeKey" hidden>Revoke key</button>
+          </div>
+          <div class="health-key-reveal" id="healthKeyReveal" hidden>
+            <p style="font-size:12px;color:var(--ink-3);margin-bottom:8px">Copy this key now — it won't be shown again.</p>
+            <div class="health-key-box">
+              <code id="healthKeyValue"></code>
+              <button class="btn btn--ghost btn--small" id="btnCopyKey">Copy</button>
+            </div>
+            <p style="font-size:12px;color:var(--ink-3);margin-top:8px">Endpoint URL:</p>
+            <div class="health-key-box">
+              <code id="healthEndpointValue" style="font-size:11px;word-break:break-all"></code>
+              <button class="btn btn--ghost btn--small" id="btnCopyEndpoint">Copy</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section__title">
+          Manual health entry
+          <span class="field-hint" style="text-transform:none;letter-spacing:0;font-weight:400">For Android or no wearable</span>
+        </div>
+        <p style="font-size:13px;color:var(--ink-3);line-height:1.6">
+          No Apple Health? Enter last night's sleep and this morning's biometrics manually. These are used to calculate your daily readiness score.
+        </p>
+        <div class="field">
+          <label for="mhDate">Date</label>
+          <input type="date" id="mhDate">
+        </div>
+        <div class="field-grid">
+          <div class="field">
+            <label for="mhSleepTotal">Total sleep <span class="field-hint">hours</span></label>
+            <input type="number" id="mhSleepTotal" step="0.25" min="0" max="24" placeholder="7.5" inputmode="decimal">
+          </div>
+          <div class="field">
+            <label for="mhSleepDeep">Deep sleep <span class="field-hint">hours</span></label>
+            <input type="number" id="mhSleepDeep" step="0.25" min="0" max="12" placeholder="1.5" inputmode="decimal">
+          </div>
+          <div class="field">
+            <label for="mhSleepRem">REM sleep <span class="field-hint">hours</span></label>
+            <input type="number" id="mhSleepRem" step="0.25" min="0" max="12" placeholder="1.5" inputmode="decimal">
+          </div>
+          <div class="field">
+            <label for="mhRestingHr">Resting HR <span class="field-hint">bpm</span></label>
+            <input type="number" id="mhRestingHr" step="1" min="30" max="200" placeholder="58" inputmode="numeric">
+          </div>
+          <div class="field">
+            <label for="mhHrv">HRV <span class="field-hint">ms</span></label>
+            <input type="number" id="mhHrv" step="1" min="0" max="300" placeholder="52" inputmode="numeric">
+          </div>
+          <div class="field">
+            <label for="mhGlucoseAvg">Avg glucose <span class="field-hint">mmol/L</span></label>
+            <input type="number" id="mhGlucoseAvg" step="0.1" min="0" max="30" placeholder="6.2" inputmode="decimal">
+          </div>
+        </div>
+        <div class="settings-actions" style="padding-top:8px">
+          <button class="btn btn--primary btn--small" id="btnSaveManualHealth">Save health data</button>
+          <span class="save-status" id="manualHealthStatus"></span>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section__title">
+          Diabetes tracking
+          <span class="field-hint" style="text-transform:none;letter-spacing:0;font-weight:400">Nightscout — NOT medical software</span>
+        </div>
+        <p style="font-size:13px;color:var(--ink-3);line-height:1.6">
+          Connects to your own Nightscout site (fed by tconnectsync, xDrip, Loop, or any Nightscout uploader) to pull glucose, bolus and basal history. A single-user, heuristic pattern-spotting tool built on population-average insulin curves — not a clinical dosing calculator. It never writes anything back to your pump or CGM.
+        </p>
+        <div class="field">
+          <label for="setNsUrl">Nightscout URL</label>
+          <input type="url" id="setNsUrl" placeholder="https://your-site.duckdns.org" inputmode="url">
+        </div>
+        <div class="field-grid">
+          <div class="field">
+            <label for="setNsToken">Access token <span class="field-hint">if your site requires one</span></label>
+            <input type="text" id="setNsToken" placeholder="optional">
+          </div>
+          <div class="field">
+            <label for="setNsSecret">API secret <span class="field-hint">optional</span></label>
+            <input type="password" id="setNsSecret" placeholder="optional">
+          </div>
+        </div>
+        <div class="settings-actions" style="padding-top:0">
+          <button class="btn btn--primary btn--small" id="btnSaveNsConfig">Connect</button>
+          <span class="save-status" id="nsConfigStatus"></span>
+        </div>
+
+        <div class="field-grid" style="margin-top:14px">
+          <div class="field">
+            <label for="setTargetLow">Target range low <span class="field-hint">mmol/L</span></label>
+            <input type="number" id="setTargetLow" step="0.1" min="2" max="10" placeholder="4.5" inputmode="decimal">
+          </div>
+          <div class="field">
+            <label for="setTargetHigh">Target range high <span class="field-hint">mmol/L</span></label>
+            <input type="number" id="setTargetHigh" step="0.1" min="5" max="15" placeholder="8.5" inputmode="decimal">
+          </div>
+          <div class="field">
+            <label for="setIdealTarget">Correction target <span class="field-hint">mmol/L</span></label>
+            <input type="number" id="setIdealTarget" step="0.1" min="3" max="10" placeholder="6.0" inputmode="decimal">
+          </div>
+          <div class="field">
+            <label for="setCarbRatio">Carb ratio <span class="field-hint">grams per unit</span></label>
+            <input type="number" id="setCarbRatio" step="0.5" min="1" max="60" placeholder="10" inputmode="decimal">
+          </div>
+        </div>
+        <p style="font-size:11px;color:var(--ink-3);line-height:1.5;margin-top:2px">
+          Insulin curve is pre-set for Lyumjev (peak ~57min, ~4h duration). Change it below if you use a different rapid-acting insulin.
+        </p>
+        <div class="field-grid">
+          <div class="field">
+            <label for="setInsulinPeak">Insulin peak <span class="field-hint">minutes</span></label>
+            <input type="number" id="setInsulinPeak" step="5" min="30" max="180" placeholder="57" inputmode="numeric">
+          </div>
+          <div class="field">
+            <label for="setInsulinDuration">Insulin duration <span class="field-hint">minutes</span></label>
+            <input type="number" id="setInsulinDuration" step="15" min="120" max="360" placeholder="240" inputmode="numeric">
+          </div>
+        </div>
+        <div class="settings-actions">
+          <button class="btn btn--primary btn--small" id="btnSaveDiabetesSettings">Save diabetes settings</button>
+          <span class="save-status" id="diabetesSettingsStatus"></span>
+        </div>
+      </div>
+
+      <div class="settings-section settings-section--danger">
+        <div class="settings-section__title">Account</div>
+        <!-- Admin only -->
+        <div id="adminSection" hidden>
+          <button class="btn btn--primary btn--small" id="btnOpenIam" style="margin-bottom:8px;width:100%">
+            🔐 User Management (IAM)
+          </button>
+          <button class="btn btn--primary btn--small" id="btnOpenWorkoutAdmin" style="margin-bottom:10px;width:100%">
+            🏋️ Workout Editor
+          </button>
+        </div>
+        <button class="btn btn--ghost btn--danger" id="btnChangePassword">Change password</button>
+        <p class="danger-note" id="changePasswordMsg"></p>
+        <button class="btn btn--ghost btn--danger" id="btnSignout" style="margin-top:8px">Sign out</button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Diabetes View -->
+  <div class="view" id="viewDiabetes" hidden>
+    <div class="view-inner">
+      <h1 class="view-title">Diabetes</h1>
+
+      <div class="card" id="dxNotConnected">
+        <div class="card-eyebrow">Not connected</div>
+        <p class="empty-state">Connect your Nightscout site in Settings to see glucose, IOB/COB, correction guidance and pattern insights here.</p>
+        <button class="btn btn--primary btn--small" id="btnDxGoToSettings">Go to Settings</button>
+      </div>
+
+      <div id="dxConnected" hidden>
+        <p class="dx-disclaimer">Heuristic pattern-spotting only, built on population-average insulin curves — not medical advice or a dosing calculator. Always use your own judgement.</p>
+
+        <div class="card card--dx-now">
+          <div class="card-eyebrow">Now <span class="card-eyebrow-sub" id="dxReadingAge"></span></div>
+          <div class="dx-now-row">
+            <div class="dx-now-glucose">
+              <span class="dx-now-glucose__val" id="dxCurrentGlucose">—</span>
+              <span class="dx-now-glucose__unit">mmol/L</span>
+              <span class="dx-now-trend" id="dxTrendArrow"></span>
+            </div>
+            <div class="dx-now-stats">
+              <div class="dx-now-stat"><span class="dx-now-stat__label">IOB</span><span class="dx-now-stat__val" id="dxIob">—</span></div>
+              <div class="dx-now-stat"><span class="dx-now-stat__label">COB</span><span class="dx-now-stat__val" id="dxCob">—</span></div>
+              <div class="dx-now-stat"><span class="dx-now-stat__label">~30min</span><span class="dx-now-stat__val" id="dxEffective">—</span></div>
+            </div>
+          </div>
+          <p class="dx-stale-note" id="dxStaleNote" hidden></p>
+        </div>
+
+        <div class="card" id="dxForecastCard">
+          <div class="card-eyebrow">2h hypo forecast</div>
+          <div id="dxForecastBody"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-eyebrow">Correction suggestion</div>
+          <div id="dxCorrectionBody"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-eyebrow">
+            Meal dose &amp; split-dosing helper
+            <span class="field-hint" style="text-transform:none;letter-spacing:0;font-weight:400">fat/protein optional</span>
+          </div>
+          <p style="font-size:12px;color:var(--ink-3);line-height:1.5;margin-bottom:10px">
+            Add fat and protein for a split-dose suggestion — high-fat meals digest slowly, so a same-time bolus can peak before the food does. Leave them blank for a plain carb-ratio dose.
+          </p>
+          <div class="field-grid">
+            <div class="field">
+              <label for="dxMealCarbs">Carbs <span class="field-hint">grams</span></label>
+              <input type="number" id="dxMealCarbs" min="0" step="1" placeholder="60" inputmode="numeric">
+            </div>
+            <div class="field">
+              <label for="dxMealFat">Fat <span class="field-hint">grams</span></label>
+              <input type="number" id="dxMealFat" min="0" step="1" placeholder="0" inputmode="numeric">
+            </div>
+            <div class="field">
+              <label for="dxMealProtein">Protein <span class="field-hint">grams</span></label>
+              <input type="number" id="dxMealProtein" min="0" step="1" placeholder="0" inputmode="numeric">
+            </div>
+          </div>
+          <button class="btn btn--ghost btn--small" id="btnDxMealDose">Suggest dose</button>
+          <div id="dxMealDoseBody"></div>
+        </div>
+
+        <div class="card" id="dxPatternsCard">
+          <div class="card-eyebrow">Patterns <span class="card-eyebrow-sub" id="dxPatternsWindow">last 7 days</span></div>
+          <div id="dxPatternsBody"></div>
+        </div>
+
+        <div class="card" id="dxHealthCard">
+          <div class="card-eyebrow">Weekly insulin health check</div>
+          <div id="dxHealthBody"></div>
+        </div>
+
+        <div class="card" id="dxMealMemoryCard">
+          <div class="card-eyebrow">Meal memory</div>
+          <div id="dxMealMemoryBody"></div>
+        </div>
+
+        <div class="card" id="dxSensitivityCard">
+          <div class="card-eyebrow">Sensitivity map <span class="card-eyebrow-sub">mmol/L drop per unit</span></div>
+          <div id="dxSensitivityBody"></div>
+        </div>
+
+        <button class="btn btn--ghost btn--small" id="btnDxRefresh" style="width:100%;margin-top:4px">Refresh</button>
+        <p class="dx-last-sync" id="dxLastSync"></p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── BOTTOM TAB BAR ──────────────────────────────────── -->
+  <nav class="tab-bar" id="tabBar">
+    <button class="tab-btn tab-btn--active" data-view="dashboard">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+      Dashboard
+    </button>
+    <button class="tab-btn" data-view="workout">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4v16M18 4v16M2 9h4M18 9h4M2 15h4M18 15h4"/></svg>
+      Workout
+    </button>
+    <button class="tab-btn" data-view="history">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+      History
+    </button>
+    <button class="tab-btn" data-view="diabetes">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5s6.5 7.2 6.5 12.2a6.5 6.5 0 01-13 0C5.5 9.7 12 2.5 12 2.5z"/></svg>
+      Diabetes
+    </button>
+    <button class="tab-btn" data-view="settings">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+      Settings
+    </button>
+  </nav>
+
+</div><!-- /screenApp -->
+
+<!-- ═══ GLOBAL OVERLAY / TOAST ══════════════════════════════ -->
+<div class="toast" id="toast" hidden></div>
+
+
+<!-- Workout Admin View (full screen, admin only) -->
+<div class="view" id="viewWorkoutAdmin" hidden>
+  <div class="view-inner">
+
+    <!-- Back header -->
+    <div class="admin-view-header">
+      <button class="admin-back-btn" id="btnBackFromWorkoutAdmin">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+        Settings
+      </button>
+      <h1 class="admin-view-title">🏋️ Workout Editor</h1>
+    </div>
+
+    <!-- Filters -->
+    <div class="workout-admin-filters">
+      <select id="waFilterGoal">
+        <option value="">All goals</option>
+        <option value="weight_loss">Weight loss</option>
+        <option value="tone">Tone</option>
+        <option value="strength">Strength</option>
+      </select>
+      <select id="waFilterEquipment">
+        <option value="">All equipment</option>
+        <option value="commercial_gym">Commercial gym</option>
+        <option value="home_dumbbell">Home dumbbells</option>
+        <option value="home_barbell">Home barbell</option>
+        <option value="home_bodyweight">Bodyweight</option>
+        <option value="home_kettlebells">Kettlebells</option>
+      </select>
+      <select id="waFilterSplit">
+        <option value="">All splits</option>
+        <option value="Push">Push</option>
+        <option value="Pull">Pull</option>
+        <option value="Legs">Legs</option>
+        <option value="Full Body">Full Body</option>
+      </select>
+    </div>
+
+    <!-- Routine list -->
+    <div class="routine-admin-list" id="routineAdminList">
+      <p style="color:var(--ink-3);font-size:13px;text-align:center;padding:40px">Loading routines…</p>
+    </div>
+
+  </div>
+</div>
+
+<!-- IAM Portal Modal -->
+<div class="modal-backdrop" id="iamModal" hidden>
+  <div class="modal">
+    <div class="modal__head">
+      <span class="modal__title">🔐 User Management</span>
+      <button class="modal__close" id="iamModalClose">×</button>
+    </div>
+    <div class="modal__body">
+
+      <!-- Pending requests -->
+      <div>
+        <div class="iam-section-title">
+          Pending approval
+          <span class="badge badge--orange" id="iamPendingCount"></span>
+        </div>
+        <div id="iamPendingList">
+          <p class="empty-state">No pending requests.</p>
+        </div>
+      </div>
+
+      <!-- Approved users -->
+      <div>
+        <div class="iam-section-title">Approved users</div>
+        <div id="iamApprovedList">
+          <p class="empty-state">Loading…</p>
+        </div>
+      </div>
+
+      <!-- Rejected users -->
+      <div>
+        <div class="iam-section-title">Rejected</div>
+        <div id="iamRejectedList">
+          <p class="empty-state">None.</p>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- Metric Detail Bottom Sheet -->
+<div class="bottom-sheet-backdrop" id="metricSheet" hidden>
+  <div class="bottom-sheet">
+    <div class="bottom-sheet__handle"></div>
+    <div class="bottom-sheet__head">
+      <div class="metric-sheet-header">
+        <span class="metric-sheet-icon" id="metricSheetIcon"></span>
+        <div>
+          <div class="metric-sheet-title" id="metricSheetTitle"></div>
+          <div class="metric-sheet-sub" id="metricSheetSub"></div>
+        </div>
+      </div>
+      <button class="bottom-sheet__close" id="metricSheetClose">✕</button>
+    </div>
+    <div class="bottom-sheet__body">
+      <!-- Stat summary row -->
+      <div class="metric-sheet-stats" id="metricSheetStats"></div>
+      <!-- Chart -->
+      <div class="metric-sheet-chart">
+        <canvas id="metricSheetChart" height="140"></canvas>
+        <p class="chart-empty" id="metricSheetEmpty" hidden>No data in the last 30 days.</p>
+      </div>
+      <!-- Data table -->
+      <div class="metric-sheet-table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th id="metricSheetColHeader">Value</th>
+            </tr>
+          </thead>
+          <tbody id="metricSheetTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Rest timer overlay -->
+<div class="rest-timer-overlay" id="restTimerOverlay" hidden>
+  <div class="rest-timer-circle">
+    <svg viewBox="0 0 180 180" width="180" height="180">
+      <circle class="rest-timer-track" cx="90" cy="90" r="82"/>
+      <circle class="rest-timer-fill" id="restTimerFill" cx="90" cy="90" r="82"
+        stroke-dasharray="515.22" stroke-dashoffset="0"/>
+    </svg>
+    <div class="rest-timer-text">
+      <span class="rest-timer-countdown" id="restTimerCount">60</span>
+      <span class="rest-timer-label">Rest</span>
+    </div>
+  </div>
+  <p class="rest-timer-next" id="restTimerNext"></p>
+  <button type="button" class="rest-timer-skip" id="restTimerSkip">Skip rest →</button>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.0/dist/umd/supabase.js" crossorigin="anonymous"></script>
+<script src="diabetes-engine.js"></script>
+<script src="nightscout-adapter.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

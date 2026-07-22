@@ -1,0 +1,40 @@
+[build]
+  publish   = "."
+  functions = "netlify/functions"
+
+# IMPORTANT: Add these environment variables in Netlify dashboard
+# Site → Site configuration → Environment variables:
+#   VAPID_PUBLIC          (see setup guide)
+#   VAPID_PRIVATE         (see setup guide)
+#   VAPID_SUBJECT         (see setup guide)
+#   SUPABASE_URL          (your Supabase project URL)
+#   SUPABASE_ANON_KEY     (your Supabase anon key)
+#   SUPABASE_SERVICE_KEY  (your Supabase service role key)
+
+[[redirects]]
+  from = "/*"
+  to   = "/index.html"
+  status = 200
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "DENY"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
+    Service-Worker-Allowed = "/"
+
+[[headers]]
+  for = "/app.js"
+  [headers.values]
+    Cache-Control = "no-cache, no-store, must-revalidate"
+
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-cache, no-store, must-revalidate"
