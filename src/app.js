@@ -3239,19 +3239,20 @@ async function loadSettings() {
   const mhDate = $('mhDate');
   if (mhDate && !mhDate.value) mhDate.value = todayISO();
 
-  // Diabetes tracking (Nightscout) config
-  const nsCfg = loadNsConfig();
-  if ($('setNsUrl'))    $('setNsUrl').value    = nsCfg.nsUrl    || '';
-  if ($('setNsToken'))  $('setNsToken').value  = nsCfg.nsToken  || '';
-  if ($('setNsSecret')) $('setNsSecret').value = nsCfg.nsSecret || '';
-  if ($('setTargetLow'))       $('setTargetLow').value       = nsCfg.targetLow       ?? '';
-  if ($('setTargetHigh'))      $('setTargetHigh').value      = nsCfg.targetHigh      ?? '';
-  if ($('setIdealTarget'))     $('setIdealTarget').value     = nsCfg.idealTarget     ?? '';
-  if ($('setCarbRatio'))       $('setCarbRatio').value       = nsCfg.carbRatio       ?? '';
-  if ($('setInsulinPeak'))     $('setInsulinPeak').value     = nsCfg.insulinPeakMinutes     ?? '';
-  if ($('setInsulinDuration')) $('setInsulinDuration').value = nsCfg.insulinDurationMinutes ?? '';
-
   if (!profile) return;
+
+  // Diabetes tracking (Nightscout) config — stored on the profile row,
+  // same as every other per-user setting, so it survives across devices.
+  if ($('setNsUrl'))    $('setNsUrl').value    = profile.diabetes_ns_url    || '';
+  if ($('setNsToken'))  $('setNsToken').value  = profile.diabetes_ns_token  || '';
+  if ($('setNsSecret')) $('setNsSecret').value = profile.diabetes_ns_secret || '';
+  if ($('setTargetLow'))       $('setTargetLow').value       = profile.diabetes_target_low  ?? '';
+  if ($('setTargetHigh'))      $('setTargetHigh').value      = profile.diabetes_target_high ?? '';
+  if ($('setIdealTarget'))     $('setIdealTarget').value     = profile.diabetes_ideal_target ?? '';
+  if ($('setCarbRatio'))       $('setCarbRatio').value       = profile.diabetes_carb_ratio   ?? '';
+  if ($('setInsulinPeak'))     $('setInsulinPeak').value     = profile.diabetes_insulin_peak_min     ?? '';
+  if ($('setInsulinDuration')) $('setInsulinDuration').value = profile.diabetes_insulin_duration_min ?? '';
+
   el.setDisplayName.value  = profile.display_name || '';
   el.setUnit.value         = profile.weight_unit  || 'kg';
   el.setTdee.value         = profile.tdee         || 2200;
@@ -3374,23 +3375,17 @@ el.btnChangePassword.addEventListener('click', async () => {
 
 /* ═══════════════════════════════════════════════════════════
    DIABETES — Nightscout-backed engine tab
-   Config lives client-side only (localStorage), the same
-   pull-through pattern as diabetes-sync.js: nothing about a
-   Nightscout site is ever written to Supabase.
+   Connection + target settings live on the profile row, same as every
+   other per-user setting — survives across devices/browsers instead of
+   being tied to one localStorage bucket. The Nightscout site itself
+   stays the pull-through source for glucose/bolus/basal; nothing about
+   its actual data is duplicated into Supabase, only how to reach it.
 ═══════════════════════════════════════════════════════════ */
-const NS_CONFIG_KEY = 'fitl00p:ns_config';
-
-function loadNsConfig() {
-  try {
-    const raw = localStorage.getItem(NS_CONFIG_KEY);
-    return raw ? JSON.parse(raw) : {};
-  } catch { return {}; }
-}
-
-function saveNsConfig(patch) {
-  const merged = { ...loadNsConfig(), ...patch };
-  localStorage.setItem(NS_CONFIG_KEY, JSON.stringify(merged));
-  return merged;
+async function saveNsProfileFields(updates) {
+  if (!currentUser) return { error: new Error('Not signed in') };
+  const { error } = await db.from('profiles').update(updates).eq('id', currentUser.id);
+  if (!error) Object.assign(profile, updates);
+  return { error };
 }
 
 // Fat/protein per meal aren't tracked anywhere upstream (Nightscout
@@ -3438,35 +3433,48 @@ async function recordMacroMeal(entry, doseResult) {
 
 $('btnDxGoToSettings')?.addEventListener('click', () => navigateTo('settings'));
 
-$('btnSaveNsConfig')?.addEventListener('click', () => {
+$('btnSaveNsConfig')?.addEventListener('click', async () => {
   const btn = $('btnSaveNsConfig');
   const url = $('setNsUrl').value.trim().replace(/\/+$/, '');
   if (url && !/^https:\/\//.test(url)) {
     flash($('nsConfigStatus'), 'URL must start with https://', true);
     return;
   }
-  saveNsConfig({
-    nsUrl:    url || null,
-    nsToken:  $('setNsToken').value.trim() || null,
-    nsSecret: $('setNsSecret').value.trim() || null,
+  setBtn(btn, true, 'Connect', 'Saving…');
+  const { error } = await saveNsProfileFields({
+    diabetes_ns_url:    url || null,
+    diabetes_ns_token:  $('setNsToken').value.trim() || null,
+    diabetes_ns_secret: $('setNsSecret').value.trim() || null,
   });
+  setBtn(btn, false, 'Connect');
+  if (error) {
+    flash($('nsConfigStatus'), 'Error: ' + error.message, true);
+    return;
+  }
   diabetesData = null; // force a re-fetch next time the tab is opened
   flash($('nsConfigStatus'), url ? 'Connected.' : 'Cleared.');
 });
 
-$('btnSaveDiabetesSettings')?.addEventListener('click', () => {
+$('btnSaveDiabetesSettings')?.addEventListener('click', async () => {
+  const btn = $('btnSaveDiabetesSettings');
   const num = (id, fallback) => {
     const v = parseFloat($(id).value);
     return Number.isFinite(v) ? v : fallback;
   };
-  saveNsConfig({
-    targetLow:              num('setTargetLow', 4.5),
-    targetHigh:             num('setTargetHigh', 8.5),
-    idealTarget:            Number.isFinite(parseFloat($('setIdealTarget').value)) ? parseFloat($('setIdealTarget').value) : null,
-    carbRatio:              Number.isFinite(parseFloat($('setCarbRatio').value)) ? parseFloat($('setCarbRatio').value) : null,
-    insulinPeakMinutes:     num('setInsulinPeak', 57),
-    insulinDurationMinutes: num('setInsulinDuration', 240),
+  setBtn(btn, true, 'Save diabetes settings', 'Saving…');
+  const { error } = await saveNsProfileFields({
+    diabetes_target_low:            num('setTargetLow', 4.5),
+    diabetes_target_high:           num('setTargetHigh', 8.5),
+    diabetes_ideal_target:          Number.isFinite(parseFloat($('setIdealTarget').value)) ? parseFloat($('setIdealTarget').value) : null,
+    diabetes_carb_ratio:            Number.isFinite(parseFloat($('setCarbRatio').value)) ? parseFloat($('setCarbRatio').value) : null,
+    diabetes_insulin_peak_min:      num('setInsulinPeak', 57),
+    diabetes_insulin_duration_min:  num('setInsulinDuration', 240),
   });
+  setBtn(btn, false, 'Save diabetes settings');
+  if (error) {
+    flash($('diabetesSettingsStatus'), 'Error: ' + error.message, true);
+    return;
+  }
   diabetesData = null;
   flash($('diabetesSettingsStatus'), 'Saved.');
 });
@@ -3477,16 +3485,15 @@ let diabetesFetchedAt = null;
 const DIABETES_CACHE_MS = 4 * 60000; // avoid re-hitting Nightscout on every tab switch
 
 async function fetchDiabetesData(force = false) {
-  const cfg = loadNsConfig();
-  if (!cfg.nsUrl) return null;
+  if (!profile?.diabetes_ns_url) return null;
 
   if (!force && diabetesData && diabetesFetchedAt && (Date.now() - diabetesFetchedAt) < DIABETES_CACHE_MS) {
     return diabetesData;
   }
 
-  const qs = new URLSearchParams({ url: cfg.nsUrl, days: '14' });
-  if (cfg.nsToken)  qs.set('token', cfg.nsToken);
-  if (cfg.nsSecret) qs.set('secret', cfg.nsSecret);
+  const qs = new URLSearchParams({ url: profile.diabetes_ns_url, days: '14' });
+  if (profile.diabetes_ns_token)  qs.set('token', profile.diabetes_ns_token);
+  if (profile.diabetes_ns_secret) qs.set('secret', profile.diabetes_ns_secret);
 
   const res = await fetch(`/.netlify/functions/diabetes-sync?${qs.toString()}`);
   const body = await res.json();
@@ -3498,21 +3505,19 @@ async function fetchDiabetesData(force = false) {
 }
 
 function dxSettings() {
-  const cfg = loadNsConfig();
   return {
-    targetLow:              cfg.targetLow ?? 4.5,
-    targetHigh:             cfg.targetHigh ?? 8.5,
-    idealTarget:            cfg.idealTarget,
-    carbRatio:              cfg.carbRatio,
-    insulinPeakMinutes:     cfg.insulinPeakMinutes ?? 57,
-    insulinDurationMinutes: cfg.insulinDurationMinutes ?? 240,
+    targetLow:              profile?.diabetes_target_low ?? 4.5,
+    targetHigh:             profile?.diabetes_target_high ?? 8.5,
+    idealTarget:            profile?.diabetes_ideal_target,
+    carbRatio:              profile?.diabetes_carb_ratio,
+    insulinPeakMinutes:     profile?.diabetes_insulin_peak_min ?? 57,
+    insulinDurationMinutes: profile?.diabetes_insulin_duration_min ?? 240,
   };
 }
 
 /* ── View loader ─────────────────────────────────────────── */
 async function loadDiabetes() {
-  const cfg = loadNsConfig();
-  if (!cfg.nsUrl) {
+  if (!profile?.diabetes_ns_url) {
     el.dxNotConnected.hidden = false;
     el.dxConnected.hidden = true;
     return;
