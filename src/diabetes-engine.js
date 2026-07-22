@@ -804,9 +804,22 @@ function patternSensitivityDrift(d) {
 }
 
 // ── 10. Basal timing drift ───────────────────────────────────
+// Meaningful for MDI-style basal (one Lantus/Levemir-type injection a
+// day, where "same time each day" is a real signal) — meaningless for
+// pump basal, which is delivered continuously all day by design and
+// will always show a huge spread of clock-times. Detect that case (a
+// short median gap between consecutive doses) and withhold instead of
+// reporting the pump's own continuous delivery as "drift".
+const BASAL_CONTINUOUS_GAP_MINUTES = 20;
 function patternBasalTimingDrift(d) {
-  const doses = windowFilter(d.basalDoses, 'time', d.windowStart, d.windowEnd);
+  const doses = windowFilter(d.basalDoses, 'time', d.windowStart, d.windowEnd).sort((a, b) => a._ms - b._ms);
   if (doses.length < 4) return null;
+
+  const gaps = [];
+  for (let i = 1; i < doses.length; i++) gaps.push((doses[i]._ms - doses[i - 1]._ms) / 60000);
+  const medianGap = median(gaps);
+  if (medianGap != null && medianGap <= BASAL_CONTINUOUS_GAP_MINUTES) return null;
+
   const times = doses.map(b => minutesSinceMidnight(b._ms));
   const sd = stddev(times);
   if (sd == null) return null;
