@@ -1627,10 +1627,24 @@ function computeWeekStats(glucoseHistory, boluses, corrections, basalDoses, star
   const readings = sortedReadings(glucoseHistory, startMs, endMs);
   const stats = glucoseStats(readings);
   const tir = timeInRange(readings, HYPO_FIXED_MMOL, HYPER_FIXED_MMOL);
-  const bolusUnits = windowFilter(boluses, 'time', startMs, endMs).reduce((s, b) => s + (Number(b.units) || 0), 0);
-  const correctionUnits = windowFilter(corrections, 'time', startMs, endMs).reduce((s, c) => s + (Number(c.units) || 0), 0);
-  const basalUnits = windowFilter(basalDoses, 'time', startMs, endMs).reduce((s, d) => s + (Number(d.units) || 0), 0);
-  const days = Math.max(1, (endMs - startMs) / DAY_MS);
+  const bolusesInWindow = windowFilter(boluses, 'time', startMs, endMs);
+  const correctionsInWindow = windowFilter(corrections, 'time', startMs, endMs);
+  const basalInWindow = windowFilter(basalDoses, 'time', startMs, endMs);
+  const bolusUnits = bolusesInWindow.reduce((s, b) => s + (Number(b.units) || 0), 0);
+  const correctionUnits = correctionsInWindow.reduce((s, c) => s + (Number(c.units) || 0), 0);
+  const basalUnits = basalInWindow.reduce((s, d) => s + (Number(d.units) || 0), 0);
+
+  // Average over how much history is actually here, not the full
+  // requested window — a sync that only just started (or a window that
+  // reaches back before it) would otherwise divide real insulin totals
+  // by mostly-empty days and badly understate daily dose.
+  const earliestOf = arr => arr.reduce((min, x) => (x._ms < min ? x._ms : min), Infinity);
+  const earliestMs = Math.min(
+    readings.length ? readings[0].ms : Infinity,
+    earliestOf(bolusesInWindow), earliestOf(correctionsInWindow), earliestOf(basalInWindow),
+  );
+  const coverageStart = Number.isFinite(earliestMs) ? Math.max(earliestMs, startMs) : startMs;
+  const days = Math.max(1, (endMs - coverageStart) / DAY_MS);
   const tdd = (bolusUnits + correctionUnits + basalUnits) / days;
 
   return {
