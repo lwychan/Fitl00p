@@ -269,6 +269,7 @@ const el = {
   dxHealthBody:      $('dxHealthBody'),
   dxMealMemoryBody:  $('dxMealMemoryBody'),
   dxSensitivityBody: $('dxSensitivityBody'),
+  dxRegimenBody:     $('dxRegimenBody'),
   dxLastSync:        $('dxLastSync'),
   // global
   toast:         $('toast'),
@@ -3594,6 +3595,9 @@ function renderDiabetesTab(data) {
   const sensitivity = DiabetesEngine.sensitivityMap(input, now);
   renderDxSensitivity(sensitivity);
 
+  const regimen = DiabetesEngine.regimenReview(input, now);
+  renderDxRegimen(regimen);
+
   el.dxLastSync.textContent = `Last synced ${new Date(diabetesFetchedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
 }
 
@@ -3827,6 +3831,39 @@ function renderDxSensitivity(cells) {
       </table>
     </div>
   `;
+}
+
+function renderDxRegimen(regimen) {
+  const activeBasal = (regimen.basalByWindow || []).filter(w => !w.withheldReason);
+  const ratio = regimen.carbRatio;
+  const hasRatio = ratio && !ratio.withheldReason;
+
+  if (!activeBasal.length && !hasRatio) {
+    el.dxRegimenBody.innerHTML = '<p class="empty-state">Not enough clean data yet this week to review your basal or carb ratio.</p>';
+    return;
+  }
+
+  const basalRows = activeBasal.map(w => `
+    <div class="dx-insight">
+      <div class="dx-insight__head">
+        <span class="badge badge--orange">${w.direction === 'increase' ? 'Consider more basal' : 'Consider less basal'}</span>
+        <span class="dx-insight__n">n=${w.n}</span>
+      </div>
+      <div class="dx-insight__title">${escapeHtml(w.timeOfDay)}: ${fmtSigned(w.suggestedPctChange, 0)}%${w.cappedAtLimit ? ' (capped)' : ''}</div>
+      <div class="dx-insight__summary">Drifted ${fmtSigned(w.avgDrift, 1)} mmol/L over ${w.n} clean ${w.n === 1 ? 'instance' : 'instances'} with no insulin or carbs active.</div>
+    </div>`).join('');
+
+  const ratioRow = hasRatio ? `
+    <div class="dx-insight">
+      <div class="dx-insight__head">
+        <span class="badge badge--orange">${ratio.direction === 'tighten' ? 'Consider tightening' : 'Consider loosening'}</span>
+        <span class="dx-insight__n">n=${ratio.n}</span>
+      </div>
+      <div class="dx-insight__title">Carb ratio: ${fmt1(ratio.currentRatio)} → ${fmt1(ratio.suggestedRatio)} g/u${ratio.cappedAtLimit ? ' (capped)' : ''}</div>
+      <div class="dx-insight__summary">Meals have ${ratio.direction === 'tighten' ? 'run high' : 'gone low'} ${ratio.n} time${ratio.n === 1 ? '' : 's'} this week at the current ratio.</div>
+    </div>` : '';
+
+  el.dxRegimenBody.innerHTML = basalRows + ratioRow;
 }
 
 /* ═══════════════════════════════════════════════════════════

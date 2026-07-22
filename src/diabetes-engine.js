@@ -1712,6 +1712,171 @@ function sensitivityMap(input, now = Date.now()) {
   return cells;
 }
 
+/* ═══════════════════════════════════════════════════════════
+   STAGE 6 — Regimen review (basal-by-window / carb-ratio)
+   Retrospective, standing-setting suggestions — a different animal
+   from the tactical one-off correction/meal doses above. A bad basal
+   or carb-ratio suggestion affects every hour or every meal until
+   it's changed back, so this uses a tighter cap, a higher
+   sample-size floor, and a same-direction-consistency check on top
+   of average magnitude (a strong average pulled by one outlier is
+   exactly the kind of fake precision this file avoids everywhere
+   else). Always framed as worth reviewing with your diabetes team —
+   this computes a number, but it is NOT a standing instruction.
+   ═══════════════════════════════════════════════════════════ */
+const REGIMEN_LOOKBACK_DAYS            = 7;
+const REGIMEN_MIN_CLEAN_SAMPLES        = 4;   // per window/ratio check — higher bar than tactical doses (3)
+const REGIMEN_CLEAN_IOB_MAX            = 0.3; // units — below this counts as "no meaningful insulin activity"
+const REGIMEN_MIN_COVERAGE_PCT         = 0.8; // fraction of a window's readings that must be present to trust it
+const REGIMEN_MAX_PCT_CHANGE           = 15;  // hard cap on any suggested basal-rate or carb-ratio change
+const REGIMEN_MIN_DIRECTION_CONSISTENCY = 0.7; // >=70% of clean instances must agree on direction
+const REGIMEN_MIN_DRIFT_MMOL           = 1.0; // average drift below this isn't worth flagging at all
+const REGIMEN_MIN_OUTCOME_BIAS         = 0.3; // average meal outcome bias below this isn't worth flagging
+
+// Per time-of-day bucket: find "clean" windows in the trailing week
+// where no bolus/correction insulin and no carbs were active anywhere
+// across the whole window, then see whether glucose drifted anyway —
+// drift with nothing else going on is the classic basal-too-low
+// (drifted up) / basal-too-high (drifted down) signal.
+function basalWindowReview(input, now = Date.now()) {
+  const { glucoseHistory = [], boluses = [], corrections = [], basalDoses = [], settings = {} } = input || {};
+  const nowMs = toMs(now);
+  const windowStart = nowMs - REGIMEN_LOOKBACK_DAYS * DAY_MS;
+  const readings = sortedReadings(glucoseHistory, windowStart, nowMs);
+  const curveOpts = insulinCurveOpts(settings);
+
+  const resolvedCorrections = resolveCorrections(corrections, glucoseHistory, boluses, now);
+  const factorResult = personalCorrectionFactor(resolvedCorrections);
+
+  return SENSITIVITY_TOD_BUCKETS.map(bucket => {
+    const windowHours = bucket.to - bucket.from;
+    const instances = [];
+
+    for (let dayStart = windowStart; dayStart < nowMs; dayStart += DAY_MS) {
+      const wStart = dayStart + bucket.from * 3600000;
+      const wEnd = dayStart + bucket.to * 3600000;
+      if (wEnd > nowMs) continue;
+
+      const windowReadings = readings.filter(r => r.ms >= wStart && r.ms <= wEnd);
+      const expectedCount = (windowHours * 60) / 5; // ~5min CGM cadence
+      if (windowReadings.length < expectedCount * REGIMEN_MIN_COVERAGE_PCT) continue;
+
+      let clean = true;
+      for (let t = wStart; t <= wEnd; t += 30 * 60000) {
+        if (activeInsulin(boluses, corrections, t, curveOpts) > REGIMEN_CLEAN_IOB_MAX || carbsOnBoard(boluses, t) > 0) {
+          clean = false;
+          break;
+        }
+      }
+      if (!clean) continue;
+
+      const quarter = Math.max(1, Math.round(windowReadings.length * 0.25));
+      const drift = mean(windowReadings.slice(-quarter).map(r => r.value)) - mean(windowReadings.slice(0, quarter).map(r => r.value));
+      const basalUnitsInWindow = windowFilter(basalDoses, 'time', wStart, wEnd).reduce((s, dd) => s + (Number(dd.units) || 0), 0);
+      instances.push({ drift, basalRate: basalUnitsInWindow / windowHours });
+    }
+
+    if (instances.length < REGIMEN_MIN_CLEAN_SAMPLES) {
+      return { timeOfDay: bucket.label, n: instances.length, withheldReason: 'insufficient-clean-windows' };
+    }
+
+    const avgDrift = mean(instances.map(i => i.drift));
+    const avgBasalRate = mean(instances.map(i => i.basalRate));
+    const upCount = instances.filter(i => i.drift > 0.3).length;
+    const downCount = instances.filter(i => i.drift < -0.3).length;
+    const consistency = Math.max(upCount, downCount) / instances.length;
+
+    if (Math.abs(avgDrift) < REGIMEN_MIN_DRIFT_MMOL || consistency < REGIMEN_MIN_DIRECTION_CONSISTENCY) {
+      return { timeOfDay: bucket.label, n: instances.length, avgDrift, withheldReason: 'no-consistent-signal' };
+    }
+    if (!factorResult.sufficient || factorResult.factor < MIN_RELIABLE_FACTOR) {
+      return { timeOfDay: bucket.label, n: instances.length, avgDrift, withheldReason: 'low-confidence-factor' };
+    }
+    if (!avgBasalRate) {
+      return { timeOfDay: bucket.label, n: instances.length, avgDrift, withheldReason: 'no-basal-data' };
+    }
+
+    // Extra units/hour that would have held it flat, as a %-of-current-rate change.
+    const extraUnitsPerHour = (avgDrift / factorResult.factor) / windowHours;
+    const rawPctChange = (extraUnitsPerHour / avgBasalRate) * 100;
+    const suggestedPctChange = clamp(rawPctChange, -REGIMEN_MAX_PCT_CHANGE, REGIMEN_MAX_PCT_CHANGE);
+
+    return {
+      timeOfDay: bucket.label, n: instances.length, avgDrift, avgBasalRate,
+      suggestedPctChange, direction: suggestedPctChange > 0 ? 'increase' : 'decrease',
+      cappedAtLimit: Math.abs(rawPctChange) > REGIMEN_MAX_PCT_CHANGE,
+      withheldReason: null,
+    };
+  });
+}
+
+// Whole-week carb-ratio check: did meals dosed with the current ratio
+// consistently run high (ratio too loose) or low (too tight)? Excludes
+// meals near exercise, same as the meal-dose/pattern checks elsewhere.
+function carbRatioReview(input, now = Date.now()) {
+  const { glucoseHistory = [], boluses = [], activities = {}, settings = {} } = input || {};
+  const nowMs = toMs(now);
+  const windowStart = nowMs - REGIMEN_LOOKBACK_DAYS * DAY_MS;
+  const readings = sortedReadings(glucoseHistory, -Infinity, nowMs);
+  const low = Number(settings.targetLow) || 4.5;
+  const high = Number(settings.targetHigh) || 8.5;
+  const carbRatio = Number(settings.carbRatio);
+
+  const workouts = activities.workouts || [];
+  const isNearExercise = ms => workouts.some(w => {
+    const endMs = toMs(w.endTime) ?? toMs(w.startTime);
+    return endMs != null && ms >= endMs && ms <= endMs + 8 * 3600000;
+  });
+
+  const meals = (boluses || [])
+    .filter(b => Number(b.carbs) > 0 && Number(b.units) > 0)
+    .map(b => ({ ...b, _ms: toMs(b.time) }))
+    .filter(b => b._ms != null && b._ms >= windowStart && b._ms <= nowMs && !isNearExercise(b._ms));
+
+  if (!carbRatio) return { n: meals.length, withheldReason: 'missing-carb-ratio' };
+
+  const outcomes = meals.map(m => {
+    const window = readings.filter(r => r.ms >= m._ms && r.ms <= m._ms + 4 * 3600000);
+    if (!window.length) return null;
+    if (window.some(r => r.value < low)) return -1;
+    if (Math.max(...window.map(r => r.value)) > high) return 1;
+    return 0;
+  }).filter(b => b != null);
+
+  if (outcomes.length < REGIMEN_MIN_CLEAN_SAMPLES) {
+    return { n: outcomes.length, withheldReason: 'insufficient-meals' };
+  }
+
+  const highCount = outcomes.filter(b => b === 1).length;
+  const lowCount = outcomes.filter(b => b === -1).length;
+  const consistency = Math.max(highCount, lowCount) / outcomes.length;
+  const avgBias = mean(outcomes);
+
+  if (consistency < REGIMEN_MIN_DIRECTION_CONSISTENCY || Math.abs(avgBias) < REGIMEN_MIN_OUTCOME_BIAS) {
+    return { n: outcomes.length, currentRatio: carbRatio, withheldReason: 'no-consistent-signal' };
+  }
+
+  // Ran high consistently -> ratio too loose -> tighten (decrease grams/unit).
+  // Ran low consistently -> ratio too tight -> loosen (increase grams/unit).
+  const rawPctChange = clamp(-avgBias * 20, -100, 100);
+  const suggestedPctChange = clamp(rawPctChange, -REGIMEN_MAX_PCT_CHANGE, REGIMEN_MAX_PCT_CHANGE);
+  const suggestedRatio = Math.round(carbRatio * (1 + suggestedPctChange / 100) * 2) / 2;
+
+  return {
+    n: outcomes.length, currentRatio: carbRatio, suggestedRatio,
+    suggestedPctChange, direction: suggestedPctChange < 0 ? 'tighten' : 'loosen',
+    cappedAtLimit: Math.abs(rawPctChange) > REGIMEN_MAX_PCT_CHANGE,
+    withheldReason: null,
+  };
+}
+
+function regimenReview(input, now = Date.now()) {
+  return {
+    basalByWindow: basalWindowReview(input, now),
+    carbRatio: carbRatioReview(input, now),
+  };
+}
+
 const DiabetesEngine = {
   // constants
   IOB_PEAK_MINUTES,
@@ -1765,6 +1930,11 @@ const DiabetesEngine = {
   SPLIT_DOSE_FAT_HIGH_G,
   SPLIT_DOSE_HIGH_PROTEIN_G,
   MACRO_HISTORY_MIN_SAMPLE,
+  // Stage 6 API
+  basalWindowReview,
+  carbRatioReview,
+  regimenReview,
+  REGIMEN_MAX_PCT_CHANGE,
 };
 
 // Dual environment: CommonJS (Node/Netlify functions) or a plain <script>
