@@ -674,12 +674,13 @@ el.dLogTodayBtn?.addEventListener('click', () => {
 /* ═══════════════════════════════════════════════════════════
    PROFILE
 ═══════════════════════════════════════════════════════════ */
-async function loadProfile() {
+async function loadProfile(signal) {
   if (!currentUser) return false;
   const { data, error } = await db
     .from('profiles')
     .select('*')
     .eq('id', currentUser.id)
+    .abortSignal(signal)
     .single();
 
   if (error) {
@@ -696,29 +697,43 @@ async function loadProfile() {
     .eq('is_active', true)
     .order('created_at', { ascending: false })
     .limit(1)
+    .abortSignal(signal)
     .maybeSingle();
 
   activePlan = plan;
   return true;
 }
 
-function withTimeout(promise, ms, label) {
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
-  });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
-}
+// Bounds loadProfile so a slow-or-hung network call can be retried
+// instead of wedging the login flow forever (see the authHandling
+// comment in the auth-state-change handler for what that looks like
+// without this) — but genuinely aborts the underlying request when the
+// timer fires (via AbortController, not just walking away from it),
+// rather than leaving it to keep consuming bandwidth in the background
+// on an already-slow connection while a fresh retry piles on top of it.
+//
+// 15s, not 8s: seen in practice on a slow connection, a response that
+// eventually succeeds can take close to 8s to come back — an 8s bound
+// was killing genuinely-in-progress requests right before they would
+// have completed on their own, right when a slow network needs patience
+// most, not less of it.
+const LOAD_PROFILE_TIMEOUT_MS = 15000;
 
-// Bounds loadProfile so a hung network call can be retried instead of
-// wedging the login flow forever (see the authHandling comment in the
-// auth-state-change handler for what that looks like without this).
 async function loadProfileWithTimeout() {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), LOAD_PROFILE_TIMEOUT_MS);
   try {
-    return await withTimeout(loadProfile(), 8000, 'loadProfile');
+    return await loadProfile(controller.signal);
   } catch (err) {
-    console.error('loadProfile attempt failed:', err?.message || err);
+    const timedOut = err?.name === 'AbortError' || /abort/i.test(err?.message || '');
+    console.error(
+      timedOut
+        ? `loadProfile timed out after ${LOAD_PROFILE_TIMEOUT_MS}ms — aborted`
+        : `loadProfile attempt failed: ${err?.message || err}`
+    );
     return false;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
