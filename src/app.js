@@ -387,6 +387,7 @@ function resetAuthForms() {
   el.suEmail.value    = '';
   el.suPassword.value = '';
   el.suName.value     = '';
+  setBtn(el.btnSignin, false, 'Sign in');
   el.msgSignin.textContent = '';
   el.msgSignup.textContent = '';
   el.msgSignin.classList.remove('is-ok');
@@ -419,6 +420,17 @@ function initApp() {
   // Sign in
   el.formSignin.addEventListener('submit', async e => {
     e.preventDefault();
+    // Auth itself typically resolves in well under a second, but the
+    // profile load that follows (inside onAuthStateChange) can take up
+    // to ~45s across its retries on a slow connection. If we reset the
+    // button here as soon as auth resolves, it flips back to "Sign in"
+    // long before the screen actually transitions — looking like nothing
+    // happened — which invites repeated taps that just fire duplicate
+    // password grants (seen in practice: 10 successful /token requests
+    // in 15s from a single login). So the button stays locked through
+    // the whole flow; onAuthStateChange resets it on failure, and success
+    // navigates away from this screen entirely.
+    if (authHandling) return;
     setBtn(el.btnSignin, true, 'Sign in', 'Signing in…');
     el.msgSignin.textContent = '';
 
@@ -427,15 +439,15 @@ function initApp() {
 
     const { error } = await db.auth.signInWithPassword({ email, password });
 
-    setBtn(el.btnSignin, false, 'Sign in');
     if (error) {
+      setBtn(el.btnSignin, false, 'Sign in');
       el.msgSignin.textContent = error.message;
       el.msgSignin.classList.remove('is-ok');
       return;
     }
 
     // Login succeeded. onAuthStateChange fires SIGNED_IN and handles the
-    // screen transition via its own existing logic — nothing further needed here.
+    // screen transition (and button reset on failure) via its own logic.
   });
 
   // Sign up
@@ -512,7 +524,11 @@ function initApp() {
       try {
         // Load profile — up to 3 attempts with short delays
         await loadProfileWithTimeout();
-        if (!profile) { await new Promise(r => setTimeout(r, 500)); await loadProfileWithTimeout(); }
+        if (!profile) {
+          if (el.msgSignin) el.msgSignin.textContent = 'Still connecting…';
+          await new Promise(r => setTimeout(r, 500));
+          await loadProfileWithTimeout();
+        }
         if (!profile) { await new Promise(r => setTimeout(r, 500)); await loadProfileWithTimeout(); }
       } finally {
         authHandling = false;
@@ -524,6 +540,7 @@ function initApp() {
       if (!profile) {
         console.error('Profile failed to load — session valid, showing retry');
         showScreen('auth');
+        setBtn(el.btnSignin, false, 'Sign in');
         if (el.msgSignin) {
           el.msgSignin.textContent = 'Profile failed to load. Tap "Sign in" to try again.';
           el.msgSignin.classList.remove('is-ok');
