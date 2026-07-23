@@ -1879,11 +1879,19 @@ async function loadRoutines() {
     return;
   }
 
-  // If prefer_full_body, only show full_body_day routines; else show PPL (null full_body_day)
+  // full_body_day isn't a "is this a full-body routine" flag — it's only
+  // set on the subset of Full Body templates that belong to a numbered
+  // 4-day rotation (e.g. "Gym Full Body — Day 2"); standalone ones like
+  // "Full Body A" have it null, same as every Push/Pull/Legs template.
+  // Filtering on it (as this used to) meant most real Full Body routines
+  // got excluded even with prefer_full_body on, the empty-result fallback
+  // below then showed the *unfiltered* full list — Push/Pull/Legs and
+  // all — which is exactly the "full body selected but shows PPL" bug.
+  // split_type is unambiguous and always correctly set; filter on that.
   const preferFB = profile?.prefer_full_body;
   const filtered = preferFB
-    ? data.filter(r => r.full_body_day !== null)
-    : data.filter(r => r.full_body_day === null);
+    ? data.filter(r => r.split_type === 'Full Body')
+    : data.filter(r => r.split_type !== 'Full Body');
 
   const routines = filtered.length ? filtered : data;
 
