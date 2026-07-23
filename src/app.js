@@ -6066,13 +6066,17 @@ showScreen('auth');
     // Supabase's JS client stores the current session as JSON under a
     // predictable key: sb-<project-ref>-auth-token. If a previous write to
     // this key was interrupted (e.g. the app crashed or the tab closed
-    // mid-refresh — both of which have happened during development), the
-    // stored value can end up malformed. A malformed value can leave the
-    // client stuck: it can't use the broken session, but a fresh sign-in
-    // may not cleanly overwrite it either, producing exactly the symptom
-    // of "won't log in until I manually clear Safari's cache." Checking
-    // and clearing it here means the app self-heals instead of requiring
-    // that manual step every time.
+    // mid-refresh), the stored value can end up truly malformed — not
+    // valid JSON, or missing the tokens outright. That's the only case
+    // handled here: an access token merely being *old* is normal (it
+    // expires hourly by design) and is NOT a reason to clear anything —
+    // that's exactly what refresh_token + autoRefreshToken are for, and
+    // they need the stored session intact to do it. An earlier version of
+    // this check also wiped the session whenever the access token looked
+    // expired, which silently deleted a perfectly good refresh_token any
+    // time the app was reopened more than ~an hour after last use —
+    // forcing a fresh password login constantly instead of the silent
+    // renewal this was supposed to enable. Removed.
     try {
       const projectRef = new URL(cfg.url).hostname.split('.')[0];
       const authStorageKey = `sb-${projectRef}-auth-token`;
@@ -6083,31 +6087,11 @@ showScreen('auth');
           if (!parsed?.access_token || !parsed?.refresh_token) {
             console.warn('Stored session missing required fields — clearing.');
             localStorage.removeItem(authStorageKey);
-          } else {
-            // Structurally valid — but check whether it's actually still
-            // usable. A stale/expired-but-well-formed token could pass the
-            // check above while still being the reason every fresh client
-            // instance hangs identically, since the client may try to use
-            // it internally before a new sign-in call ever gets a chance
-            // to run cleanly.
-            const expiresAt = parsed.expires_at; // unix seconds, per Supabase's stored format
-            const nowSec = Math.floor(Date.now() / 1000);
-            const isExpired = expiresAt != null && expiresAt < nowSec;
-            console.warn(
-              `Stored session found — expires_at: ${expiresAt} (${expiresAt ? new Date(expiresAt * 1000).toISOString() : 'none'}), ` +
-              `now: ${nowSec} (${new Date().toISOString()}), expired: ${isExpired}`
-            );
-            if (isExpired) {
-              console.warn('Stored session is expired — clearing so a fresh sign-in is not blocked by it.');
-              localStorage.removeItem(authStorageKey);
-            }
           }
         } catch {
           console.warn('Stored session is not valid JSON — clearing.');
           localStorage.removeItem(authStorageKey);
         }
-      } else {
-        console.warn('No stored session found under key: ' + authStorageKey);
       }
     } catch (storageCheckErr) {
       // If this check itself fails for any reason, don't let that block
