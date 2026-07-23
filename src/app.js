@@ -3900,7 +3900,13 @@ function renderMfpImportSettings() {
   if (el.mfpHasToken) el.mfpHasToken.hidden = !token;
   if (token && el.mfpBookmarklet) {
     dxMfpBookmarkletRaw = buildMfpBookmarklet(token);
-    el.mfpBookmarklet.href = dxMfpBookmarkletRaw;
+    // setAttribute, not .href = ... — assigning through the IDL href
+    // property runs the string through the URL parser immediately (not
+    // just when read back later), and because the script contains "?"
+    // ternaries, that parse percent-encodes everything after the first
+    // one — corrupting the *stored* attribute at set-time, not just on
+    // a later read. setAttribute stores the raw string untouched.
+    el.mfpBookmarklet.setAttribute('href', dxMfpBookmarkletRaw);
     dxMfpShortcutScriptRaw = buildMfpShortcutScript(token);
   }
 }
