@@ -1605,6 +1605,7 @@ input[type="checkbox"].import-check {
 /* ── SCORE GAUGE CAROUSEL ────────────────────────────────── */
 .card--scores { grid-column: span 1; }
 
+.score-carousel[hidden] { display: none; }
 .score-carousel {
   display: flex;
   gap: 4px;
@@ -1660,6 +1661,7 @@ input[type="checkbox"].import-check {
 }
 .score-gauge__icon { font-size: 12px; }
 
+.score-detail[hidden] { display: none; }
 .score-detail {
   position: relative;
   margin-top: 8px;
