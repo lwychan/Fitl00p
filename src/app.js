@@ -522,14 +522,20 @@ function initApp() {
       currentUser = session.user;
 
       try {
-        // Load profile — up to 3 attempts with short delays
-        await loadProfileWithTimeout();
-        if (!profile) {
-          if (el.msgSignin) el.msgSignin.textContent = 'Still connecting…';
-          await new Promise(r => setTimeout(r, 500));
+        // Returning device: render from the last-known-good profile
+        // instantly and refresh it quietly in the background — never
+        // block getting into the app on a network call that's already
+        // proven unreliable on this connection. Only a brand-new device
+        // (nothing cached yet) has to actually wait on the network.
+        const cached = readCachedProfile(session.user.id);
+        if (cached) {
+          profile = cached.profile;
+          activePlan = cached.activePlan;
+          loadProfileWithTimeout().catch(() => {}); // best-effort refresh, not awaited
+        } else {
+          if (el.msgSignin) el.msgSignin.textContent = 'Connecting…';
           await loadProfileWithTimeout();
         }
-        if (!profile) { await new Promise(r => setTimeout(r, 500)); await loadProfileWithTimeout(); }
       } finally {
         authHandling = false;
       }
@@ -542,7 +548,7 @@ function initApp() {
         showScreen('auth');
         setBtn(el.btnSignin, false, 'Sign in');
         if (el.msgSignin) {
-          el.msgSignin.textContent = 'Profile failed to load. Tap "Sign in" to try again.';
+          el.msgSignin.textContent = 'Could not connect. Check your connection and tap "Sign in" to try again.';
           el.msgSignin.classList.remove('is-ok');
         }
         return;
@@ -691,6 +697,36 @@ el.dLogTodayBtn?.addEventListener('click', () => {
 /* ═══════════════════════════════════════════════════════════
    PROFILE
 ═══════════════════════════════════════════════════════════ */
+// Local cache of the last-successfully-loaded profile/plan, keyed by user
+// id. The whole point: this app effectively has one user, on one phone,
+// signing in over and over on the same network — there's no reason a
+// slow or dropped request to /rest/v1/profiles should ever be able to
+// block getting back into the app. First login on a device still needs
+// the network; every login after that reads instantly from here while
+// a fresh copy is fetched quietly in the background.
+const PROFILE_CACHE_KEY = 'fitl00p:profileCache';
+
+function readCachedProfile(userId) {
+  try {
+    const raw = localStorage.getItem(PROFILE_CACHE_KEY);
+    if (!raw) return null;
+    const cache = JSON.parse(raw);
+    return cache && cache.userId === userId ? cache : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedProfile(userId, profileData, planData) {
+  try {
+    localStorage.setItem(PROFILE_CACHE_KEY, JSON.stringify({
+      userId, profile: profileData, activePlan: planData,
+    }));
+  } catch {
+    // localStorage full/unavailable — cache is a convenience, not required
+  }
+}
+
 async function loadProfile(signal) {
   if (!currentUser) return false;
   const { data, error } = await db
@@ -718,6 +754,7 @@ async function loadProfile(signal) {
     .maybeSingle();
 
   activePlan = plan;
+  writeCachedProfile(currentUser.id, profile, activePlan);
   return true;
 }
 
