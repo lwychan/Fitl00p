@@ -1397,6 +1397,7 @@ const MEAL_MEMORY_MIN_OCCURRENCES = 2;
 const MEAL_PEAK_WINDOW_HOURS      = 4;
 const MEAL_LOW_RISK_WINDOW_HOURS  = 4;
 const MEAL_DOSE_RECENCY_HALFLIFE_DAYS = 30;
+const MEAL_DOSE_RATING_WINDOW_HOURS   = 6;
 const MEAL_DOSE_MIN_SAMPLES       = 3;
 const HEALTH_CHECK_WINDOW_DAYS    = 7;
 
@@ -1405,9 +1406,21 @@ const HEALTH_CHECK_WINDOW_DAYS    = 7;
    (e.g. from a pump with no food-name data, see nightscout-adapter.js)
    are excluded rather than lumped together as if they were the same
    recurring meal. Needs >=2 occurrences of the same name to say
-   anything at all. */
+   anything at all.
+
+   Two sources feed this, merged by name: Nightscout boluses that
+   happen to carry a food name (Loop/AndroidAPS-style uploaders), and
+   macroMealLog — diabetes_meals, which is the ONLY source with a name
+   for pumps like Tandem that don't report one at all (see
+   nightscout-adapter.js). macroMealLog also carries a dose figure
+   (the confirmed actual bolus once linked, else the suggestion the
+   entry was recorded with), which the bolus-only path never has —
+   that's what makes the per-dose rating below possible, and it's the
+   same recency-weighted signal macroMealOutcomeBias already nudges
+   suggestMacroMealDose with (see there), surfaced here per-instance
+   so that nudge is explainable rather than a black box. */
 function mealMemory(input, now = Date.now()) {
-  const { glucoseHistory = [], boluses = [], settings = {} } = input || {};
+  const { glucoseHistory = [], boluses = [], macroMealLog = [], settings = {} } = input || {};
   const nowMs = toMs(now);
   const readings = sortedReadings(glucoseHistory, -Infinity, nowMs);
   const low = Number(settings.targetLow) || 4.5;
@@ -1444,19 +1457,64 @@ function mealMemory(input, now = Date.now()) {
   });
   const delayedRiseNames = new Set((delayedRiseResult?.flagged || []).map(f => f.mealName).filter(Boolean));
 
-  return Object.entries(byName)
-    .filter(([, occ]) => occ.length >= MEAL_MEMORY_MIN_OCCURRENCES)
-    .map(([mealName, occ]) => ({
+  // Dose ratings from macroMealLog — independent of the bolus-name path
+  // above, so a meal only ever logged via the macro flow (the normal
+  // case for Tandem) still shows up. Rates each instance 'good' / 'high'
+  // / 'low' against the 6h window following the meal, same threshold
+  // logic macroMealOutcomeBias uses for the live nudge.
+  const doseByName = {};
+  const dosedMeals = (macroMealLog || [])
+    .filter(m => m.mealName && toMs(m.time) <= nowMs && m.actualDose != null);
+  for (const m of dosedMeals) {
+    const ms = toMs(m.time);
+    const window = readings.filter(r => r.ms >= ms && r.ms <= ms + MEAL_DOSE_RATING_WINDOW_HOURS * 3600000);
+    if (window.length < 2) continue;
+
+    const minV = Math.min(...window.map(r => r.value));
+    const maxV = Math.max(...window.map(r => r.value));
+    let outcome = 'good';
+    if (minV < low) outcome = 'low';
+    else if (maxV > high) outcome = 'high';
+
+    if (!doseByName[m.mealName]) doseByName[m.mealName] = [];
+    doseByName[m.mealName].push({ time: ms, dose: m.actualDose, outcome });
+  }
+  const doseStatsByName = {};
+  for (const [mealName, occ] of Object.entries(doseByName)) {
+    if (occ.length < MEAL_MEMORY_MIN_OCCURRENCES) continue;
+    const sorted = [...occ].sort((a, b) => b.time - a.time);
+    const counts = { good: 0, high: 0, low: 0 };
+    occ.forEach(o => counts[o.outcome]++);
+    doseStatsByName[mealName] = {
+      doseN: occ.length,
+      avgDoseUsed: mean(occ.map(o => o.dose)),
+      doseRatingCounts: counts,
+      lastDose: { units: sorted[0].dose, outcome: sorted[0].outcome },
+    };
+  }
+
+  const mealNames = new Set([...Object.keys(byName), ...Object.keys(doseStatsByName)]);
+  const results = [];
+  for (const mealName of mealNames) {
+    const occ = byName[mealName];
+    const occQualifies = occ && occ.length >= MEAL_MEMORY_MIN_OCCURRENCES;
+    const doseStats = doseStatsByName[mealName]; // already >= MEAL_MEMORY_MIN_OCCURRENCES if present
+    if (!occQualifies && !doseStats) continue;
+
+    results.push({
       mealName,
-      n: occ.length,
-      avgPeak: mean(occ.map(o => o.peak)),
-      avgRise: mean(occ.map(o => o.rise)),
-      avgTimeToPeakMin: mean(occ.map(o => o.timeToPeakMin)),
-      avgReturnToRangeMin: mean(occ.filter(o => o.returnToRangeMin != null).map(o => o.returnToRangeMin)),
-      lowRiskPct: (occ.filter(o => o.wentLow).length / occ.length) * 100,
+      n: occQualifies ? occ.length : null,
+      avgPeak: occQualifies ? mean(occ.map(o => o.peak)) : null,
+      avgRise: occQualifies ? mean(occ.map(o => o.rise)) : null,
+      avgTimeToPeakMin: occQualifies ? mean(occ.map(o => o.timeToPeakMin)) : null,
+      avgReturnToRangeMin: occQualifies ? mean(occ.filter(o => o.returnToRangeMin != null).map(o => o.returnToRangeMin)) : null,
+      lowRiskPct: occQualifies ? (occ.filter(o => o.wentLow).length / occ.length) * 100 : null,
       isDelayedRise: delayedRiseNames.has(mealName),
-    }))
-    .sort((a, b) => b.n - a.n);
+      ...(doseStats || {}),
+    });
+  }
+
+  return results.sort((a, b) => (b.n || b.doseN || 0) - (a.n || a.doseN || 0));
 }
 
 /* ── Meal-dose suggestion ────────────────────────────────────

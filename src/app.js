@@ -3409,7 +3409,7 @@ async function fetchMacroMealLog() {
   if (!currentUser) return [];
   const { data, error } = await db
     .from('diabetes_meals')
-    .select('eaten_at, meal_name, carbs_g, fat_g, protein_g')
+    .select('eaten_at, meal_name, carbs_g, fat_g, protein_g, suggested_units, matched_bolus_units, match_status')
     .eq('user_id', currentUser.id)
     .order('eaten_at', { ascending: false })
     .limit(200);
@@ -3423,6 +3423,12 @@ async function fetchMacroMealLog() {
     carbs: Number(r.carbs_g),
     fat: Number(r.fat_g),
     protein: Number(r.protein_g),
+    // The confirmed real dose once linked to a Nightscout bolus, else
+    // the suggestion it was recorded with — manual entries assume the
+    // suggestion was followed (recordMacroMeal), MFP 'suggested' rows
+    // with no link yet stay unrated until confirmed.
+    actualDose: r.matched_bolus_units != null ? Number(r.matched_bolus_units)
+      : (r.match_status == null && r.suggested_units != null ? Number(r.suggested_units) : null),
   }));
 }
 
@@ -3987,7 +3993,8 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now) {
 
 async function renderDiabetesTab(data) {
   const settings = dxSettings();
-  const input = { ...data, settings, activities: { workouts: [] } };
+  const macroMealLog = await fetchMacroMealLog();
+  const input = { ...data, settings, activities: { workouts: [] }, macroMealLog };
   const now = Date.now();
 
   drawDxGlucoseChart(el.dxGlucoseChart, el.dxGlucoseChartEmpty, data, settings, now);
@@ -4312,26 +4319,37 @@ function renderDxMealMemory(meals) {
     el.dxMealMemoryBody.innerHTML = '<p class="empty-state">Log meals with a name and carb count to build this up.</p>';
     return;
   }
-  el.dxMealMemoryBody.innerHTML = `
-    <div class="table-wrap">
-      <table class="data-table">
-        <thead><tr><th>Meal</th><th>n</th><th>Avg rise</th><th>To peak</th></tr></thead>
-        <tbody>
-          ${meals.map(m => `
-            <tr>
-              <td>
-                ${escapeHtml(m.mealName)}
-                ${m.isDelayedRise ? ' <span class="badge badge--purple" style="font-size:9px">delayed rise</span>' : ''}
-                ${m.lowRiskPct > 0 ? `<div style="font-size:10px;color:var(--orange);margin-top:2px">${Math.round(m.lowRiskPct)}% went low after</div>` : ''}
-              </td>
-              <td>${m.n}</td>
-              <td>${fmtSigned(m.avgRise, 1)}</td>
-              <td>${Math.round(m.avgTimeToPeakMin)}m</td>
-            </tr>`).join('')}
-        </tbody>
-      </table>
-    </div>
-  `;
+  const outcomeLabel = { good: 'stayed in range', high: 'ran high', low: 'ran low' };
+  el.dxMealMemoryBody.innerHTML = meals.map(m => {
+    const statLines = [];
+    if (m.n != null) {
+      statLines.push(`${m.n} logged · avg rise ${fmtSigned(m.avgRise, 1)} mmol/L over ${Math.round(m.avgTimeToPeakMin)}m to peak`);
+      if (m.lowRiskPct > 0) statLines.push(`<span style="color:var(--orange)">${Math.round(m.lowRiskPct)}% went low after</span>`);
+    }
+    let doseHtml = '';
+    if (m.doseN != null) {
+      const c = m.doseRatingCounts;
+      doseHtml = `
+        <div style="margin-top:${statLines.length ? 8 : 4}px">
+          <span class="field-hint">Dosed ${m.doseN} time${m.doseN === 1 ? '' : 's'}, avg ${fmt1(m.avgDoseUsed)}u</span>
+          <div style="display:flex;gap:6px;margin-top:4px;flex-wrap:wrap">
+            ${c.good ? `<span class="badge badge--green">${c.good} good</span>` : ''}
+            ${c.high ? `<span class="badge badge--orange">${c.high} ran high</span>` : ''}
+            ${c.low ? `<span class="badge badge--blue">${c.low} ran low</span>` : ''}
+          </div>
+          <div class="field-hint" style="margin-top:4px">Last dose: ${fmt1(m.lastDose.units)}u — ${outcomeLabel[m.lastDose.outcome]}</div>
+        </div>`;
+    }
+    return `
+      <div class="dx-mfp-item">
+        <div class="dx-mfp-item__head">
+          <strong>${escapeHtml(m.mealName)}</strong>
+          ${m.isDelayedRise ? '<span class="badge badge--purple" style="font-size:9px">delayed rise</span>' : ''}
+        </div>
+        ${statLines.length ? `<div class="field-hint" style="margin-top:4px">${statLines.join('<br>')}</div>` : ''}
+        ${doseHtml}
+      </div>`;
+  }).join('');
 }
 
 function renderDxSensitivity(cells) {
