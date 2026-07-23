@@ -3612,47 +3612,44 @@ const MFP_BOOKMARKLET_SRC = `(function(){
     var m = String(text).replace(/,/g, '').match(/-?\\d+(\\.\\d+)?/);
     return m ? parseFloat(m[0]) : null;
   }
-  function colMap(theadRow){
-    var map = {};
-    if (!theadRow) return map;
-    var cells = theadRow.querySelectorAll('th, td');
-    for (var i = 0; i < cells.length; i++) {
-      var t = (cells[i].textContent || '').trim().toLowerCase();
-      if (/carb/.test(t)) map.carbs = i;
-      else if (/fat/.test(t)) map.fat = i;
-      else if (/protein/.test(t)) map.protein = i;
-      else if (/calor/.test(t)) map.calories = i;
+  function numFromCell(cell){
+    if (!cell) return null;
+    var whole = cell.querySelector('.macro-value');
+    if (whole) {
+      var dec = cell.querySelector('.macro-percentage');
+      var s = (whole.textContent || '').trim() + (dec ? '.' + (dec.textContent || '').trim() : '');
+      var v = parseFloat(s);
+      return isNaN(v) ? null : v;
     }
-    return map;
+    return num(cell.textContent);
   }
-  function sectionName(tbody){
+  function sectionName(numStr){
     var names = {'1':'breakfast','2':'lunch','3':'dinner','4':'snacks','5':'snacks','6':'snacks'};
-    var m = (tbody.id || '').match(/meal_(\\d+)/);
-    if (m && names[m[1]]) return names[m[1]];
-    return 'snacks';
+    return names[numStr] || 'snacks';
   }
   var items = [];
-  var tbodies = document.querySelectorAll('tbody[id^="meal_"]');
-  for (var t = 0; t < tbodies.length; t++) {
-    var tbody = tbodies[t];
-    var table = tbody.closest('table');
-    var map = colMap(table ? table.querySelector('thead tr') : null);
-    var section = sectionName(tbody);
-    var rows = tbody.querySelectorAll('tr');
-    for (var r = 0; r < rows.length; r++) {
-      var row = rows[r];
-      if (row.className && /total/i.test(row.className)) continue;
-      var nameCell = row.querySelector('td.first, td:first-child');
-      var name = nameCell ? nameCell.textContent.trim() : '';
-      if (!name) continue;
-      var cells = row.querySelectorAll('td');
-      var carbsG = map.carbs != null && cells[map.carbs] ? num(cells[map.carbs].textContent) : null;
-      var fatG = map.fat != null && cells[map.fat] ? num(cells[map.fat].textContent) : null;
-      var proteinG = map.protein != null && cells[map.protein] ? num(cells[map.protein].textContent) : null;
-      var calories = map.calories != null && cells[map.calories] ? num(cells[map.calories].textContent) : null;
-      if (carbsG == null && fatG == null && proteinG == null && calories == null) continue;
-      items.push({ mealSection: section, name: name, carbsG: carbsG, fatG: fatG, proteinG: proteinG, calories: calories });
+  var rows = document.querySelectorAll('#diary-table tr');
+  var section = 'breakfast';
+  for (var r = 0; r < rows.length; r++) {
+    var row = rows[r];
+    var cls = row.className || '';
+    if (/meal_header/i.test(cls)) {
+      var headCell = row.querySelector('td');
+      section = sectionName(headCell ? (headCell.textContent || '').trim() : '');
+      continue;
     }
+    if (/bottom|total/i.test(cls)) continue;
+    var cells = row.querySelectorAll('td');
+    if (cells.length < 7) continue;
+    var rawName = (cells[0].textContent || '').trim();
+    if (!rawName) continue;
+    var name = rawName.replace(/\\s*\\/?,\\s*[\\d.]+\\s*[a-zA-Z%]*\\s*$/, '').trim() || rawName;
+    var calories = numFromCell(cells[1]);
+    var carbsG = numFromCell(cells[2]);
+    var fatG = numFromCell(cells[3]);
+    var proteinG = numFromCell(cells[4]);
+    if (carbsG == null && fatG == null && proteinG == null && calories == null) continue;
+    items.push({ mealSection: section, name: name, carbsG: carbsG, fatG: fatG, proteinG: proteinG, calories: calories });
   }
   if (!items.length) {
     alert('fitl00p: no food rows found. Make sure you\\'re on your own MFP diary page (myfitnesspal.com/food/diary) with food logged today.');
@@ -3707,47 +3704,44 @@ const MFP_SHORTCUT_SRC = `(function(){
     var m = String(text).replace(/,/g, '').match(/-?\\d+(\\.\\d+)?/);
     return m ? parseFloat(m[0]) : null;
   }
-  function colMap(theadRow){
-    var map = {};
-    if (!theadRow) return map;
-    var cells = theadRow.querySelectorAll('th, td');
-    for (var i = 0; i < cells.length; i++) {
-      var t = (cells[i].textContent || '').trim().toLowerCase();
-      if (/carb/.test(t)) map.carbs = i;
-      else if (/fat/.test(t)) map.fat = i;
-      else if (/protein/.test(t)) map.protein = i;
-      else if (/calor/.test(t)) map.calories = i;
+  function numFromCell(cell){
+    if (!cell) return null;
+    var whole = cell.querySelector('.macro-value');
+    if (whole) {
+      var dec = cell.querySelector('.macro-percentage');
+      var s = (whole.textContent || '').trim() + (dec ? '.' + (dec.textContent || '').trim() : '');
+      var v = parseFloat(s);
+      return isNaN(v) ? null : v;
     }
-    return map;
+    return num(cell.textContent);
   }
-  function sectionName(tbody){
+  function sectionName(numStr){
     var names = {'1':'breakfast','2':'lunch','3':'dinner','4':'snacks','5':'snacks','6':'snacks'};
-    var m = (tbody.id || '').match(/meal_(\\d+)/);
-    if (m && names[m[1]]) return names[m[1]];
-    return 'snacks';
+    return names[numStr] || 'snacks';
   }
   var items = [];
-  var tbodies = document.querySelectorAll('tbody[id^="meal_"]');
-  for (var t = 0; t < tbodies.length; t++) {
-    var tbody = tbodies[t];
-    var table = tbody.closest('table');
-    var map = colMap(table ? table.querySelector('thead tr') : null);
-    var section = sectionName(tbody);
-    var rows = tbody.querySelectorAll('tr');
-    for (var r = 0; r < rows.length; r++) {
-      var row = rows[r];
-      if (row.className && /total/i.test(row.className)) continue;
-      var nameCell = row.querySelector('td.first, td:first-child');
-      var name = nameCell ? nameCell.textContent.trim() : '';
-      if (!name) continue;
-      var cells = row.querySelectorAll('td');
-      var carbsG = map.carbs != null && cells[map.carbs] ? num(cells[map.carbs].textContent) : null;
-      var fatG = map.fat != null && cells[map.fat] ? num(cells[map.fat].textContent) : null;
-      var proteinG = map.protein != null && cells[map.protein] ? num(cells[map.protein].textContent) : null;
-      var calories = map.calories != null && cells[map.calories] ? num(cells[map.calories].textContent) : null;
-      if (carbsG == null && fatG == null && proteinG == null && calories == null) continue;
-      items.push({ mealSection: section, name: name, carbsG: carbsG, fatG: fatG, proteinG: proteinG, calories: calories });
+  var rows = document.querySelectorAll('#diary-table tr');
+  var section = 'breakfast';
+  for (var r = 0; r < rows.length; r++) {
+    var row = rows[r];
+    var cls = row.className || '';
+    if (/meal_header/i.test(cls)) {
+      var headCell = row.querySelector('td');
+      section = sectionName(headCell ? (headCell.textContent || '').trim() : '');
+      continue;
     }
+    if (/bottom|total/i.test(cls)) continue;
+    var cells = row.querySelectorAll('td');
+    if (cells.length < 7) continue;
+    var rawName = (cells[0].textContent || '').trim();
+    if (!rawName) continue;
+    var name = rawName.replace(/\\s*\\/?,\\s*[\\d.]+\\s*[a-zA-Z%]*\\s*$/, '').trim() || rawName;
+    var calories = numFromCell(cells[1]);
+    var carbsG = numFromCell(cells[2]);
+    var fatG = numFromCell(cells[3]);
+    var proteinG = numFromCell(cells[4]);
+    if (carbsG == null && fatG == null && proteinG == null && calories == null) continue;
+    items.push({ mealSection: section, name: name, carbsG: carbsG, fatG: fatG, proteinG: proteinG, calories: calories });
   }
   if (!items.length) {
     completion('fitl00p: no food rows found on this page.');
