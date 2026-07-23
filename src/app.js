@@ -3646,12 +3646,112 @@ const MFP_BOOKMARKLET_SRC = `(function(){
   });
 })();`;
 
+// Shortcuts variant — for the "Run JavaScript on Web Page" action, not a
+// bookmark click. Same parsing logic as MFP_BOOKMARKLET_SRC, but that
+// action requires the script to call the global completion(result) on
+// every exit path (Shortcuts enforces this and won't save the action
+// without it) and confirm()/alert() aren't guaranteed to render inside
+// its embedded WKWebView context, so this drops both dialogs — no
+// preview-before-send, straight to completion(summary) — and surfaces
+// the result via whatever the Shortcut does with the returned text
+// (e.g. a "Show Result" or "Show Notification" action placed after it).
+const MFP_SHORTCUT_SRC = `(function(){
+  var TOKEN = __TOKEN__;
+  var ENDPOINT = __ENDPOINT__;
+  function num(text){
+    if (text == null) return null;
+    var m = String(text).replace(/,/g, '').match(/-?\\d+(\\.\\d+)?/);
+    return m ? parseFloat(m[0]) : null;
+  }
+  function colMap(theadRow){
+    var map = {};
+    if (!theadRow) return map;
+    var cells = theadRow.querySelectorAll('th, td');
+    for (var i = 0; i < cells.length; i++) {
+      var t = (cells[i].textContent || '').trim().toLowerCase();
+      if (/carb/.test(t)) map.carbs = i;
+      else if (/fat/.test(t)) map.fat = i;
+      else if (/protein/.test(t)) map.protein = i;
+      else if (/calor/.test(t)) map.calories = i;
+    }
+    return map;
+  }
+  function sectionName(tbody){
+    var names = {'1':'breakfast','2':'lunch','3':'dinner','4':'snacks','5':'snacks','6':'snacks'};
+    var m = (tbody.id || '').match(/meal_(\\d+)/);
+    if (m && names[m[1]]) return names[m[1]];
+    return 'snacks';
+  }
+  var items = [];
+  var tbodies = document.querySelectorAll('tbody[id^="meal_"]');
+  for (var t = 0; t < tbodies.length; t++) {
+    var tbody = tbodies[t];
+    var table = tbody.closest('table');
+    var map = colMap(table ? table.querySelector('thead tr') : null);
+    var section = sectionName(tbody);
+    var rows = tbody.querySelectorAll('tr');
+    for (var r = 0; r < rows.length; r++) {
+      var row = rows[r];
+      if (row.className && /total/i.test(row.className)) continue;
+      var nameCell = row.querySelector('td.first, td:first-child');
+      var name = nameCell ? nameCell.textContent.trim() : '';
+      if (!name) continue;
+      var cells = row.querySelectorAll('td');
+      var carbsG = map.carbs != null && cells[map.carbs] ? num(cells[map.carbs].textContent) : null;
+      var fatG = map.fat != null && cells[map.fat] ? num(cells[map.fat].textContent) : null;
+      var proteinG = map.protein != null && cells[map.protein] ? num(cells[map.protein].textContent) : null;
+      var calories = map.calories != null && cells[map.calories] ? num(cells[map.calories].textContent) : null;
+      if (carbsG == null && fatG == null && proteinG == null && calories == null) continue;
+      items.push({ mealSection: section, name: name, carbsG: carbsG, fatG: fatG, proteinG: proteinG, calories: calories });
+    }
+  }
+  if (!items.length) {
+    completion('fitl00p: no food rows found on this page.');
+    return;
+  }
+  var dateInput = document.querySelector('.date-picker input, input[name="date"]');
+  var dateVal = (dateInput && dateInput.value) || new Date().toISOString().slice(0, 10);
+  fetch(ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: TOKEN, date: dateVal, items: items }),
+  }).then(function(r){ return r.json(); }).then(function(res){
+    if (res.error) { completion('fitl00p import failed: ' + res.error); return; }
+    var lines = (res.suggestions || []).map(function(s){
+      if (s.suggestedUnits != null) {
+        var line = s.name + ': ' + s.suggestedUnits + 'u';
+        if (s.splitTier && s.splitTier !== 'single' && s.delayedUnits > 0) {
+          line += ' (' + s.upfrontUnits + 'u now, ' + s.delayedUnits + 'u delayed)';
+        }
+        if (s.lowGlucoseWarning) line += ' \\u26a0 glucose is low';
+        return line;
+      }
+      if (s.hypoTreatment) return s.name + ': hypo treatment, no bolus needed';
+      if (s.withheldReason) return s.name + ': no suggestion (' + s.withheldReason + ')';
+      return null;
+    }).filter(Boolean);
+    var summary = res.autoMatched + ' matched to an existing bolus' + (res.skippedDuplicate ? ', ' + res.skippedDuplicate + ' already sent before' : '') + '.';
+    completion('fitl00p:\\n\\n' + (lines.length ? lines.join('\\n\\n') : 'Nothing new to suggest.') + '\\n\\n' + summary);
+  }).catch(function(err){
+    completion('fitl00p import failed: ' + err.message);
+  });
+})();`;
+
 function buildMfpBookmarklet(token) {
   const endpoint = `${location.origin}/.netlify/functions/mfp-import`;
   const src = MFP_BOOKMARKLET_SRC
     .replace('__TOKEN__', JSON.stringify(token))
     .replace('__ENDPOINT__', JSON.stringify(endpoint));
   return 'javascript:' + src;
+}
+
+// Plain script, no "javascript:" prefix — Shortcuts' "Run JavaScript on Web
+// Page" action wants raw JS in its script field, not a URI.
+function buildMfpShortcutScript(token) {
+  const endpoint = `${location.origin}/.netlify/functions/mfp-import`;
+  return MFP_SHORTCUT_SRC
+    .replace('__TOKEN__', JSON.stringify(token))
+    .replace('__ENDPOINT__', JSON.stringify(endpoint));
 }
 
 // Kept separately from the anchor's .href on purpose: reading a <a> element's
@@ -3662,6 +3762,7 @@ function buildMfpBookmarklet(token) {
 // the link still works (browsers percent-decode javascript: URLs before
 // running them), but copying should hand back the exact original string.
 let dxMfpBookmarkletRaw = null;
+let dxMfpShortcutScriptRaw = null;
 
 function renderMfpImportSettings() {
   const token = profile?.diabetes_mfp_import_token;
@@ -3670,6 +3771,7 @@ function renderMfpImportSettings() {
   if (token && el.mfpBookmarklet) {
     dxMfpBookmarkletRaw = buildMfpBookmarklet(token);
     el.mfpBookmarklet.href = dxMfpBookmarkletRaw;
+    dxMfpShortcutScriptRaw = buildMfpShortcutScript(token);
   }
 }
 
@@ -3696,6 +3798,17 @@ $('btnMfpCopyLink')?.addEventListener('click', async () => {
     flash($('mfpTokenStatus'), 'Copied — paste it as a bookmark\'s URL.');
   } catch {
     flash($('mfpTokenStatus'), 'Could not copy — long-press the button above instead.', true);
+  }
+});
+
+$('btnMfpCopyShortcutScript')?.addEventListener('click', async () => {
+  const script = dxMfpShortcutScriptRaw;
+  if (!script) return;
+  try {
+    await navigator.clipboard.writeText(script);
+    flash($('mfpTokenStatus'), 'Copied — paste into a "Run JavaScript on Web Page" action.');
+  } catch {
+    flash($('mfpTokenStatus'), 'Could not copy.', true);
   }
 });
 

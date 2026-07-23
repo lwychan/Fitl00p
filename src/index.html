@@ -1155,7 +1155,11 @@
             <button class="btn btn--ghost btn--small" id="btnMfpCopyLink">Copy bookmarklet link</button>
             <button class="btn btn--ghost btn--small" id="btnMfpRegenerateToken">Regenerate link</button>
           </div>
-          <p class="field-hint" style="text-transform:none;letter-spacing:0;font-weight:400;margin-top:8px">Regenerating breaks the old bookmarklet — you'd need to set it up again.</p>
+          <p class="field-hint" style="text-transform:none;letter-spacing:0;font-weight:400;margin-top:16px;margin-bottom:8px">Using a Shortcuts automation instead? Its "Run JavaScript on Web Page" action needs a different version of the script (no confirmation prompts, reports back through Shortcuts' own completion step instead) — use this one there, not the bookmarklet above.</p>
+          <div class="settings-actions" style="padding-top:0">
+            <button class="btn btn--ghost btn--small" id="btnMfpCopyShortcutScript">Copy Shortcuts script</button>
+          </div>
+          <p class="field-hint" style="text-transform:none;letter-spacing:0;font-weight:400;margin-top:8px">Regenerating breaks both the bookmarklet and the Shortcuts script — you'd need to update both.</p>
         </div>
         <span class="save-status" id="mfpTokenStatus"></span>
       </div>
