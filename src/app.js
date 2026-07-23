@@ -3662,15 +3662,28 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now) {
     iobSeries.push({ ms: t, value: DiabetesEngine.activeInsulin(data.boluses, data.corrections, t, curveOpts) });
   }
 
+  const basalSegments = (data.basalDoses || [])
+    .map(d => {
+      const time = Number(d.time);
+      const durationMin = Number(d.durationMin) || 0;
+      const rate = Number.isFinite(Number(d.rate)) ? Number(d.rate)
+        : (durationMin > 0 ? (Number(d.units) || 0) / (durationMin / 60) : null);
+      return { start: time, end: time + durationMin * 60000, rate };
+    })
+    .filter(s => Number.isFinite(s.start) && Number.isFinite(s.end) && Number.isFinite(s.rate) && s.end > windowStart && s.start < now)
+    .map(s => ({ start: Math.max(s.start, windowStart), end: Math.min(s.end, now), rate: s.rate }))
+    .sort((a, b) => a.start - b.start);
+
   const low = Number(settings.targetLow) || 4.5;
   const high = Number(settings.targetHigh) || 8.5;
   const allVals = [...pastReadings.map(r => r.value), ...projected.map(p => p.value), low, high];
   const gLo = Math.max(2, Math.min(...allVals) - 1);
   const gHi = Math.min(22, Math.max(...allVals) + 1);
 
-  const padL = 26, padR = 8, padTop = 6, xAxisH = 14, iobStripH = 30;
-  const mainH = H - padTop - iobStripH - xAxisH - 4;
-  const iobTop = padTop + mainH + 6;
+  const padL = 26, padR = 8, padTop = 6, xAxisH = 14, iobStripH = 26, basalStripH = 26, stripGap = 9;
+  const mainH = H - padTop - iobStripH - basalStripH - xAxisH - stripGap * 2 - 4;
+  const iobTop = padTop + mainH + stripGap;
+  const basalTop = iobTop + iobStripH + stripGap;
 
   const xAt = ms => padL + ((ms - windowStart) / (windowEnd - windowStart)) * (W - padL - padR);
   const yAt = v => padTop + mainH - ((v - gLo) / (gHi - gLo)) * mainH;
@@ -3713,7 +3726,10 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now) {
     ctx.fill();
   });
 
-  // Projected — dashed
+  // Projected — dashed. Needs both a recent reading and a resolved
+  // correction factor (observed or pump-setting) — if either is missing,
+  // projectedGlucoseCurve withholds rather than guess, so say why here
+  // instead of just silently drawing nothing.
   if (projected.length) {
     ctx.strokeStyle = 'rgba(59, 158, 255, 0.65)';
     ctx.lineWidth = 1.5;
@@ -3725,7 +3741,39 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now) {
     });
     ctx.stroke();
     ctx.setLineDash([]);
+  } else {
+    ctx.fillStyle = 'rgba(255,255,255,0.3)';
+    ctx.font = '8px -apple-system, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText('Set correction factor in Settings for a projection', W - padR, padTop + 9);
   }
+
+  // Bolus / correction dose markers along the main chart baseline
+  const markerY = padTop + mainH - 3;
+  ctx.font = '8px -apple-system, sans-serif';
+  ctx.textAlign = 'center';
+  (data.boluses || []).forEach(b => {
+    const ms = Number(b.time), units = Number(b.units);
+    if (!Number.isFinite(ms) || !Number.isFinite(units) || units <= 0 || ms < windowStart || ms > now) return;
+    const x = xAt(ms);
+    ctx.fillStyle = '#facc15';
+    ctx.beginPath();
+    ctx.moveTo(x, markerY - 5); ctx.lineTo(x - 3.5, markerY); ctx.lineTo(x + 3.5, markerY);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = 'rgba(250, 204, 21, 0.9)';
+    ctx.fillText(units.toFixed(1), x, markerY - 8);
+  });
+  (data.corrections || []).forEach(c => {
+    const ms = Number(c.time), units = Number(c.units);
+    if (!Number.isFinite(ms) || !Number.isFinite(units) || units <= 0 || ms < windowStart || ms > now) return;
+    const x = xAt(ms);
+    ctx.fillStyle = '#fb923c';
+    ctx.beginPath();
+    ctx.moveTo(x, markerY - 6); ctx.lineTo(x - 3, markerY - 3); ctx.lineTo(x, markerY); ctx.lineTo(x + 3, markerY - 3);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = 'rgba(251, 146, 60, 0.9)';
+    ctx.fillText(units.toFixed(1), x, markerY - 9);
+  });
 
   // IOB strip (own 0..max scale)
   const maxIob = Math.max(0.5, ...iobSeries.map(p => p.value));
@@ -3741,6 +3789,23 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now) {
   ctx.font = '8px -apple-system, sans-serif';
   ctx.textAlign = 'left';
   ctx.fillText('IOB', padL, iobTop - 1);
+
+  // Basal strip (own 0..max scale) — drawn as step rectangles since
+  // Control-IQ delivers as a continuously varying rate, not a flat line.
+  if (basalSegments.length) {
+    const maxRate = Math.max(0.1, ...basalSegments.map(s => s.rate));
+    const basalY = v => basalTop + basalStripH - (v / maxRate) * basalStripH;
+    ctx.fillStyle = 'rgba(45, 212, 191, 0.35)';
+    basalSegments.forEach(s => {
+      const x0 = xAt(s.start), x1 = xAt(s.end);
+      const y = basalY(s.rate);
+      ctx.fillRect(x0, y, Math.max(1, x1 - x0), basalTop + basalStripH - y);
+    });
+  }
+  ctx.fillStyle = 'rgba(255,255,255,0.3)';
+  ctx.font = '8px -apple-system, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText(basalSegments.length ? 'Basal u/hr' : 'Basal u/hr (no data)', padL, basalTop - 1);
 
   // X-axis hour labels
   ctx.fillStyle = 'rgba(255,255,255,0.35)';

@@ -109,6 +109,8 @@ function adaptTreatments(treatments) {
         basalDoses.push({
           time: ms,
           units: Math.round(rate * (durationMin / 60) * 1000) / 1000,
+          durationMin,
+          rate: Math.round(rate * 1000) / 1000,
         });
       }
     }
