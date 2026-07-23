@@ -271,6 +271,8 @@ const el = {
   dxMealMemoryBody:  $('dxMealMemoryBody'),
   dxSensitivityBody: $('dxSensitivityBody'),
   dxRegimenBody:     $('dxRegimenBody'),
+  dxGlucoseChart:      $('dxGlucoseChart'),
+  dxGlucoseChartEmpty: $('dxGlucoseChartEmpty'),
   dxLastSync:        $('dxLastSync'),
   // global
   toast:         $('toast'),
@@ -3611,10 +3613,152 @@ const WITHHELD_MESSAGES = {
   'low-confidence-factor': 'Your correction factor looks unreliable right now — cleaner corrections (no food nearby) will sharpen it.',
 };
 
+/* ── Glucose/IOB/projection chart (canvas, no deps) ──────────
+   Past ~6h of real glucose, active IOB along the bottom on its own
+   scale, and a dashed near-term projection from the same model
+   hypoForecast2h/projectedGlucoseCurve use — openly approximate, not
+   a real predictive model, capped at 2h out for exactly that reason. */
+function drawDxGlucoseChart(canvas, emptyEl, data, settings, now) {
+  if (!canvas) return;
+  const MAX_W = 800, MAX_H = 260, MIN_W = 100;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  const rawW = canvas.parentElement?.clientWidth || 320;
+  const rawH = parseInt(canvas.getAttribute('height')) || 180;
+  const W = Math.min(MAX_W, Math.max(MIN_W, rawW));
+  const H = Math.min(MAX_H, Math.max(120, rawH));
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  canvas.width = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  const PAST_MIN = 360, FUTURE_MIN = 120;
+  const windowStart = now - PAST_MIN * 60000;
+  const windowEnd = now + FUTURE_MIN * 60000;
+
+  const pastReadings = (data.glucoseHistory || [])
+    .map(r => ({ ms: Number(r.time), value: Number(r.value) }))
+    .filter(r => Number.isFinite(r.ms) && Number.isFinite(r.value) && r.ms >= windowStart && r.ms <= now)
+    .sort((a, b) => a.ms - b.ms);
+
+  if (pastReadings.length < 2) {
+    if (emptyEl) emptyEl.hidden = false;
+    canvas.hidden = true;
+    return;
+  }
+  if (emptyEl) emptyEl.hidden = true;
+  canvas.hidden = false;
+
+  const input = { ...data, settings, activities: { workouts: [] } };
+  const projected = DiabetesEngine.projectedGlucoseCurve(input, now, FUTURE_MIN, 15);
+
+  const curveOpts = DiabetesEngine.insulinCurveOpts(settings);
+  const iobSeries = [];
+  for (let t = windowStart; t <= now; t += 15 * 60000) {
+    iobSeries.push({ ms: t, value: DiabetesEngine.activeInsulin(data.boluses, data.corrections, t, curveOpts) });
+  }
+
+  const low = Number(settings.targetLow) || 4.5;
+  const high = Number(settings.targetHigh) || 8.5;
+  const allVals = [...pastReadings.map(r => r.value), ...projected.map(p => p.value), low, high];
+  const gLo = Math.max(2, Math.min(...allVals) - 1);
+  const gHi = Math.min(22, Math.max(...allVals) + 1);
+
+  const padL = 26, padR = 8, padTop = 6, xAxisH = 14, iobStripH = 30;
+  const mainH = H - padTop - iobStripH - xAxisH - 4;
+  const iobTop = padTop + mainH + 6;
+
+  const xAt = ms => padL + ((ms - windowStart) / (windowEnd - windowStart)) * (W - padL - padR);
+  const yAt = v => padTop + mainH - ((v - gLo) / (gHi - gLo)) * mainH;
+
+  // Target range band
+  ctx.fillStyle = 'rgba(74, 222, 128, 0.10)';
+  ctx.fillRect(padL, yAt(high), W - padL - padR, Math.max(0, yAt(low) - yAt(high)));
+
+  // Y gridlines/labels
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  ctx.fillStyle = 'rgba(255,255,255,0.35)';
+  ctx.font = '9px -apple-system, sans-serif';
+  ctx.textAlign = 'right';
+  [4, 8, 12, 16, 20].filter(v => v >= gLo && v <= gHi).forEach(v => {
+    const y = yAt(v);
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
+    ctx.fillText(String(v), padL - 4, y + 3);
+  });
+
+  // "Now" marker
+  const xNow = xAt(now);
+  ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+  ctx.setLineDash([2, 3]);
+  ctx.beginPath(); ctx.moveTo(xNow, padTop); ctx.lineTo(xNow, padTop + mainH); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Past glucose — line + dots
+  ctx.strokeStyle = '#3B9EFF';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  pastReadings.forEach((r, i) => {
+    const x = xAt(r.ms), y = yAt(r.value);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  ctx.fillStyle = '#3B9EFF';
+  pastReadings.forEach(r => {
+    ctx.beginPath();
+    ctx.arc(xAt(r.ms), yAt(r.value), 1.5, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  // Projected — dashed
+  if (projected.length) {
+    ctx.strokeStyle = 'rgba(59, 158, 255, 0.65)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    projected.forEach((p, i) => {
+      const x = xAt(p.ms), y = yAt(p.value);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // IOB strip (own 0..max scale)
+  const maxIob = Math.max(0.5, ...iobSeries.map(p => p.value));
+  const iobY = v => iobTop + iobStripH - (v / maxIob) * iobStripH;
+  ctx.fillStyle = 'rgba(167, 139, 250, 0.35)';
+  ctx.beginPath();
+  ctx.moveTo(xAt(iobSeries[0].ms), iobTop + iobStripH);
+  iobSeries.forEach(p => ctx.lineTo(xAt(p.ms), iobY(p.value)));
+  ctx.lineTo(xAt(now), iobTop + iobStripH);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.3)';
+  ctx.font = '8px -apple-system, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('IOB', padL, iobTop - 1);
+
+  // X-axis hour labels
+  ctx.fillStyle = 'rgba(255,255,255,0.35)';
+  ctx.font = '9px -apple-system, sans-serif';
+  ctx.textAlign = 'center';
+  for (let h = -6; h <= 2; h += 2) {
+    const t = now + h * 3600000;
+    if (t < windowStart || t > windowEnd) continue;
+    ctx.fillText(h === 0 ? 'now' : `${h > 0 ? '+' : ''}${h}h`, xAt(t), H - 3);
+  }
+}
+
 function renderDiabetesTab(data) {
   const settings = dxSettings();
   const input = { ...data, settings, activities: { workouts: [] } };
   const now = Date.now();
+
+  drawDxGlucoseChart(el.dxGlucoseChart, el.dxGlucoseChartEmpty, data, settings, now);
 
   const ctx = DiabetesEngine.dosingContext(input, now);
   renderDxNow(ctx);

@@ -1255,6 +1255,36 @@ function hypoForecast2h(input, now = Date.now()) {
   };
 }
 
+// Same model as hypoForecast2h, generalized into a curve for charting —
+// projected glucose at each step from now out to the horizon, using
+// active IOB/COB decay against the resolved correction factor. Openly
+// approximate (a straight population-curve projection, not a real
+// model-predictive forecast) and deliberately not extended past 2-3h,
+// where compounding assumptions make it far less trustworthy.
+function projectedGlucoseCurve(input, now = Date.now(), horizonMinutes = HYPO_FORECAST_HORIZON_MIN, stepMinutes = 15) {
+  const { glucoseHistory = [], boluses = [], corrections = [], settings = {} } = input || {};
+  const nowMs = toMs(now);
+  const curveOpts = insulinCurveOpts(settings);
+
+  const ctx = dosingContext({ glucoseHistory, boluses, corrections, settings }, now);
+  if (ctx.stale || ctx.effectiveGlucose == null) return [];
+
+  const resolvedCorrections = resolveCorrections(corrections, glucoseHistory, boluses, now);
+  const factorResult = resolveCorrectionFactor(resolvedCorrections, settings);
+  if (factorResult.factor == null) return [];
+
+  const carbRatio = Number(settings.carbRatio) || null;
+  const points = [];
+  for (let t = 0; t <= horizonMinutes; t += stepMinutes) {
+    const insulinDropMmol = insulinActionWithin(boluses, corrections, nowMs, t, curveOpts) * factorResult.factor;
+    const carbAbsorptionGrams = carbAbsorptionWithin(boluses, nowMs, t);
+    const carbRiseMmol = carbRatio ? (carbAbsorptionGrams / carbRatio) * factorResult.factor : 0;
+    const value = Math.max(1, ctx.effectiveGlucose - insulinDropMmol + carbRiseMmol);
+    points.push({ ms: nowMs + t * 60000, minutesFromNow: t, value });
+  }
+  return points;
+}
+
 /* ── Pre-workout advisor ──────────────────────────────────────
    Personal profile if the exact workout type has >=2 logged sessions;
    otherwise a clearly-labelled generic intensity-class default so the
@@ -2001,6 +2031,7 @@ const DiabetesEngine = {
   buildWorkoutTypeProfiles,
   workoutLiveAlert,
   hypoForecast2h,
+  projectedGlucoseCurve,
   preWorkoutAdvisor,
   whatIfSimulator,
   preventativeCarbAdvice,

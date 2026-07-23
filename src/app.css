@@ -3152,3 +3152,36 @@ body { font-size: 15px; }
   color: var(--ink-4);
   margin-top: 10px;
 }
+.dx-chart-wrap {
+  position: relative;
+  background: var(--surface-2);
+  border-radius: var(--r-md);
+  padding: 8px;
+  border: 1px solid var(--border-2);
+}
+.dx-chart-wrap canvas { display: block; width: 100%; }
+.dx-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 10px;
+}
+.dx-chart-legend__item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+.dx-chart-legend__swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  display: inline-block;
+}
+.dx-chart-legend__swatch--dashed {
+  width: 12px;
+  height: 0;
+  border-top: 1.5px dashed #3B9EFF;
+  border-radius: 0;
+}

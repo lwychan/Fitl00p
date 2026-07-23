@@ -1186,6 +1186,20 @@
           <p class="dx-stale-note" id="dxStaleNote" hidden></p>
         </div>
 
+        <div class="card">
+          <div class="card-eyebrow">Glucose trend <span class="card-eyebrow-sub">6h back · 2h projected</span></div>
+          <div class="dx-chart-wrap">
+            <canvas id="dxGlucoseChart" height="180"></canvas>
+            <p class="chart-empty" id="dxGlucoseChartEmpty" hidden>Not enough recent glucose data.</p>
+          </div>
+          <div class="dx-chart-legend">
+            <span class="dx-chart-legend__item"><span class="dx-chart-legend__swatch" style="background:#3B9EFF"></span>Glucose</span>
+            <span class="dx-chart-legend__item"><span class="dx-chart-legend__swatch dx-chart-legend__swatch--dashed"></span>Projected</span>
+            <span class="dx-chart-legend__item"><span class="dx-chart-legend__swatch" style="background:#A78BFA"></span>IOB</span>
+            <span class="dx-chart-legend__item"><span class="dx-chart-legend__swatch" style="background:rgba(74,222,128,.35)"></span>Target range</span>
+          </div>
+        </div>
+
         <div class="card" id="dxForecastCard">
           <div class="card-eyebrow">2h hypo forecast</div>
           <div id="dxForecastBody"></div>
