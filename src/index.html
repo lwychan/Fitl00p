@@ -787,20 +787,52 @@
     <div class="view-inner">
       <div class="view-head">
         <h1 class="view-title">Daily history</h1>
-        <button class="btn btn--ghost btn--small" id="btnExportCsv">Export CSV</button>
+        <div class="view-head-actions">
+          <button class="btn btn--ghost btn--small btn--icon" id="btnTzToggle" title="Tirzepatide tracker" aria-label="Tirzepatide tracker">💉</button>
+          <button class="btn btn--ghost btn--small" id="btnExportCsv">Export CSV</button>
+        </div>
       </div>
-      <div class="card">
+
+      <div class="card" id="tzCard" hidden>
+        <div class="card-eyebrow">Tirzepatide tracker</div>
         <div class="chart-wrap">
-          <canvas id="historyChart" height="200"></canvas>
-          <p class="chart-empty" id="historyChartEmpty">Log weight entries to see your trend.</p>
+          <canvas id="tzChart" height="200"></canvas>
+          <p class="chart-empty" id="tzChartEmpty">Log an injection to see your levels.</p>
         </div>
-        <div id="historyVariance" class="history-variance" hidden></div>
         <div class="history-legend">
-          <span class="legend-item legend-item--actual">— Actual</span>
-          <span class="legend-item legend-item--proj">- - Projected</span>
-          <span class="legend-item legend-item--ahead">▪ Ahead</span>
-          <span class="legend-item legend-item--behind">▪ Behind</span>
+          <span class="legend-item legend-item--actual">— Past level</span>
+          <span class="legend-item legend-item--proj">- - Projected decay</span>
         </div>
+        <div id="tzCurrentLevel" class="tz-current-level" hidden></div>
+
+        <div id="tzLogForm" class="tz-log-form" hidden>
+          <div class="field">
+            <label>Dose</label>
+            <select id="tzDoseMg">
+              <option value="2.5">2.5 mg</option>
+              <option value="5">5 mg</option>
+              <option value="7.5">7.5 mg</option>
+              <option value="10">10 mg</option>
+              <option value="12.5">12.5 mg</option>
+              <option value="15">15 mg</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Date &amp; time</label>
+            <input type="datetime-local" id="tzInjectedAt">
+          </div>
+          <div class="settings-actions">
+            <button class="btn btn--primary btn--small" id="btnTzSave">Save injection</button>
+            <button class="btn btn--ghost btn--small" id="btnTzCancel">Cancel</button>
+          </div>
+          <span class="save-status" id="tzFormStatus"></span>
+        </div>
+
+        <div class="settings-actions" id="tzLogButtonWrap">
+          <button class="btn btn--primary btn--small" id="btnTzLog">Log injection</button>
+        </div>
+
+        <div id="tzDoseList" class="tz-dose-list"></div>
       </div>
       <div class="table-wrap">
         <table class="data-table">

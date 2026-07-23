@@ -234,6 +234,20 @@ const el = {
   historyChartEmpty:   $('historyChartEmpty'),
   historyTableBody:    $('historyTableBody'),
   btnExportCsv:        $('btnExportCsv'),
+  btnTzToggle:         $('btnTzToggle'),
+  tzCard:              $('tzCard'),
+  tzChart:             $('tzChart'),
+  tzChartEmpty:        $('tzChartEmpty'),
+  tzCurrentLevel:      $('tzCurrentLevel'),
+  tzLogForm:           $('tzLogForm'),
+  tzLogButtonWrap:     $('tzLogButtonWrap'),
+  btnTzLog:            $('btnTzLog'),
+  btnTzSave:           $('btnTzSave'),
+  btnTzCancel:         $('btnTzCancel'),
+  tzDoseMg:            $('tzDoseMg'),
+  tzInjectedAt:        $('tzInjectedAt'),
+  tzFormStatus:        $('tzFormStatus'),
+  tzDoseList:          $('tzDoseList'),
   // settings
   setDisplayName:    $('setDisplayName'),
   setUnit:           $('setUnit'),
@@ -3032,6 +3046,244 @@ function renderWeightVariance(series) {
     ? `<span class="hv-icon">↑</span> <strong>${absDiff} ${unit} behind</strong> projected pace`
     : `<span class="hv-icon">✓</span> <strong>On track</strong> — right on projected pace`;
 }
+
+/* ═══════════════════════════════════════════════════════════
+   TIRZEPATIDE TRACKER — hidden section on the History tab,
+   toggled by the needle icon.
+
+   Level estimate is a simple single-compartment first-order-decay
+   model: each dose contributes doseMg * 0.5^((t-injectedAt)/halfLife)
+   at any time t, summed across all doses (linear superposition of
+   independent decays — same shape of math as the insulin-on-board
+   curve elsewhere in this app). This is NOT a real PK simulation —
+   it ignores the absorption phase/Tmax, so the very first hours
+   after a dose are approximate — but it's close enough for "roughly
+   how elevated am I right now" at-a-glance tracking. 5 days is
+   tirzepatide's published terminal half-life.
+═══════════════════════════════════════════════════════════ */
+const TZ_HALF_LIFE_MS = 5 * 24 * 3600 * 1000;
+let tzDosesCache = null;
+
+function tzLevelAt(doses, atMs) {
+  let total = 0;
+  for (const d of doses) {
+    if (d.injectedMs > atMs) continue;
+    total += d.doseMg * Math.pow(0.5, (atMs - d.injectedMs) / TZ_HALF_LIFE_MS);
+  }
+  return total;
+}
+
+// datetime-local inputs want a zone-less "wall clock" string — build one
+// from the local time rather than toISOString (which is always UTC and
+// would silently shift the displayed time by the user's UTC offset).
+function toLocalDatetimeInputValue(date) {
+  const tzOffsetMs = date.getTimezoneOffset() * 60000;
+  return new Date(date.getTime() - tzOffsetMs).toISOString().slice(0, 16);
+}
+
+async function fetchTirzepatideDoses() {
+  if (!currentUser) return [];
+  const { data, error } = await db.from('tirzepatide_doses')
+    .select('id, dose_mg, injected_at')
+    .eq('user_id', currentUser.id)
+    .order('injected_at', { ascending: true })
+    .limit(200);
+  if (error) { console.error('fetchTirzepatideDoses error:', error.message); return []; }
+  return (data || []).map(d => ({ id: d.id, doseMg: Number(d.dose_mg), injectedMs: new Date(d.injected_at).getTime() }));
+}
+
+async function loadTirzepatideSection() {
+  const doses = await fetchTirzepatideDoses();
+  tzDosesCache = doses;
+  renderTzSection(doses);
+}
+
+function renderTzSection(doses) {
+  if (!el.tzCard) return;
+
+  if (!doses.length) {
+    if (el.tzCurrentLevel) el.tzCurrentLevel.hidden = true;
+    if (el.tzDoseList) el.tzDoseList.innerHTML = '<p class="empty-state">No injections logged yet.</p>';
+    drawTzChart(el.tzChart, el.tzChartEmpty, []);
+    return;
+  }
+
+  const now = Date.now();
+  const currentLevel = tzLevelAt(doses, now);
+  if (el.tzCurrentLevel) {
+    el.tzCurrentLevel.hidden = false;
+    el.tzCurrentLevel.innerHTML = `<span class="tz-current-level__value">${fmt1(currentLevel)} mg</span><span class="tz-current-level__label">estimated level now</span>`;
+  }
+
+  const sortedDesc = [...doses].sort((a, b) => b.injectedMs - a.injectedMs);
+  if (el.tzDoseList) {
+    el.tzDoseList.innerHTML = sortedDesc.map(d => `
+      <div class="tz-dose-item" data-id="${d.id}">
+        <div>
+          <div class="tz-dose-item__meta">${fmt1(d.doseMg)} mg</div>
+          <div class="tz-dose-item__date">${new Date(d.injectedMs).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</div>
+        </div>
+        <button type="button" class="btn btn--icon" data-action="tz-delete" data-id="${d.id}" title="Delete">🗑</button>
+      </div>
+    `).join('');
+  }
+
+  drawTzChart(el.tzChart, el.tzChartEmpty, doses);
+}
+
+function drawTzChart(canvas, emptyEl, doses) {
+  if (!canvas) return;
+  if (!doses.length) {
+    if (emptyEl) emptyEl.hidden = false;
+    canvas.hidden = true;
+    return;
+  }
+  if (emptyEl) emptyEl.hidden = true;
+  canvas.hidden = false;
+
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  const MAX_W = 800, MAX_H = 260, MIN_W = 100;
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  const rawW = canvas.parentElement?.clientWidth || 320;
+  const rawH = parseInt(canvas.getAttribute('height')) || 200;
+  const W = Math.min(MAX_W, Math.max(MIN_W, rawW));
+  const H = Math.min(MAX_H, Math.max(120, rawH));
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  canvas.width = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  const now = Date.now();
+  const sorted = [...doses].sort((a, b) => a.injectedMs - b.injectedMs);
+  const windowStart = sorted[0].injectedMs;
+  const FUTURE_MS = 7 * 24 * 3600 * 1000;
+  const windowEnd = now + FUTURE_MS;
+
+  const STEP_MS = 3 * 3600 * 1000; // 3h resolution
+  const pastPts = [];
+  for (let t = windowStart; t <= now; t += STEP_MS) pastPts.push({ ms: t, v: tzLevelAt(sorted, t) });
+  pastPts.push({ ms: now, v: tzLevelAt(sorted, now) });
+  const futurePts = [];
+  for (let t = now; t <= windowEnd; t += STEP_MS) futurePts.push({ ms: t, v: tzLevelAt(sorted, t) });
+
+  const allVals = [...pastPts, ...futurePts].map(p => p.v);
+  const vMax = Math.max(1, ...allVals) * 1.15;
+
+  const padL = 30, padR = 8, padTop = 8, padBottom = 18;
+  const plotW = W - padL - padR, plotH = H - padTop - padBottom;
+  const xAt = ms => padL + ((ms - windowStart) / (windowEnd - windowStart)) * plotW;
+  const yAt = v => padTop + plotH - (v / vMax) * plotH;
+
+  // Y gridlines
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  ctx.fillStyle = 'rgba(255,255,255,0.35)';
+  ctx.font = '9px -apple-system, sans-serif';
+  ctx.textAlign = 'right';
+  const step = vMax > 15 ? 5 : vMax > 6 ? 2 : 1;
+  for (let v = 0; v <= vMax; v += step) {
+    const y = yAt(v);
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
+    ctx.fillText(String(v), padL - 4, y + 3);
+  }
+
+  // X axis date labels
+  ctx.textAlign = 'center';
+  const dayMs = 24 * 3600 * 1000;
+  const totalDays = (windowEnd - windowStart) / dayMs;
+  const tickEvery = totalDays > 60 ? 14 : totalDays > 21 ? 7 : 2;
+  for (let t = windowStart; t <= windowEnd; t += tickEvery * dayMs) {
+    ctx.fillText(new Date(t).toLocaleDateString([], { month: 'short', day: 'numeric' }), xAt(t), H - 4);
+  }
+
+  // "Now" marker
+  const xNow = xAt(now);
+  ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+  ctx.setLineDash([2, 3]);
+  ctx.beginPath(); ctx.moveTo(xNow, padTop); ctx.lineTo(xNow, padTop + plotH); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Past — solid
+  ctx.strokeStyle = '#3B9EFF';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  pastPts.forEach((p, i) => { const x = xAt(p.ms), y = yAt(p.v); if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
+  ctx.stroke();
+
+  // Future — dashed
+  ctx.strokeStyle = 'rgba(59, 158, 255, 0.65)';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([4, 3]);
+  ctx.beginPath();
+  futurePts.forEach((p, i) => { const x = xAt(p.ms), y = yAt(p.v); if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Dose markers
+  ctx.fillStyle = '#3B9EFF';
+  sorted.forEach(d => {
+    const x = xAt(d.injectedMs), y = yAt(tzLevelAt(sorted, d.injectedMs));
+    ctx.beginPath(); ctx.arc(x, y, 2.5, 0, Math.PI * 2); ctx.fill();
+  });
+}
+
+el.btnTzToggle?.addEventListener('click', () => {
+  const willShow = el.tzCard.hidden;
+  el.tzCard.hidden = !willShow;
+  if (willShow) loadTirzepatideSection();
+});
+
+el.btnTzLog?.addEventListener('click', () => {
+  el.tzLogButtonWrap.hidden = true;
+  el.tzLogForm.hidden = false;
+  el.tzInjectedAt.value = toLocalDatetimeInputValue(new Date());
+  // Default to the most recently used dose, if any — titration usually
+  // continues at the same dose until a deliberate step-up.
+  if (tzDosesCache?.length) {
+    const last = [...tzDosesCache].sort((a, b) => b.injectedMs - a.injectedMs)[0];
+    const opt = [...el.tzDoseMg.options].find(o => Number(o.value) === last.doseMg);
+    if (opt) el.tzDoseMg.value = opt.value;
+  }
+});
+
+el.btnTzCancel?.addEventListener('click', () => {
+  el.tzLogForm.hidden = true;
+  el.tzLogButtonWrap.hidden = false;
+  el.tzFormStatus.textContent = '';
+});
+
+el.btnTzSave?.addEventListener('click', async () => {
+  if (!currentUser) return;
+  const doseMg = parseFloat(el.tzDoseMg.value);
+  const injectedAtLocal = el.tzInjectedAt.value;
+  if (!injectedAtLocal) { el.tzFormStatus.textContent = 'Pick a date and time.'; return; }
+  const injectedAtIso = new Date(injectedAtLocal).toISOString();
+
+  setBtn(el.btnTzSave, true, 'Save injection', 'Saving…');
+  const { error } = await db.from('tirzepatide_doses').insert({
+    user_id: currentUser.id, dose_mg: doseMg, injected_at: injectedAtIso,
+  });
+  setBtn(el.btnTzSave, false, 'Save injection');
+
+  if (error) { el.tzFormStatus.textContent = 'Error: ' + error.message; return; }
+
+  el.tzLogForm.hidden = true;
+  el.tzLogButtonWrap.hidden = false;
+  el.tzFormStatus.textContent = '';
+  await loadTirzepatideSection();
+});
+
+el.tzDoseList?.addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-action="tz-delete"]');
+  if (!btn || !currentUser) return;
+  if (!confirm('Delete this injection entry?')) return;
+  const { error } = await db.from('tirzepatide_doses').delete().eq('id', btn.dataset.id).eq('user_id', currentUser.id);
+  if (error) { showToast('Failed: ' + error.message, true); return; }
+  await loadTirzepatideSection();
+});
 
 el.btnExportCsv.addEventListener('click', async () => {
   const unit = profile?.weight_unit || 'kg';
