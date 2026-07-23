@@ -112,6 +112,16 @@ exports.handler = async function (event) {
   const results = { imported: 0, skippedDuplicate: 0, skippedInvalid: 0, autoMatched: 0, hypoTagged: 0, suggested: 0, unmatched: 0, suggestions: [] };
   const rows = [];
 
+  // A single import batch now carries one item per *meal* (grouped, not
+  // per-ingredient) — each with a full meal's carb total instead of a
+  // sliver of it, which makes it meaningfully more likely for two
+  // different meals in the same batch to each independently satisfy the
+  // match window/tolerance against the very same real bolus. Track which
+  // boluses this batch has already claimed so the same dose can't get
+  // credited to two different meals (mirrors usedBolusIdx in the
+  // backfill matcher below).
+  const usedBoluses = new Set();
+
   for (const raw of items) {
     const name = String(raw?.name || '').trim();
     const mealSection = String(raw?.mealSection || '').trim().toLowerCase();
@@ -141,8 +151,9 @@ exports.handler = async function (event) {
     let doseFields = {};
     let suggestionForResponse = null;
 
-    const match = findBestBolusMatch(boluses, carbsG, nowMs);
+    const match = findBestBolusMatch(boluses, carbsG, nowMs, usedBoluses);
     if (match) {
+      usedBoluses.add(match);
       matchStatus = 'auto';
       matchedBolusTime = new Date(match.time).toISOString();
       matchedBolusUnits = match.units;
@@ -230,9 +241,10 @@ function numOrNull(v) {
   return Number.isFinite(n) && v !== '' && v != null ? n : null;
 }
 
-function findBestBolusMatch(boluses, carbsG, nowMs) {
+function findBestBolusMatch(boluses, carbsG, nowMs, usedBoluses) {
   let best = null, bestScore = Infinity;
   for (const b of boluses) {
+    if (usedBoluses && usedBoluses.has(b)) continue;
     const time = Number(b.time);
     const units = Number(b.units);
     if (!Number.isFinite(time) || !Number.isFinite(units) || units <= 0) continue;
