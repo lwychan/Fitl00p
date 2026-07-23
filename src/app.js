@@ -4315,11 +4315,17 @@ el.dxMfpImportsBody?.addEventListener('click', async (e) => {
 });
 
 function renderDxMealMemory(meals) {
+  dxMealMemoryData = meals;
   if (!meals.length) {
     el.dxMealMemoryBody.innerHTML = '<p class="empty-state">Log meals with a name and carb count to build this up.</p>';
     return;
   }
   const outcomeLabel = { good: 'stayed in range', high: 'ran high', low: 'ran low' };
+  const badge = (m, key, cls, label) => {
+    const n = m.doseRatingCounts[key];
+    if (!n) return '';
+    return `<button type="button" class="badge ${cls}" style="border:none;cursor:pointer" data-dx-dose-meal="${escapeHtml(m.mealName)}" data-dx-dose-outcome="${key}">${n} ${label}</button>`;
+  };
   el.dxMealMemoryBody.innerHTML = meals.map(m => {
     const statLines = [];
     if (m.n != null) {
@@ -4328,14 +4334,13 @@ function renderDxMealMemory(meals) {
     }
     let doseHtml = '';
     if (m.doseN != null) {
-      const c = m.doseRatingCounts;
       doseHtml = `
         <div style="margin-top:${statLines.length ? 8 : 4}px">
-          <span class="field-hint">Dosed ${m.doseN} time${m.doseN === 1 ? '' : 's'}, avg ${fmt1(m.avgDoseUsed)}u</span>
+          <span class="field-hint">Dosed ${m.doseN} time${m.doseN === 1 ? '' : 's'}, avg ${fmt1(m.avgDoseUsed)}u — tap a badge for details</span>
           <div style="display:flex;gap:6px;margin-top:4px;flex-wrap:wrap">
-            ${c.good ? `<span class="badge badge--green">${c.good} good</span>` : ''}
-            ${c.high ? `<span class="badge badge--orange">${c.high} ran high</span>` : ''}
-            ${c.low ? `<span class="badge badge--blue">${c.low} ran low</span>` : ''}
+            ${badge(m, 'good', 'badge--green', 'good')}
+            ${badge(m, 'high', 'badge--orange', 'ran high')}
+            ${badge(m, 'low', 'badge--blue', 'ran low')}
           </div>
           <div class="field-hint" style="margin-top:4px">Last dose: ${fmt1(m.lastDose.units)}u — ${outcomeLabel[m.lastDose.outcome]}</div>
         </div>`;
@@ -4546,6 +4551,82 @@ document.addEventListener('click', e => {
     if (sheet && !sheet.hidden && e.target.closest('.bottom-sheet')) {
       const dy = e.changedTouches[0].clientY - startY;
       if (dy > 80) closeMetricSheet(); // swiped down 80px+
+    }
+  }, { passive: true });
+})();
+
+// ── Meal dose incident sheet — click a good/high/low badge in Meal
+// memory to see the individual instances behind that count: BG before
+// the meal, the dose used, and where glucose ended up afterward. Mirrors
+// the #metricSheet bottom-sheet pattern above (same markup shape, swipe
+// to dismiss), but its content is simple enough not to need that
+// component's chart/stats-row machinery — just a filtered list.
+let dxMealMemoryData = [];
+
+const DX_OUTCOME_LABEL = { good: 'Stayed in range', high: 'Ran high', low: 'Ran low' };
+
+function closeDxDoseSheet() {
+  const sheet = $('dxDoseSheet');
+  if (sheet) sheet.hidden = true;
+}
+
+function openDxDoseSheet(mealName, outcome) {
+  const sheet = $('dxDoseSheet');
+  if (!sheet) return;
+  const meal = dxMealMemoryData.find(m => m.mealName === mealName);
+  const instances = (meal?.doseInstances || []).filter(i => i.outcome === outcome);
+  if (!instances.length) return;
+
+  $('dxDoseSheetTitle').textContent = mealName;
+  $('dxDoseSheetSub').textContent = `${DX_OUTCOME_LABEL[outcome]} — ${instances.length} instance${instances.length === 1 ? '' : 's'}`;
+
+  $('dxDoseSheetList').innerHTML = instances.map(i => {
+    const afterText = outcome === 'high' ? `peaked at ${fmt1(i.maxGlucose)}`
+      : outcome === 'low' ? `dropped to ${fmt1(i.minGlucose)}`
+      : `stayed ${fmt1(i.minGlucose)}–${fmt1(i.maxGlucose)}`;
+    const when = new Date(i.time).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    return `
+      <div class="dx-mfp-item">
+        <div class="dx-mfp-item__head">
+          <strong>${escapeHtml(when)}</strong>
+          <span class="field-hint">${fmt1(i.dose)}u${i.carbs != null ? ` · ${fmt1(i.carbs)}g carbs` : ''}</span>
+        </div>
+        <div class="field-hint" style="margin-top:4px">
+          Before: ${i.preGlucose != null ? fmt1(i.preGlucose) + ' mmol/L' : '—'} → ${afterText} mmol/L
+        </div>
+      </div>`;
+  }).join('');
+
+  sheet.hidden = false;
+}
+
+document.addEventListener('click', e => {
+  const badge = e.target.closest('[data-dx-dose-outcome]');
+  if (badge) {
+    openDxDoseSheet(badge.dataset.dxDoseMeal, badge.dataset.dxDoseOutcome);
+    return;
+  }
+  if (e.target.closest('#dxDoseSheetClose')) {
+    closeDxDoseSheet();
+    return;
+  }
+  const backdrop = $('dxDoseSheet');
+  if (backdrop && !backdrop.hidden && e.target.closest('#dxDoseSheet') && !e.target.closest('.bottom-sheet')) {
+    closeDxDoseSheet();
+  }
+});
+
+(function() {
+  let startY = 0;
+  document.addEventListener('touchstart', e => {
+    const sheet = $('dxDoseSheet');
+    if (sheet && !sheet.hidden && e.target.closest('.bottom-sheet')) startY = e.touches[0].clientY;
+  }, { passive: true });
+  document.addEventListener('touchend', e => {
+    const sheet = $('dxDoseSheet');
+    if (sheet && !sheet.hidden && e.target.closest('.bottom-sheet')) {
+      const dy = e.changedTouches[0].clientY - startY;
+      if (dy > 80) closeDxDoseSheet();
     }
   }, { passive: true });
 })();

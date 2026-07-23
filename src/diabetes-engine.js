@@ -1470,6 +1470,7 @@ function mealMemory(input, now = Date.now()) {
     const window = readings.filter(r => r.ms >= ms && r.ms <= ms + MEAL_DOSE_RATING_WINDOW_HOURS * 3600000);
     if (window.length < 2) continue;
 
+    const preR = nearestReading(readings, ms, 20);
     const minV = Math.min(...window.map(r => r.value));
     const maxV = Math.max(...window.map(r => r.value));
     let outcome = 'good';
@@ -1477,7 +1478,15 @@ function mealMemory(input, now = Date.now()) {
     else if (maxV > high) outcome = 'high';
 
     if (!doseByName[m.mealName]) doseByName[m.mealName] = [];
-    doseByName[m.mealName].push({ time: ms, dose: m.actualDose, outcome });
+    doseByName[m.mealName].push({
+      time: ms,
+      dose: m.actualDose,
+      carbs: Number.isFinite(Number(m.carbs)) ? Number(m.carbs) : null,
+      preGlucose: preR ? preR.value : null,
+      minGlucose: minV,
+      maxGlucose: maxV,
+      outcome,
+    });
   }
   const doseStatsByName = {};
   for (const [mealName, occ] of Object.entries(doseByName)) {
@@ -1490,6 +1499,7 @@ function mealMemory(input, now = Date.now()) {
       avgDoseUsed: mean(occ.map(o => o.dose)),
       doseRatingCounts: counts,
       lastDose: { units: sorted[0].dose, outcome: sorted[0].outcome },
+      doseInstances: sorted,
     };
   }
 
