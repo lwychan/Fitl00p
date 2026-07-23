@@ -4528,10 +4528,12 @@ function renderDxMfpImports(items, boluses) {
     // Meal-grouped imports encode "Section — ingredient, ingredient, …"
     // in meal_name (see MFP_BOOKMARKLET_SRC) — split that into a bold
     // section title plus an ingredient sub-line. Older per-ingredient
-    // rows (imported before grouping) have no dash and just show as-is.
-    const dashIdx = it.meal_name.indexOf('—');
-    const title = dashIdx >= 0 ? it.meal_name.slice(0, dashIdx).trim() : it.meal_name;
-    const ingredients = dashIdx >= 0 ? it.meal_name.slice(dashIdx + 1).trim() : '';
+    // rows (imported before grouping) have no dash and just show as-is;
+    // meal_name can also be null on very old rows, hence the fallback.
+    const mealName = it.meal_name || 'Meal';
+    const dashIdx = mealName.indexOf('—');
+    const title = dashIdx >= 0 ? mealName.slice(0, dashIdx).trim() : mealName;
+    const ingredients = dashIdx >= 0 ? mealName.slice(dashIdx + 1).trim() : '';
     return `
       <div class="dx-mfp-item">
         <div class="dx-mfp-item__head">

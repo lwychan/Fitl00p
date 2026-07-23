@@ -3185,6 +3185,10 @@ body { font-size: 15px; }
   border-top: 1.5px dashed #3B9EFF;
   border-radius: 0;
 }
+#dxMfpImportsBody {
+  max-height: 420px;
+  overflow-y: auto;
+}
 .dx-mfp-item {
   padding: 10px 0;
   border-top: 1px solid var(--border-2);
