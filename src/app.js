@@ -3681,29 +3681,48 @@ const MFP_BOOKMARKLET_SRC = `(function(){
     var names = {'1':'breakfast','2':'lunch','3':'dinner','4':'snacks','5':'snacks','6':'snacks'};
     return names[numStr] || 'snacks';
   }
+  // One item per meal *section* (not per ingredient) — dosing happens
+  // per meal, so the section's own totals row (already summed by MFP)
+  // becomes the item's macros, and the individual food names are joined
+  // into the label purely for display/reference.
   var items = [];
   var rows = document.querySelectorAll('#diary-table tr');
   var section = 'breakfast';
+  var sectionLabel = 'Breakfast';
+  var sectionNames = [];
+  function flushSection(totalsRow){
+    if (!sectionNames.length) return;
+    var cells = totalsRow.querySelectorAll('td');
+    var calories = numFromCell(cells[1]);
+    var carbsG = numFromCell(cells[2]);
+    var fatG = numFromCell(cells[3]);
+    var proteinG = numFromCell(cells[4]);
+    if (carbsG != null || fatG != null || proteinG != null || calories != null) {
+      items.push({ mealSection: section, name: sectionLabel + ' \\u2014 ' + sectionNames.join(', '), carbsG: carbsG, fatG: fatG, proteinG: proteinG, calories: calories });
+    }
+    sectionNames = [];
+  }
   for (var r = 0; r < rows.length; r++) {
     var row = rows[r];
     var cls = row.className || '';
     if (/meal_header/i.test(cls)) {
       var headCell = row.querySelector('td');
-      section = sectionName(headCell ? (headCell.textContent || '').trim() : '');
+      var rawSection = headCell ? (headCell.textContent || '').trim() : '';
+      section = sectionName(rawSection);
+      sectionLabel = rawSection && !/^\\d+$/.test(rawSection) ? rawSection : (section.charAt(0).toUpperCase() + section.slice(1));
+      sectionNames = [];
       continue;
     }
-    if (/bottom|total/i.test(cls)) continue;
+    if (/bottom|total/i.test(cls)) {
+      flushSection(row);
+      continue;
+    }
     var cells = row.querySelectorAll('td');
     if (cells.length < 7) continue;
     var rawName = (cells[0].textContent || '').trim();
     if (!rawName) continue;
     var name = rawName.replace(/\\s*\\/?,\\s*[\\d.]+\\s*[a-zA-Z%]*\\s*$/, '').trim() || rawName;
-    var calories = numFromCell(cells[1]);
-    var carbsG = numFromCell(cells[2]);
-    var fatG = numFromCell(cells[3]);
-    var proteinG = numFromCell(cells[4]);
-    if (carbsG == null && fatG == null && proteinG == null && calories == null) continue;
-    items.push({ mealSection: section, name: name, carbsG: carbsG, fatG: fatG, proteinG: proteinG, calories: calories });
+    sectionNames.push(name);
   }
   if (!items.length) {
     alert('fitl00p: no food rows found. Make sure you\\'re on your own MFP diary page (myfitnesspal.com/food/diary) with food logged today.');
@@ -3773,29 +3792,48 @@ const MFP_SHORTCUT_SRC = `(function(){
     var names = {'1':'breakfast','2':'lunch','3':'dinner','4':'snacks','5':'snacks','6':'snacks'};
     return names[numStr] || 'snacks';
   }
+  // One item per meal *section* (not per ingredient) — dosing happens
+  // per meal, so the section's own totals row (already summed by MFP)
+  // becomes the item's macros, and the individual food names are joined
+  // into the label purely for display/reference.
   var items = [];
   var rows = document.querySelectorAll('#diary-table tr');
   var section = 'breakfast';
+  var sectionLabel = 'Breakfast';
+  var sectionNames = [];
+  function flushSection(totalsRow){
+    if (!sectionNames.length) return;
+    var cells = totalsRow.querySelectorAll('td');
+    var calories = numFromCell(cells[1]);
+    var carbsG = numFromCell(cells[2]);
+    var fatG = numFromCell(cells[3]);
+    var proteinG = numFromCell(cells[4]);
+    if (carbsG != null || fatG != null || proteinG != null || calories != null) {
+      items.push({ mealSection: section, name: sectionLabel + ' \\u2014 ' + sectionNames.join(', '), carbsG: carbsG, fatG: fatG, proteinG: proteinG, calories: calories });
+    }
+    sectionNames = [];
+  }
   for (var r = 0; r < rows.length; r++) {
     var row = rows[r];
     var cls = row.className || '';
     if (/meal_header/i.test(cls)) {
       var headCell = row.querySelector('td');
-      section = sectionName(headCell ? (headCell.textContent || '').trim() : '');
+      var rawSection = headCell ? (headCell.textContent || '').trim() : '';
+      section = sectionName(rawSection);
+      sectionLabel = rawSection && !/^\\d+$/.test(rawSection) ? rawSection : (section.charAt(0).toUpperCase() + section.slice(1));
+      sectionNames = [];
       continue;
     }
-    if (/bottom|total/i.test(cls)) continue;
+    if (/bottom|total/i.test(cls)) {
+      flushSection(row);
+      continue;
+    }
     var cells = row.querySelectorAll('td');
     if (cells.length < 7) continue;
     var rawName = (cells[0].textContent || '').trim();
     if (!rawName) continue;
     var name = rawName.replace(/\\s*\\/?,\\s*[\\d.]+\\s*[a-zA-Z%]*\\s*$/, '').trim() || rawName;
-    var calories = numFromCell(cells[1]);
-    var carbsG = numFromCell(cells[2]);
-    var fatG = numFromCell(cells[3]);
-    var proteinG = numFromCell(cells[4]);
-    if (carbsG == null && fatG == null && proteinG == null && calories == null) continue;
-    items.push({ mealSection: section, name: name, carbsG: carbsG, fatG: fatG, proteinG: proteinG, calories: calories });
+    sectionNames.push(name);
   }
   if (!items.length) {
     completion('fitl00p: no food rows found on this page.');
@@ -4487,12 +4525,20 @@ function renderDxMfpImports(items, boluses) {
         <button class="btn btn--ghost btn--small" data-action="link" data-id="${it.id}">Link</button>
         <button class="btn btn--ghost btn--small" data-action="hypo" data-id="${it.id}">Mark hypo</button>`;
     }
+    // Meal-grouped imports encode "Section — ingredient, ingredient, …"
+    // in meal_name (see MFP_BOOKMARKLET_SRC) — split that into a bold
+    // section title plus an ingredient sub-line. Older per-ingredient
+    // rows (imported before grouping) have no dash and just show as-is.
+    const dashIdx = it.meal_name.indexOf('—');
+    const title = dashIdx >= 0 ? it.meal_name.slice(0, dashIdx).trim() : it.meal_name;
+    const ingredients = dashIdx >= 0 ? it.meal_name.slice(dashIdx + 1).trim() : '';
     return `
       <div class="dx-mfp-item">
         <div class="dx-mfp-item__head">
-          <strong>${escapeHtml(it.meal_name)}</strong>
+          <strong>${escapeHtml(title)}</strong>
           <span class="field-hint">${fmt1(it.carbs_g)}g carbs · ${new Date(eatenMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
         </div>
+        ${ingredients ? `<div class="field-hint" style="margin-top:2px">${escapeHtml(ingredients)}</div>` : ''}
         ${suggestedHtml}
         <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px">${actionHtml}</div>
       </div>`;
