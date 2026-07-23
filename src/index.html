@@ -1136,6 +1136,30 @@
         </div>
       </div>
 
+      <div class="settings-section">
+        <div class="settings-section__title">MyFitnessPal import</div>
+        <p style="font-size:13px;color:var(--ink-3);line-height:1.6">
+          MyFitnessPal blocks server-side access to diaries, so this works as a bookmarklet instead: a button you drag to your bookmarks bar. Open your own MFP diary while logged in, tap it, and it reads the page directly in your session and sends today's food to fitl00p — no password ever touches this app. For best results, turn on the Carbs/Fat/Protein columns under MFP → Settings → Diary Settings → Nutrients Displayed.
+        </p>
+        <p style="font-size:13px;color:var(--ink-3);line-height:1.6">
+          Each item is auto-matched to the nearest Nightscout bolus with a similar carb count. If nothing matches and your glucose is low or falling, it's tagged as a hypo treatment instead — no bolus expected. Anything else is left for you to link by hand in the Diabetes tab.
+        </p>
+        <div id="mfpNoToken">
+          <button class="btn btn--primary btn--small" id="btnMfpGenerateToken">Set up MyFitnessPal import</button>
+        </div>
+        <div id="mfpHasToken" hidden>
+          <p class="field-hint" style="text-transform:none;letter-spacing:0;font-weight:400;margin-bottom:8px">On a computer: drag this button to your bookmarks bar.</p>
+          <a class="btn btn--ghost btn--small" id="mfpBookmarklet" href="javascript:void(0)" style="display:inline-block;text-decoration:none" draggable="true">📥 Send to fitl00p</a>
+          <p class="field-hint" style="text-transform:none;letter-spacing:0;font-weight:400;margin-top:10px;margin-bottom:8px">On iPhone/iPad: bookmark any page in Safari first, then edit that bookmark and paste this into the URL field instead of the address.</p>
+          <div class="settings-actions" style="padding-top:0">
+            <button class="btn btn--ghost btn--small" id="btnMfpCopyLink">Copy bookmarklet link</button>
+            <button class="btn btn--ghost btn--small" id="btnMfpRegenerateToken">Regenerate link</button>
+          </div>
+          <p class="field-hint" style="text-transform:none;letter-spacing:0;font-weight:400;margin-top:8px">Regenerating breaks the old bookmarklet — you'd need to set it up again.</p>
+        </div>
+        <span class="save-status" id="mfpTokenStatus"></span>
+      </div>
+
       <div class="settings-section settings-section--danger">
         <div class="settings-section__title">Account</div>
         <!-- Admin only -->
@@ -1252,6 +1276,11 @@
         <div class="card" id="dxHealthCard">
           <div class="card-eyebrow">Weekly insulin health check</div>
           <div id="dxHealthBody"></div>
+        </div>
+
+        <div class="card" id="dxMfpImportsCard" hidden>
+          <div class="card-eyebrow">MyFitnessPal imports <span class="card-eyebrow-sub">last 3 days</span></div>
+          <div id="dxMfpImportsBody"></div>
         </div>
 
         <div class="card" id="dxMealMemoryCard">

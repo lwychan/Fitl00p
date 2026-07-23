@@ -269,11 +269,17 @@ const el = {
   dxPatternsBody:    $('dxPatternsBody'),
   dxHealthBody:      $('dxHealthBody'),
   dxMealMemoryBody:  $('dxMealMemoryBody'),
+  dxMfpImportsCard:  $('dxMfpImportsCard'),
+  dxMfpImportsBody:  $('dxMfpImportsBody'),
   dxSensitivityBody: $('dxSensitivityBody'),
   dxRegimenBody:     $('dxRegimenBody'),
   dxGlucoseChart:      $('dxGlucoseChart'),
   dxGlucoseChartEmpty: $('dxGlucoseChartEmpty'),
   dxLastSync:        $('dxLastSync'),
+  mfpNoToken:        $('mfpNoToken'),
+  mfpHasToken:       $('mfpHasToken'),
+  mfpBookmarklet:    $('mfpBookmarklet'),
+  mfpTokenStatus:    $('mfpTokenStatus'),
   // global
   toast:         $('toast'),
 };
@@ -3256,6 +3262,7 @@ async function loadSettings() {
   if ($('setCorrectionFactor')) $('setCorrectionFactor').value = profile.diabetes_correction_factor ?? '';
   if ($('setInsulinPeak'))     $('setInsulinPeak').value     = profile.diabetes_insulin_peak_min     ?? '';
   if ($('setInsulinDuration')) $('setInsulinDuration').value = profile.diabetes_insulin_duration_min ?? '';
+  renderMfpImportSettings();
 
   el.setDisplayName.value  = profile.display_name || '';
   el.setUnit.value         = profile.weight_unit  || 'kg';
@@ -3419,6 +3426,28 @@ async function fetchMacroMealLog() {
   }));
 }
 
+// Recent MyFitnessPal-sourced entries (mfp-import.js writes these) for the
+// review card — separate from fetchMacroMealLog above because this needs
+// the match/hypo bookkeeping columns, not the engine-shaped {time, carbs,
+// fat, protein} rows suggestMacroMealDose reads.
+async function fetchMfpImports() {
+  if (!currentUser) return [];
+  const sinceIso = new Date(Date.now() - 3 * 24 * 60 * 60000).toISOString();
+  const { data, error } = await db
+    .from('diabetes_meals')
+    .select('id, eaten_at, meal_name, carbs_g, fat_g, protein_g, match_status, hypo_treatment, matched_bolus_time, matched_bolus_units')
+    .eq('user_id', currentUser.id)
+    .eq('source', 'mfp')
+    .gte('eaten_at', sinceIso)
+    .order('eaten_at', { ascending: false })
+    .limit(50);
+  if (error) {
+    console.error('fetchMfpImports error:', error.message);
+    return [];
+  }
+  return data || [];
+}
+
 // Distinct past meal names, most-recently-used first, for the meal-dose
 // helper's picker — lets a recurring meal be selected instead of retyped,
 // and is exactly what suggestMacroMealDose matches on to personalize.
@@ -3514,6 +3543,131 @@ $('btnSaveDiabetesSettings')?.addEventListener('click', async () => {
   flash($('diabetesSettingsStatus'), 'Saved.');
 });
 
+/* ── MyFitnessPal import bookmarklet ────────────────────────
+   MFP sits behind a Cloudflare bot challenge that blocks any
+   server-side fetch (confirmed directly against a real public diary —
+   this isn't a "diary is private" issue), so there's no way for a
+   Netlify function to poll it. A bookmarklet runs inside the user's
+   own already-authenticated MFP tab instead — same-origin, so it can
+   read the diary DOM directly with no CORS/Cloudflare problem — and
+   POSTs the parsed items to mfp-import.js, which does the actual
+   bolus-matching against Nightscout. The __TOKEN__/__ENDPOINT__
+   placeholders get swapped for real values (as JSON string literals,
+   so they're safely quoted) when the bookmarklet is built. */
+const MFP_BOOKMARKLET_SRC = `(function(){
+  var TOKEN = __TOKEN__;
+  var ENDPOINT = __ENDPOINT__;
+  function num(text){
+    if (text == null) return null;
+    var m = String(text).replace(/,/g, '').match(/-?\\d+(\\.\\d+)?/);
+    return m ? parseFloat(m[0]) : null;
+  }
+  function colMap(theadRow){
+    var map = {};
+    if (!theadRow) return map;
+    var cells = theadRow.querySelectorAll('th, td');
+    for (var i = 0; i < cells.length; i++) {
+      var t = (cells[i].textContent || '').trim().toLowerCase();
+      if (/carb/.test(t)) map.carbs = i;
+      else if (/fat/.test(t)) map.fat = i;
+      else if (/protein/.test(t)) map.protein = i;
+      else if (/calor/.test(t)) map.calories = i;
+    }
+    return map;
+  }
+  function sectionName(tbody){
+    var names = {'1':'breakfast','2':'lunch','3':'dinner','4':'snacks','5':'snacks','6':'snacks'};
+    var m = (tbody.id || '').match(/meal_(\\d+)/);
+    if (m && names[m[1]]) return names[m[1]];
+    return 'snacks';
+  }
+  var items = [];
+  var tbodies = document.querySelectorAll('tbody[id^="meal_"]');
+  for (var t = 0; t < tbodies.length; t++) {
+    var tbody = tbodies[t];
+    var table = tbody.closest('table');
+    var map = colMap(table ? table.querySelector('thead tr') : null);
+    var section = sectionName(tbody);
+    var rows = tbody.querySelectorAll('tr');
+    for (var r = 0; r < rows.length; r++) {
+      var row = rows[r];
+      if (row.className && /total/i.test(row.className)) continue;
+      var nameCell = row.querySelector('td.first, td:first-child');
+      var name = nameCell ? nameCell.textContent.trim() : '';
+      if (!name) continue;
+      var cells = row.querySelectorAll('td');
+      var carbsG = map.carbs != null && cells[map.carbs] ? num(cells[map.carbs].textContent) : null;
+      var fatG = map.fat != null && cells[map.fat] ? num(cells[map.fat].textContent) : null;
+      var proteinG = map.protein != null && cells[map.protein] ? num(cells[map.protein].textContent) : null;
+      var calories = map.calories != null && cells[map.calories] ? num(cells[map.calories].textContent) : null;
+      if (carbsG == null && fatG == null && proteinG == null && calories == null) continue;
+      items.push({ mealSection: section, name: name, carbsG: carbsG, fatG: fatG, proteinG: proteinG, calories: calories });
+    }
+  }
+  if (!items.length) {
+    alert('fitl00p: no food rows found. Make sure you\\'re on your own MFP diary page (myfitnesspal.com/food/diary) with food logged today.');
+    return;
+  }
+  var preview = items.slice(0, 8).map(function(it){
+    return '- ' + it.name + (it.carbsG != null ? ' (' + it.carbsG + 'g carbs)' : ' (no carb figure — turn on Carbs/Fat/Protein columns in MFP Diary Settings for better matching)');
+  }).join('\\n') + (items.length > 8 ? '\\n…and ' + (items.length - 8) + ' more' : '');
+  if (!confirm('Send ' + items.length + ' item(s) to fitl00p?\\n\\n' + preview)) return;
+  var dateInput = document.querySelector('.date-picker input, input[name="date"]');
+  var dateVal = (dateInput && dateInput.value) || new Date().toISOString().slice(0, 10);
+  fetch(ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: TOKEN, date: dateVal, items: items }),
+  }).then(function(r){ return r.json(); }).then(function(res){
+    if (res.error) { alert('fitl00p import failed: ' + res.error); return; }
+    alert('fitl00p: imported ' + res.imported + ' (skipped ' + res.skippedDuplicate + ' already sent). ' +
+      res.autoMatched + ' matched to a bolus, ' + res.hypoTagged + ' tagged as hypo treatments, ' + res.unmatched + ' need linking by hand.');
+  }).catch(function(err){
+    alert('fitl00p import failed: ' + err.message);
+  });
+})();`;
+
+function buildMfpBookmarklet(token) {
+  const endpoint = `${location.origin}/.netlify/functions/mfp-import`;
+  const src = MFP_BOOKMARKLET_SRC
+    .replace('__TOKEN__', JSON.stringify(token))
+    .replace('__ENDPOINT__', JSON.stringify(endpoint));
+  return 'javascript:' + src;
+}
+
+function renderMfpImportSettings() {
+  const token = profile?.diabetes_mfp_import_token;
+  if (el.mfpNoToken) el.mfpNoToken.hidden = !!token;
+  if (el.mfpHasToken) el.mfpHasToken.hidden = !token;
+  if (token && el.mfpBookmarklet) el.mfpBookmarklet.href = buildMfpBookmarklet(token);
+}
+
+async function generateMfpToken() {
+  if (!currentUser) return;
+  const token = Array.from(crypto.getRandomValues(new Uint8Array(24)))
+    .map(b => b.toString(16).padStart(2, '0')).join('');
+  const { error } = await saveNsProfileFields({ diabetes_mfp_import_token: token });
+  if (error) { flash($('mfpTokenStatus'), 'Error: ' + error.message, true); return; }
+  renderMfpImportSettings();
+  flash($('mfpTokenStatus'), 'Ready — drag the button to your bookmarks bar.');
+}
+
+$('btnMfpGenerateToken')?.addEventListener('click', generateMfpToken);
+$('btnMfpRegenerateToken')?.addEventListener('click', async () => {
+  if (!confirm('This breaks the old bookmarklet — you\'ll need to set it up again. Continue?')) return;
+  await generateMfpToken();
+});
+$('btnMfpCopyLink')?.addEventListener('click', async () => {
+  const href = el.mfpBookmarklet?.href;
+  if (!href) return;
+  try {
+    await navigator.clipboard.writeText(href);
+    flash($('mfpTokenStatus'), 'Copied — paste it as a bookmark\'s URL.');
+  } catch {
+    flash($('mfpTokenStatus'), 'Could not copy — long-press the button above instead.', true);
+  }
+});
+
 /* ── Data fetch (via the diabetes-sync Netlify function) ──── */
 let diabetesData = null;       // adapted {glucoseHistory, boluses, corrections, basalDoses}
 let diabetesFetchedAt = null;
@@ -3568,7 +3722,7 @@ async function loadDiabetes() {
 
   try {
     const data = await fetchDiabetesData();
-    renderDiabetesTab(data);
+    await renderDiabetesTab(data);
   } catch (err) {
     console.error('Diabetes sync error:', err);
     el.dxCorrectionBody.innerHTML = `<p class="empty-state" style="color:var(--red)">Couldn't reach Nightscout: ${escapeHtml(err.message)}</p>`;
@@ -3818,7 +3972,7 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now) {
   }
 }
 
-function renderDiabetesTab(data) {
+async function renderDiabetesTab(data) {
   const settings = dxSettings();
   const input = { ...data, settings, activities: { workouts: [] } };
   const now = Date.now();
@@ -3844,6 +3998,9 @@ function renderDiabetesTab(data) {
 
   const meals = DiabetesEngine.mealMemory(input, now);
   renderDxMealMemory(meals);
+
+  const mfpImports = await fetchMfpImports();
+  renderDxMfpImports(mfpImports, data.boluses || []);
 
   const sensitivity = DiabetesEngine.sensitivityMap(input, now);
   renderDxSensitivity(sensitivity);
@@ -4046,6 +4203,85 @@ function renderDxHealth(h) {
     ${trendRow}
   `;
 }
+
+function renderDxMfpImports(items, boluses) {
+  if (!el.dxMfpImportsCard) return;
+  if (!items.length) {
+    // Only show an empty state if MFP import is actually set up — otherwise
+    // keep the card hidden entirely rather than advertising an unused feature.
+    el.dxMfpImportsCard.hidden = !profile?.diabetes_mfp_import_token;
+    if (!el.dxMfpImportsCard.hidden) {
+      el.dxMfpImportsBody.innerHTML = '<p class="empty-state">Nothing imported yet — while viewing your MFP diary, tap the bookmarklet from Settings.</p>';
+    }
+    return;
+  }
+  el.dxMfpImportsCard.hidden = false;
+
+  el.dxMfpImportsBody.innerHTML = items.map(it => {
+    const eatenMs = new Date(it.eaten_at).getTime();
+    const isMatched = it.match_status === 'auto' || it.match_status === 'manual';
+    let actionHtml;
+    if (isMatched) {
+      actionHtml = `<span class="badge badge--green">✓ ${fmt1(it.matched_bolus_units)}u${it.match_status === 'manual' ? ' (linked)' : ''}</span>`;
+    } else if (it.hypo_treatment) {
+      actionHtml = `<span class="badge badge--blue">Hypo treatment — no bolus needed</span>
+        <button class="btn btn--ghost btn--small" data-action="unhypo" data-id="${it.id}" style="margin-left:6px">Not a hypo?</button>`;
+    } else {
+      const dayBoluses = boluses.filter(b => {
+        const bd = new Date(Number(b.time));
+        const id_ = new Date(eatenMs);
+        return Number(b.units) > 0 && bd.toDateString() === id_.toDateString();
+      });
+      actionHtml = `
+        <select data-role="mfp-bolus-pick" data-id="${it.id}">
+          <option value="">Link a dose…</option>
+          ${dayBoluses.map(b => `<option value="${b.time}|${b.units}">${new Date(Number(b.time)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} — ${fmt1(b.units)}u</option>`).join('')}
+        </select>
+        <button class="btn btn--ghost btn--small" data-action="link" data-id="${it.id}">Link</button>
+        <button class="btn btn--ghost btn--small" data-action="hypo" data-id="${it.id}">Mark hypo</button>`;
+    }
+    return `
+      <div class="dx-mfp-item">
+        <div class="dx-mfp-item__head">
+          <strong>${escapeHtml(it.meal_name)}</strong>
+          <span class="field-hint">${fmt1(it.carbs_g)}g carbs · ${new Date(eatenMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px">${actionHtml}</div>
+      </div>`;
+  }).join('');
+}
+
+el.dxMfpImportsBody?.addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-action]');
+  if (!btn || !currentUser) return;
+  const id = btn.dataset.id;
+  const action = btn.dataset.action;
+
+  let updates = null;
+  if (action === 'link') {
+    const select = el.dxMfpImportsBody.querySelector(`select[data-id="${id}"]`);
+    const val = select?.value;
+    if (!val) { showToast('Pick a dose first', true); return; }
+    const [time, units] = val.split('|');
+    updates = {
+      matched_bolus_time: new Date(Number(time)).toISOString(),
+      matched_bolus_units: Number(units),
+      match_status: 'manual',
+      hypo_treatment: false,
+    };
+  } else if (action === 'hypo') {
+    updates = { match_status: 'hypo-manual', hypo_treatment: true };
+  } else if (action === 'unhypo') {
+    updates = { match_status: 'unmatched', hypo_treatment: false };
+  }
+  if (!updates) return;
+
+  const { error } = await db.from('diabetes_meals').update(updates).eq('id', id).eq('user_id', currentUser.id);
+  if (error) { showToast('Failed: ' + error.message, true); return; }
+
+  const [mfpImports, data] = await Promise.all([fetchMfpImports(), fetchDiabetesData()]);
+  renderDxMfpImports(mfpImports, data?.boluses || []);
+});
 
 function renderDxMealMemory(meals) {
   if (!meals.length) {
