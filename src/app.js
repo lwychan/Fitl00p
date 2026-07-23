@@ -495,6 +495,15 @@ function initApp() {
       // thrown/rejected network call here can never leave authHandling stuck
       // true — which would otherwise silently block every future login attempt
       // on this page load, even ones Supabase itself accepts.
+      //
+      // try/finally alone isn't enough, though: it only protects against a
+      // call that eventually rejects. A call that never settles at all (a
+      // hung fetch — seen in practice, e.g. right after the automatic
+      // session-resume at launch) leaves the await pending forever, so
+      // finally never runs either, and authHandling stays stuck true —
+      // silently swallowing every future sign-in with no error shown
+      // anywhere. loadProfileWithTimeout bounds every attempt so a hang
+      // becomes a normal, loggable failure instead of a permanent wedge.
       if (authHandling) return;
       authHandling = true;
 
@@ -502,9 +511,9 @@ function initApp() {
 
       try {
         // Load profile — up to 3 attempts with short delays
-        await loadProfile();
-        if (!profile) { await new Promise(r => setTimeout(r, 500)); await loadProfile(); }
-        if (!profile) { await new Promise(r => setTimeout(r, 500)); await loadProfile(); }
+        await loadProfileWithTimeout();
+        if (!profile) { await new Promise(r => setTimeout(r, 500)); await loadProfileWithTimeout(); }
+        if (!profile) { await new Promise(r => setTimeout(r, 500)); await loadProfileWithTimeout(); }
       } finally {
         authHandling = false;
       }
@@ -691,6 +700,26 @@ async function loadProfile() {
 
   activePlan = plan;
   return true;
+}
+
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+// Bounds loadProfile so a hung network call can be retried instead of
+// wedging the login flow forever (see the authHandling comment in the
+// auth-state-change handler for what that looks like without this).
+async function loadProfileWithTimeout() {
+  try {
+    return await withTimeout(loadProfile(), 8000, 'loadProfile');
+  } catch (err) {
+    console.error('loadProfile attempt failed:', err?.message || err);
+    return false;
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════
