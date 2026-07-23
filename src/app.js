@@ -261,6 +261,7 @@ const el = {
   setUnit:           $('setUnit'),
   setTdee:           $('setTdee'),
   setStepsGoal:      $('setStepsGoal'),
+  setEatTargetManual: $('setEatTargetManual'),
   setPlanStart:      $('setPlanStart'),
   setPlanTarget:     $('setPlanTarget'),
   setPlanStartDate:  $('setPlanStartDate'),
@@ -1039,7 +1040,9 @@ function renderPlanCard(logs, smartTarget) {
   // Use smart target if available, otherwise fall back to simple calculation
   if (smartTarget) {
     el.dCalTarget.textContent = `${smartTarget.eatTarget.toLocaleString()} kcal`;
-    const methodNote = smartTarget.method === 'observed'
+    const methodNote = smartTarget.method === 'manual'
+      ? '(your override — plan pace would need this much)'
+      : smartTarget.method === 'observed'
       ? '(based on your current intake)'
       : '(based on plan target)';
     if (el.dDeficitNeeded) {
@@ -3944,6 +3947,7 @@ async function loadSettings() {
   el.setUnit.value         = profile.weight_unit  || 'kg';
   el.setTdee.value         = profile.tdee         || 2200;
   el.setStepsGoal.value    = profile.steps_goal   || 10000;
+  el.setEatTargetManual.value = profile.eat_target_manual_kcal ?? '';
 
   // Body stats
   if ($('setHeight')) $('setHeight').value = profile.height_cm  || '';
@@ -3998,6 +4002,7 @@ el.btnSaveSettings.addEventListener('click', async () => {
     uses_apple_health: !!$('setUsesAppleHealth')?.checked,
     tdee:             parseInt(el.setTdee.value)      || 2200,
     steps_goal:       parseInt(el.setStepsGoal.value) || 10000,
+    eat_target_manual_kcal: el.setEatTargetManual.value.trim() ? parseInt(el.setEatTargetManual.value) : null,
     goal:             $('setGoal')?.value              || 'tone',
     session_duration: parseInt($('setDuration')?.value) || 45,
     prefer_full_body: !!$('setPreferFullBody')?.checked,
@@ -5844,10 +5849,20 @@ async function computeSmartEatTarget() {
   // Floor at 1,200 kcal
   eatTarget = Math.max(1200, eatTarget);
 
-  // ── Persist on Sundays or if never set ───────────────────
+  // A manually-set target always wins over the plan-pace calculation above —
+  // the auto-calc floors at a bare safety minimum, not what the user actually
+  // wants to eat to, so it must never silently overwrite an explicit choice.
+  if (profile.eat_target_manual_kcal) {
+    eatTarget = profile.eat_target_manual_kcal;
+    method = 'manual';
+  }
+
+  // ── Persist on Sundays or if never set (manual overrides are never
+  // auto-persisted back into eat_target_kcal — that field tracks the
+  // auto-calc's own history, independent of the manual override) ──
   const isSunday = new Date().getDay() === 0;
   const neverSet = !profile.eat_target_kcal;
-  if (isSunday || neverSet) {
+  if (method !== 'manual' && (isSunday || neverSet)) {
     await db.from('profiles').update({
       eat_target_kcal:       eatTarget,
       eat_target_updated_at: todayISO().slice(0, 10),
