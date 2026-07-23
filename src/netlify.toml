@@ -2,6 +2,25 @@
   publish   = "."
   functions = "netlify/functions"
 
+# ── Scheduled push notifications ───────────────────────────────
+# Netlify cron runs in UTC with no timezone support, so each schedule
+# below lists BOTH UTC hours a London-local time can fall on across the
+# year (BST vs GMT) — the function itself checks the real local time via
+# londonNow() in _lib/webpush.js and no-ops on the wrong one, so the
+# actual send time stays fixed at the intended London local time year
+# round instead of drifting an hour at each DST change.
+[functions."notify-daily-summary"]
+  schedule = "0 6,7 * * *"      # 07:00 Europe/London daily
+
+[functions."notify-tirzepatide"]
+  schedule = "10 8,9 * * 5"     # 09:10 Europe/London, Fridays
+
+[functions."notify-weighin"]
+  schedule = "10 8,9 * * 2"     # 09:10 Europe/London, Tuesdays
+
+[functions."notify-steps-check"]
+  schedule = "0 15,16 * * *"    # 16:00 Europe/London daily
+
 # IMPORTANT: Add these environment variables in Netlify dashboard
 # Site → Site configuration → Environment variables:
 #   VAPID_PUBLIC          (see setup guide)
