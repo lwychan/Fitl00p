@@ -5,7 +5,7 @@
 
 /* ── SHARED STRUCTURAL TOKENS (never theme-dependent) ──── */
 :root {
-  --tab-h:    64px;
+  --tab-h:    72px;
   --topbar-h: 56px;
   --r-sm:     8px;
   --r-md:     12px;
@@ -310,20 +310,20 @@ body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 3px;
+  gap: 4px;
   background: none;
   border: none;
   cursor: pointer;
   color: var(--ink-4);
   font-family: var(--ui);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
   letter-spacing: .01em;
   transition: color .15s;
-  padding: 6px 4px 2px;
+  padding: 8px 4px 2px;
   position: relative;
 }
-.tab-btn svg { width: 22px; height: 22px; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; transition: stroke .15s; }
+.tab-btn svg { width: 26px; height: 26px; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; transition: stroke .15s; }
 .tab-btn--active { color: var(--blue); }
 .tab-btn--active svg { stroke: var(--blue); }
 .tab-btn--active::before {
@@ -432,6 +432,7 @@ select {
 textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
 
 /* ── BUTTONS ─────────────────────────────────────────────── */
+.btn[hidden] { display: none; }
 .btn {
   display: inline-flex;
   align-items: center;
@@ -631,6 +632,7 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
   font-size: 12px; font-weight: 500; color: var(--ink-3); margin-top: -10px; margin-bottom: 14px; display: block;
 }
 
+.plan-stats[hidden] { display: none; }
 .plan-stats { display: flex; gap: 0; }
 .plan-stat {
   flex: 1; display: flex; flex-direction: column; gap: 3px;
@@ -661,6 +663,7 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
   position: relative;
   padding: 8px 0 0;
 }
+canvas[hidden] { display: none; }
 canvas { width: 100%; display: block; }
 .chart-empty {
   position: absolute; inset: 0;
@@ -989,6 +992,7 @@ input[type="checkbox"].import-check {
 .routine-filters { margin-bottom: 16px; }
 
 /* Recovery-based session suggestion — shown when today's Recovery score is low */
+.readiness-banner[hidden] { display: none; }
 .readiness-banner {
   position: relative;
   display: flex; gap: 12px; align-items: flex-start;
@@ -3231,6 +3235,7 @@ body { font-size: 15px; }
 }
 
 /* ── TIRZEPATIDE TRACKER ─────────────────────────────────── */
+.tz-current-level[hidden] { display: none; }
 .tz-current-level {
   display: flex;
   align-items: baseline;
@@ -3260,6 +3265,7 @@ body { font-size: 15px; }
 .tz-card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
 .tz-card-head .btn--icon { width: 28px; height: 28px; font-size: 13px; }
 .legend-item--tz-preview { color: #F5A623; }
+.tz-preview-row[hidden] { display: none; }
 .tz-preview-row {
   display: flex;
   align-items: center;

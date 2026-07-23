@@ -899,6 +899,21 @@
 
         <div id="tzDoseList" class="tz-dose-list"></div>
       </div>
+
+      <div class="card">
+        <div class="chart-wrap">
+          <canvas id="historyChart" height="200"></canvas>
+          <p class="chart-empty" id="historyChartEmpty">Log weight entries to see your trend.</p>
+        </div>
+        <div id="historyVariance" class="history-variance" hidden></div>
+        <div class="history-legend">
+          <span class="legend-item legend-item--actual">— Actual</span>
+          <span class="legend-item legend-item--proj">- - Projected</span>
+          <span class="legend-item legend-item--ahead">▪ Ahead</span>
+          <span class="legend-item legend-item--behind">▪ Behind</span>
+        </div>
+      </div>
+
       <div class="table-wrap">
         <table class="data-table">
           <thead>

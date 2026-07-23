@@ -3628,6 +3628,7 @@ el.btnExportCsv.addEventListener('click', async () => {
    CHART (canvas, no deps) — supports projection line overlay
 ═══════════════════════════════════════════════════════════ */
 function drawChart(canvas, emptyEl, series, plan) {
+  if (!canvas) return;
   // ── Hard size limits — canvas can NEVER expand beyond these ──
   const MAX_W = 800;
   const MAX_H = 300;
