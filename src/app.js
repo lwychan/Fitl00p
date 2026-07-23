@@ -3654,11 +3654,23 @@ function buildMfpBookmarklet(token) {
   return 'javascript:' + src;
 }
 
+// Kept separately from the anchor's .href on purpose: reading a <a> element's
+// .href back from the DOM re-serializes the URL, and because the bookmarklet
+// source contains "?" (ternaries), the browser's URL parser treats everything
+// after the first one as a query string and percent-encodes spaces in it —
+// silently corrupting the copy-to-clipboard text into invalid JS. Clicking
+// the link still works (browsers percent-decode javascript: URLs before
+// running them), but copying should hand back the exact original string.
+let dxMfpBookmarkletRaw = null;
+
 function renderMfpImportSettings() {
   const token = profile?.diabetes_mfp_import_token;
   if (el.mfpNoToken) el.mfpNoToken.hidden = !!token;
   if (el.mfpHasToken) el.mfpHasToken.hidden = !token;
-  if (token && el.mfpBookmarklet) el.mfpBookmarklet.href = buildMfpBookmarklet(token);
+  if (token && el.mfpBookmarklet) {
+    dxMfpBookmarkletRaw = buildMfpBookmarklet(token);
+    el.mfpBookmarklet.href = dxMfpBookmarkletRaw;
+  }
 }
 
 async function generateMfpToken() {
@@ -3677,7 +3689,7 @@ $('btnMfpRegenerateToken')?.addEventListener('click', async () => {
   await generateMfpToken();
 });
 $('btnMfpCopyLink')?.addEventListener('click', async () => {
-  const href = el.mfpBookmarklet?.href;
+  const href = dxMfpBookmarkletRaw;
   if (!href) return;
   try {
     await navigator.clipboard.writeText(href);
