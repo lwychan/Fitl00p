@@ -988,7 +988,7 @@ input[type="checkbox"].import-check {
 ═══════════════════════════════════════════════════════════ */
 .routine-filters { margin-bottom: 16px; }
 
-/* Recovery-based session suggestion — shown when today's Body Battery is low */
+/* Recovery-based session suggestion — shown when today's Recovery score is low */
 .readiness-banner {
   position: relative;
   display: flex; gap: 12px; align-items: flex-start;
@@ -1602,73 +1602,106 @@ input[type="checkbox"].import-check {
   50%      { opacity: 1;  }
 }
 
-/* ── BODY BATTERY CARD ───────────────────────────────────── */
-.card--battery { grid-column: span 1; }
+/* ── SCORE GAUGE CAROUSEL ────────────────────────────────── */
+.card--scores { grid-column: span 1; }
 
-.battery-wrap {
+.score-carousel {
   display: flex;
-  align-items: center;
-  gap: 20px;
+  gap: 4px;
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  margin: 0 -4px;
+  padding: 2px 4px 6px;
 }
+.score-carousel::-webkit-scrollbar { display: none; }
 
-.battery-gauge {
+.score-gauge {
+  flex: 0 0 33.333%;
+  scroll-snap-align: start;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
+  gap: 6px;
+  padding: 10px 4px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
 }
+.score-gauge__ring { position: relative; width: 70px; height: 70px; }
+.score-gauge__ring svg { transform: rotate(-90deg); }
+.score-ring-bg  { fill: none; stroke: var(--border); stroke-width: 6; }
+.score-ring-fill{ fill: none; stroke-width: 6; stroke-linecap: round; transition: stroke-dashoffset .6s cubic-bezier(.2,.8,.2,1); }
+#scoreRing_recovery  { stroke: var(--purple); }
+#scoreRing_sleep     { stroke: var(--blue); }
+#scoreRing_strain    { stroke: var(--orange); }
+#scoreRing_nutrition { stroke: var(--green); }
 
-.battery-shell {
-  position: relative;
-  width: 56px;
-  height: 104px;
-  border: 3px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface-2);
-  overflow: hidden;
-  display: flex;
-  align-items: flex-end;
-}
-.battery-nub {
+.score-gauge__val {
   position: absolute;
-  top: -9px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 20px;
-  height: 6px;
-  background: var(--border);
-  border-radius: 3px 3px 0 0;
-}
-.battery-fill {
-  width: 100%;
-  height: 0%;
-  transition: height .8s cubic-bezier(.2,.8,.2,1), background .4s;
-  border-radius: 0 0 5px 5px;
-}
-.battery-fill--high   { background: linear-gradient(to top, #16A34A, #4ADE80); }
-.battery-fill--medium { background: linear-gradient(to top, #D97706, #FCD34D); }
-.battery-fill--low    { background: linear-gradient(to top, #DC2626, #F87171); }
-
-.battery-score {
-  font-size: 22px;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
   font-weight: 800;
   letter-spacing: -.02em;
   color: var(--ink);
 }
+.score-gauge__label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-3);
+}
+.score-gauge__icon { font-size: 12px; }
 
-.battery-detail {
-  flex: 1;
+.score-detail {
+  position: relative;
+  margin-top: 8px;
+  padding: 12px;
+  background: var(--surface-2);
+  border-radius: var(--r-md);
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
-.battery-meta {
+.score-detail__close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: none;
+  color: var(--ink-3);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.score-detail__label {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink);
+  padding-right: 24px;
+}
+.score-detail__meta {
   font-size: 13px;
   color: var(--ink-3);
   line-height: 1.5;
   font-weight: 500;
+  margin-top: -6px;
 }
+
+@media (max-width: 380px) {
+  .score-gauge { flex: 0 0 45%; }
+}
+
+/* ── BODY BATTERY DETAIL FACTORS (also used by score gauges) ── */
 .battery-factors {
   display: flex;
   flex-direction: column;
@@ -1698,10 +1731,17 @@ input[type="checkbox"].import-check {
   border-radius: 5px;
   transition: width .5s ease;
 }
-.battery-factor__fill--sleep  { background: var(--blue); }
-.battery-factor__fill--hrv    { background: var(--purple); }
-.battery-factor__fill--hr     { background: var(--green); }
-.battery-factor__fill--cals   { background: var(--orange); }
+.battery-factor__fill--sleep       { background: var(--blue); }
+.battery-factor__fill--hrv         { background: var(--purple); }
+.battery-factor__fill--hr          { background: var(--green); }
+.battery-factor__fill--cals        { background: var(--orange); }
+.battery-factor__fill--deep        { background: var(--purple); }
+.battery-factor__fill--rem         { background: var(--blue); }
+.battery-factor__fill--consistency { background: var(--green); }
+.battery-factor__fill--active      { background: var(--orange); }
+.battery-factor__fill--exercise    { background: var(--red); }
+.battery-factor__fill--intensity   { background: var(--red); }
+.battery-factor__fill--target      { background: var(--ink-3); }
 .battery-factor__val {
   font-weight: 700;
   color: var(--ink-2);
@@ -1710,10 +1750,6 @@ input[type="checkbox"].import-check {
   text-align: right;
 }
 
-@media (max-width: 480px) {
-  .battery-wrap { flex-direction: column; align-items: flex-start; }
-  .battery-shell { width: 48px; height: 88px; }
-}
 
 /* ── HEALTH METRICS TILES ───────────────────────────────── */
 .card--health-tiles {

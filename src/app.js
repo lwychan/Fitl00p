@@ -198,10 +198,13 @@ const el = {
   dashChart:      $('dashChart'),
   dashChartEmpty: $('dashChartEmpty'),
   dashChartSkeleton: $('dashChartSkeleton'),
-  batteryFill:    $('batteryFill'),
-  batteryScore:   $('batteryScore'),
-  batteryMeta:    $('batteryMeta'),
-  batteryFactors: $('batteryFactors'),
+  scoreCarousel:      $('scoreCarousel'),
+  scoreCarouselEmpty: $('scoreCarouselEmpty'),
+  scoreDetail:        $('scoreDetail'),
+  scoreDetailLabel:   $('scoreDetailLabel'),
+  scoreDetailMeta:    $('scoreDetailMeta'),
+  scoreDetailFactors: $('scoreDetailFactors'),
+  scoreDetailClose:   $('scoreDetailClose'),
   // Health tiles
   healthTiles:      $('healthTiles'),
   healthTilesEmpty: $('healthTilesEmpty'),
@@ -838,14 +841,14 @@ async function _loadDashboardInner() {
     // Fetch last 2 days of health data — overnight metrics (VO2, HRV, sleep)
     // come from the previous night's sync, not today's row
     db.from('health_daily')
-      .select('readiness_score, sleep_total_hrs, sleep_deep_hrs, sleep_rem_hrs, hrv_ms, resting_hr, active_energy_kcal, resting_energy_kcal, dietary_energy_kcal, spo2_avg, spo2_min, respiratory_rate, vo2_max, heart_rate_avg, distance_km, glucose_avg_mmol, weight_kg, steps, log_date')
+      .select('readiness_score, sleep_total_hrs, sleep_deep_hrs, sleep_rem_hrs, sleep_start, hrv_ms, resting_hr, active_energy_kcal, resting_energy_kcal, dietary_energy_kcal, spo2_avg, spo2_min, respiratory_rate, vo2_max, heart_rate_avg, distance_km, glucose_avg_mmol, weight_kg, steps, exercise_mins, workout_hr_avg, log_date')
       .eq('user_id', currentUser.id)
       .gte('log_date', new Date(Date.now() - 1 * 86400000).toISOString().slice(0, 10))
       .order('log_date', { ascending: false })
       .limit(2),
 
     db.from('health_daily')
-      .select('log_date, spo2_avg, respiratory_rate, wrist_temp_dev, vo2_max, heart_rate_avg, glucose_avg_mmol, hrv_ms, resting_hr, active_energy_kcal, resting_energy_kcal, dietary_energy_kcal, weight_kg')
+      .select('log_date, spo2_avg, respiratory_rate, wrist_temp_dev, vo2_max, heart_rate_avg, glucose_avg_mmol, hrv_ms, resting_hr, active_energy_kcal, resting_energy_kcal, dietary_energy_kcal, weight_kg, sleep_total_hrs, sleep_deep_hrs, sleep_rem_hrs, sleep_start, exercise_mins, workout_hr_avg, steps')
       .eq('user_id', currentUser.id)
       .gte('log_date', new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10))
       .order('log_date', { ascending: true }),
@@ -989,7 +992,12 @@ async function _loadDashboardInner() {
   if (hasWeightData) drawChart(el.dashChart, el.dashChartEmpty, logs, activePlan);
 
   // ── Health widgets ────────────────────────────────────────
-  renderBodyBattery(health, log);
+  renderScoreGauges({
+    recovery:  computeRecoveryScore(health, healthHistory),
+    sleep:     computeSleepScore(health, healthHistory),
+    strain:    computeStrainScore(health, healthHistory, log),
+    nutrition: computeNutritionScore(health, log, smartTarget),
+  });
   renderHealthTiles(health, healthHistory);
   renderNetCalories(health, healthHistory, log, estimatedBmr);
 
@@ -1080,134 +1088,276 @@ function renderLastWorkout(session) {
   `;
 }
 
-function computeBodyBattery(health, log) {
-  // ── Body Battery formula ─────────────────────────────────
-  // Combines 4 factors into a 1-100 score:
-  //   Sleep quality  40% — duration + stage quality
-  //   HRV            25% — higher = better recovered
-  //   Resting HR     15% — lower = better recovered
-  //   Calorie balance 20% — active energy vs dietary intake
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
-  let totalScore = 0;
-  let totalWeight = 0;
+// Personal rolling baseline for a field — the whole point of comparing
+// "today vs your own history" rather than a fixed population threshold
+// (a HRV of 40ms is great for one person, low for another). Needs at
+// least 5 data points to be meaningful; callers fall back to fixed
+// thresholds below that, which also keeps this safe for a brand new
+// account with little history yet.
+function baselineMean(history, field, excludeDate) {
+  const vals = (history || [])
+    .filter(h => h.log_date !== excludeDate && h[field] != null)
+    .map(h => Number(h[field]));
+  if (vals.length < 5) return null;
+  return vals.reduce((a, b) => a + b, 0) / vals.length;
+}
+
+// Scores a value against its own baseline: 50 = exactly at baseline,
+// moving toward 100/0 as it diverges. `sensitivity` controls how much
+// %-deviation from baseline maps to a full swing away from 50.
+function scoreVsBaseline(value, baseline, sensitivity, higherIsBetter) {
+  if (value == null || !baseline) return null;
+  const pctDev = (value - baseline) / baseline;
+  const signed = higherIsBetter ? pctDev : -pctDev;
+  return clamp(50 + signed * sensitivity, 0, 100);
+}
+
+function tieredSleepDurationScore(hrs) {
+  if (hrs >= 8) return 100;
+  if (hrs >= 7) return 88;
+  if (hrs >= 6) return 70;
+  if (hrs >= 5) return 50;
+  if (hrs >= 4) return 30;
+  return 15;
+}
+
+// ── Recovery ─────────────────────────────────────────────────
+// Physiological readiness: HRV and resting HR relative to this
+// person's own 30-day baseline (falling back to fixed population
+// thresholds when there isn't yet enough history to build one), plus
+// last night's sleep. Calorie balance deliberately isn't a factor
+// here anymore — that's what the separate Nutrition score is for;
+// folding it into Recovery too would double-count the same signal.
+function computeRecoveryScore(health, healthHistory) {
+  let totalScore = 0, totalWeight = 0;
   const factors = [];
+  const todayDate = health?.log_date;
 
-  // ── Factor 1: Sleep (40%) ─────────────────────────────
-  const sleep = health?.sleep_total_hrs;
-  if (sleep != null) {
-    let sleepScore;
-    if      (sleep >= 8)           sleepScore = 100;
-    else if (sleep >= 7)           sleepScore = 88;
-    else if (sleep >= 6)           sleepScore = 70;
-    else if (sleep >= 5)           sleepScore = 50;
-    else if (sleep >= 4)           sleepScore = 30;
-    else                           sleepScore = 15;
-
-    // Bonus for quality sleep stages
-    const deep = health?.sleep_deep_hrs || 0;
-    const rem  = health?.sleep_rem_hrs  || 0;
-    const qualityBonus = Math.min(10, (deep + rem) * 5);
-    sleepScore = Math.min(100, sleepScore + qualityBonus);
-
-    totalScore  += sleepScore * 0.40;
-    totalWeight += 0.40;
-    factors.push({ label: 'Sleep', val: `${fmt1(sleep)}h`, pct: sleepScore, cls: 'sleep' });
-  }
-
-  // ── Factor 2: HRV (25%) ───────────────────────────────
   const hrv = health?.hrv_ms;
   if (hrv != null) {
-    let hrvScore;
-    if      (hrv >= 100) hrvScore = 100;
-    else if (hrv >= 80)  hrvScore = 90;
-    else if (hrv >= 60)  hrvScore = 78;
-    else if (hrv >= 40)  hrvScore = 62;
-    else if (hrv >= 25)  hrvScore = 45;
-    else if (hrv >= 15)  hrvScore = 28;
-    else                 hrvScore = 15;
-
-    totalScore  += hrvScore * 0.25;
-    totalWeight += 0.25;
-    factors.push({ label: 'HRV', val: `${Math.round(hrv)}ms`, pct: hrvScore, cls: 'hrv' });
+    const baseline = baselineMean(healthHistory, 'hrv_ms', todayDate);
+    const hrvScore = baseline != null
+      ? scoreVsBaseline(hrv, baseline, 200, true)
+      : (hrv >= 100 ? 100 : hrv >= 80 ? 90 : hrv >= 60 ? 78 : hrv >= 40 ? 62 : hrv >= 25 ? 45 : hrv >= 15 ? 28 : 15);
+    totalScore += hrvScore * 0.35; totalWeight += 0.35;
+    factors.push({ label: 'HRV', val: `${Math.round(hrv)}ms`, pct: Math.round(hrvScore), cls: 'hrv' });
   }
 
-  // ── Factor 3: Resting HR (15%) ────────────────────────
   const rhr = health?.resting_hr;
   if (rhr != null) {
-    let hrScore;
-    if      (rhr < 50)           hrScore = 100;
-    else if (rhr < 55)           hrScore = 92;
-    else if (rhr < 60)           hrScore = 82;
-    else if (rhr < 65)           hrScore = 70;
-    else if (rhr < 70)           hrScore = 58;
-    else if (rhr < 80)           hrScore = 42;
-    else                         hrScore = 25;
-
-    totalScore  += hrScore * 0.15;
-    totalWeight += 0.15;
-    factors.push({ label: 'Resting HR', val: `${Math.round(rhr)}bpm`, pct: hrScore, cls: 'hr' });
+    const baseline = baselineMean(healthHistory, 'resting_hr', todayDate);
+    const rhrScore = baseline != null
+      ? scoreVsBaseline(rhr, baseline, 300, false)
+      : (rhr < 50 ? 100 : rhr < 55 ? 92 : rhr < 60 ? 82 : rhr < 65 ? 70 : rhr < 70 ? 58 : rhr < 80 ? 42 : 25);
+    totalScore += rhrScore * 0.25; totalWeight += 0.25;
+    factors.push({ label: 'Resting HR', val: `${Math.round(rhr)}bpm`, pct: Math.round(rhrScore), cls: 'hr' });
   }
 
-  // ── Factor 4: Calorie balance (20%) ───────────────────
-  // Active energy burned vs dietary intake — fuelled but not over/under
-  const active   = health?.active_energy_kcal ?? log?.active_energy_kcal;
-  const dietary  = health?.dietary_energy_kcal || log?.cal_total || log?.cal_apple;
-  if (active != null && dietary != null) {
-    // Ideal: dietary > active (net positive for recovery), but not excessively over
-    const net = dietary - active;
-    let calScore;
-    if      (net >= 300 && net <= 800) calScore = 100; // well fuelled
-    else if (net >= 100 && net < 300)  calScore = 88;
-    else if (net >= 0   && net < 100)  calScore = 75;
-    else if (net >= -200 && net < 0)   calScore = 58;  // slight deficit
-    else if (net >= -500 && net < -200) calScore = 38; // meaningful deficit
-    else if (net < -500)               calScore = 20;  // big deficit — low battery
-    else                               calScore = 65;  // net > 800 — overfuelled
-
-    totalScore  += calScore * 0.20;
-    totalWeight += 0.20;
-    factors.push({ label: 'Fuelling', val: `${net > 0 ? '+' : ''}${Math.round(net)} kcal`, pct: calScore, cls: 'cals' });
+  const sleep = health?.sleep_total_hrs;
+  if (sleep != null) {
+    let sleepScore = tieredSleepDurationScore(sleep);
+    const deep = health?.sleep_deep_hrs || 0;
+    const rem  = health?.sleep_rem_hrs  || 0;
+    sleepScore = Math.min(100, sleepScore + Math.min(10, (deep + rem) * 5));
+    totalScore += sleepScore * 0.40; totalWeight += 0.40;
+    factors.push({ label: 'Sleep', val: `${fmt1(sleep)}h`, pct: Math.round(sleepScore), cls: 'sleep' });
   }
 
   if (totalWeight === 0) return { score: null, label: '', factors: [] };
-
   const score = Math.round(totalScore / totalWeight);
-  const label = score >= 80 ? 'Fully charged — great day to push hard.' :
-                score >= 60 ? 'Good energy — train at normal intensity.' :
-                score >= 40 ? 'Moderate — consider a lighter session.' :
+  const label = score >= 80 ? 'Well recovered — great day to push hard.' :
+                score >= 60 ? 'Good recovery — normal training is fine.' :
+                score >= 40 ? 'Below your usual — consider a lighter session.' :
                 score >= 20 ? 'Low — prioritise recovery today.' :
-                              'Depleted — rest day recommended.';
-
+                              'Poorly recovered — rest day recommended.';
   return { score, label, factors };
 }
 
-function renderBodyBattery(health, log) {
-  const result = computeBodyBattery(health, log);
+// ── Sleep ────────────────────────────────────────────────────
+// Last night specifically, not overall readiness: duration, how much
+// of it was deep/REM (vs the healthy ~13-23% / ~20-25% ranges), and
+// bedtime consistency against the last two weeks.
+function computeSleepScore(health, healthHistory) {
+  const sleep = health?.sleep_total_hrs;
+  if (sleep == null) return { score: null, label: '', factors: [] };
 
-  if (result.score == null) {
-    el.batteryScore.textContent = '—';
-    el.batteryFill.style.height = '0%';
-    el.batteryFill.className    = 'battery-fill';
-    el.batteryMeta.textContent  = 'Connect Apple Health to see your body battery.';
-    el.batteryFactors.innerHTML = '';
+  let totalScore = 0, totalWeight = 0;
+  const factors = [];
+
+  const durScore = tieredSleepDurationScore(sleep);
+  totalScore += durScore * 0.40; totalWeight += 0.40;
+  factors.push({ label: 'Duration', val: `${fmt1(sleep)}h`, pct: Math.round(durScore), cls: 'sleep' });
+
+  const scoreStagePct = (pct, idealLo, idealHi) => {
+    if (pct >= idealLo && pct <= idealHi) return 100;
+    if (pct < idealLo) return clamp(100 - (idealLo - pct) * 8, 15, 95);
+    return clamp(100 - (pct - idealHi) * 6, 15, 95);
+  };
+
+  const deep = health?.sleep_deep_hrs;
+  if (deep != null && sleep > 0) {
+    const deepPct = (deep / sleep) * 100;
+    const deepScore = scoreStagePct(deepPct, 13, 23);
+    totalScore += deepScore * 0.25; totalWeight += 0.25;
+    factors.push({ label: 'Deep sleep', val: `${Math.round(deepPct)}%`, pct: Math.round(deepScore), cls: 'deep' });
+  }
+
+  const rem = health?.sleep_rem_hrs;
+  if (rem != null && sleep > 0) {
+    const remPct = (rem / sleep) * 100;
+    const remScore = scoreStagePct(remPct, 20, 25);
+    totalScore += remScore * 0.25; totalWeight += 0.25;
+    factors.push({ label: 'REM sleep', val: `${Math.round(remPct)}%`, pct: Math.round(remScore), cls: 'rem' });
+  }
+
+  const sleepStart = health?.sleep_start;
+  if (sleepStart) {
+    const timeOfDayMin = iso => { const d = new Date(iso); return d.getHours() * 60 + d.getMinutes(); };
+    const recentStarts = (healthHistory || [])
+      .filter(h => h.log_date !== health.log_date && h.sleep_start)
+      .slice(-14)
+      .map(h => timeOfDayMin(h.sleep_start));
+    if (recentStarts.length >= 5) {
+      const todayMin = timeOfDayMin(sleepStart);
+      const avgMin = recentStarts.reduce((a, b) => a + b, 0) / recentStarts.length;
+      const rawDiff = Math.abs(todayMin - avgMin);
+      const diff = Math.min(rawDiff, 1440 - rawDiff); // circular distance across midnight
+      const consistencyScore = clamp(100 - diff, 20, 100);
+      totalScore += consistencyScore * 0.10; totalWeight += 0.10;
+      factors.push({ label: 'Consistency', val: `±${Math.round(diff)}m`, pct: Math.round(consistencyScore), cls: 'consistency' });
+    }
+  }
+
+  if (totalWeight === 0) return { score: null, label: '', factors: [] };
+  const score = Math.round(totalScore / totalWeight);
+  const label = score >= 80 ? 'Great night — solid duration and architecture.' :
+                score >= 60 ? 'Good sleep, some room to improve.' :
+                score >= 40 ? 'Below par — try to catch up tonight.' :
+                              'Poor sleep — expect it to affect today.';
+  return { score, label, factors };
+}
+
+// ── Strain ───────────────────────────────────────────────────
+// Today's exertion so far: active energy relative to this person's
+// own baseline output, exercise minutes, and — only on days an actual
+// workout was logged — average workout heart rate against an
+// age-estimated max HR.
+function computeStrainScore(health, healthHistory, log) {
+  const active = health?.active_energy_kcal ?? log?.active_energy_kcal;
+  if (active == null) return { score: null, label: '', factors: [] };
+
+  let totalScore = 0, totalWeight = 0;
+  const factors = [];
+
+  const activeBaseline = baselineMean(healthHistory, 'active_energy_kcal', health?.log_date);
+  const activeScore = activeBaseline != null
+    ? scoreVsBaseline(active, activeBaseline, 60, true)
+    : clamp((active / 700) * 100, 0, 100);
+  totalScore += activeScore * 0.45; totalWeight += 0.45;
+  factors.push({ label: 'Active energy', val: `${Math.round(active)} kcal`, pct: Math.round(activeScore), cls: 'active' });
+
+  const exMins = health?.exercise_mins;
+  if (exMins != null) {
+    const exScore = clamp((exMins / 60) * 100, 0, 100);
+    totalScore += exScore * 0.25; totalWeight += 0.25;
+    factors.push({ label: 'Exercise', val: `${exMins}m`, pct: Math.round(exScore), cls: 'exercise' });
+  }
+
+  const workoutHr = health?.workout_hr_avg;
+  if (workoutHr) {
+    const estMaxHr = 220 - (profile?.age_years || 35);
+    const intensityScore = clamp((workoutHr / estMaxHr) * 100, 0, 100);
+    totalScore += intensityScore * 0.30; totalWeight += 0.30;
+    factors.push({ label: 'Workout intensity', val: `${Math.round(workoutHr)}bpm avg`, pct: Math.round(intensityScore), cls: 'intensity' });
+  }
+
+  if (totalWeight === 0) return { score: null, label: '', factors: [] };
+  const score = Math.round(totalScore / totalWeight);
+  const label = score >= 80 ? 'High strain — big effort today.' :
+                score >= 50 ? 'Moderate strain today.' :
+                score >= 20 ? 'Light day so far.' :
+                              'Very low strain so far today.';
+  return { score, label, factors };
+}
+
+// ── Nutrition ────────────────────────────────────────────────
+// How close today's actual intake is to the smart eat target — the
+// most honest signal available broadly (macro-gram tracking only
+// exists for diabetes-tab meals, not general daily logging, so this
+// deliberately doesn't pretend to score macro balance it can't see).
+function computeNutritionScore(health, log, smartTarget) {
+  const consumed = health?.dietary_energy_kcal ?? (log?.cal_apple ?? (log?.cal_total > 0 ? log.cal_total : null));
+  const target = smartTarget?.eatTarget ?? profile?.eat_target_kcal ?? (profile?.tdee ? profile.tdee - 500 : null);
+  if (consumed == null || !target) return { score: null, label: '', factors: [] };
+
+  const pctOfTarget = (consumed / target) * 100;
+  const deviation = Math.abs(pctOfTarget - 100);
+  const score = Math.round(clamp(100 - deviation * 1.5, 0, 100));
+
+  const factors = [
+    { label: 'Eaten', val: `${Math.round(consumed)} kcal`, pct: score, cls: 'cals' },
+    { label: 'Target', val: `${Math.round(target)} kcal`, pct: 100, cls: 'target' },
+  ];
+  const label = score >= 80 ? 'Right on target.' :
+                score >= 60 ? 'Close to target.' :
+                score >= 40 ? 'Noticeably off target today.' :
+                              'Well off target today.';
+  return { score, label, factors };
+}
+
+const SCORE_META = {
+  recovery:  { label: 'Recovery',  icon: '⚡' },
+  sleep:     { label: 'Sleep',     icon: '🌙' },
+  strain:    { label: 'Strain',    icon: '🔥' },
+  nutrition: { label: 'Nutrition', icon: '🍽️' },
+};
+const SCORE_RING_CIRCUMFERENCE = 188.5; // 2*π*30, r=30 per the SVG markup
+let dashScoresData = null; // last-rendered scores, for tap-to-expand
+
+function setScoreGauge(key, score) {
+  const ring = $(`scoreRing_${key}`);
+  const val  = $(`scoreVal_${key}`);
+  if (!ring || !val) return;
+  if (score == null) {
+    ring.style.strokeDashoffset = SCORE_RING_CIRCUMFERENCE;
+    val.textContent = '—';
+    return;
+  }
+  const pct = clamp(score, 0, 100) / 100;
+  ring.style.strokeDashoffset = SCORE_RING_CIRCUMFERENCE * (1 - pct);
+  val.textContent = Math.round(score);
+}
+
+function renderScoreGauges(scores) {
+  if (!el.scoreCarousel) return;
+  dashScoresData = scores;
+
+  const hasAny = Object.values(scores).some(s => s?.score != null);
+  el.scoreCarousel.hidden = !hasAny;
+  if (el.scoreCarouselEmpty) el.scoreCarouselEmpty.hidden = hasAny;
+  if (!hasAny) {
+    if (el.scoreDetail) el.scoreDetail.hidden = true;
     return;
   }
 
-  const { score, label, factors } = result;
+  Object.keys(SCORE_META).forEach(key => setScoreGauge(key, scores[key]?.score));
 
-  // ── Render score ──────────────────────────────────────
-  el.batteryScore.textContent = score;
-  el.batteryFill.style.height = score + '%';
-  el.batteryFill.className = 'battery-fill ' + (
-    score >= 70 ? 'battery-fill--high' :
-    score >= 40 ? 'battery-fill--medium' :
-                  'battery-fill--low'
-  );
+  // Keep the detail panel in sync if it's open on a gauge that just refreshed
+  const openKey = el.scoreDetail && !el.scoreDetail.hidden ? el.scoreDetail.dataset.key : null;
+  if (openKey) showScoreDetail(openKey);
+}
 
-  el.batteryMeta.textContent = label;
-
-  // ── Render factor bars ────────────────────────────────
-  el.batteryFactors.innerHTML = factors.map(f => `
+function showScoreDetail(key) {
+  const s = dashScoresData?.[key];
+  const meta = SCORE_META[key];
+  if (!s || s.score == null || !el.scoreDetail) return;
+  el.scoreDetail.hidden = false;
+  el.scoreDetail.dataset.key = key;
+  el.scoreDetailLabel.textContent = `${meta.icon} ${meta.label} — ${s.score}`;
+  el.scoreDetailMeta.textContent = s.label;
+  el.scoreDetailFactors.innerHTML = s.factors.map(f => `
     <div class="battery-factor">
       <span class="battery-factor__label">${f.label}</span>
       <div class="battery-factor__bar">
@@ -1216,6 +1366,12 @@ function renderBodyBattery(health, log) {
       <span class="battery-factor__val">${f.val}</span>
     </div>`).join('');
 }
+
+el.scoreCarousel?.addEventListener('click', (e) => {
+  const btn = e.target.closest('.score-gauge');
+  if (btn) showScoreDetail(btn.dataset.key);
+});
+el.scoreDetailClose?.addEventListener('click', () => { el.scoreDetail.hidden = true; });
 
 /* ═══════════════════════════════════════════════════════════
    HEALTH TILES
@@ -1805,9 +1961,9 @@ async function loadWorkout() {
   await loadRoutines();
 }
 
-// Reads today's Body Battery (same formula as the dashboard) and, if recovery
-// is running low, surfaces a banner offering to filter the routine list down
-// to the shortest available sessions for today only.
+// Reads today's Recovery score (same formula as the dashboard) and, if
+// recovery is running low, surfaces a banner offering to filter the routine
+// list down to the shortest available sessions for today only.
 async function renderWorkoutReadinessBanner() {
   if (!elW.readinessBanner || !currentUser) return;
   if (readinessBannerDismissed) { elW.readinessBanner.hidden = true; return; }
@@ -1838,7 +1994,7 @@ async function renderWorkoutReadinessBanner() {
     ...Object.fromEntries(Object.entries(todayHealth).filter(([, v]) => v != null && v !== 0)),
   };
 
-  const { score, label } = computeBodyBattery(health, logRes.data);
+  const { score, label } = computeRecoveryScore(health, []);
 
   // Only interrupt the flow when recovery is genuinely moderate-or-below —
   // matches the same 50-point line "Moderate — consider a lighter session" uses.
@@ -1854,7 +2010,7 @@ async function renderWorkoutReadinessBanner() {
     <div class="readiness-banner__body">
       <div class="readiness-banner__eyebrow">BASED ON YOUR RECOVERY</div>
       <div class="readiness-banner__title">Feeling tired? Try a shorter session</div>
-      <div class="readiness-banner__desc">Body battery is at ${score} today — ${label.toLowerCase()}</div>
+      <div class="readiness-banner__desc">Recovery is at ${score} today — ${label}</div>
       <button type="button" class="readiness-banner__action" id="btnShowShorter">Show shortest sessions</button>
     </div>`;
 
