@@ -250,6 +250,7 @@ const el = {
   btnTzCancel:         $('btnTzCancel'),
   tzDoseMg:            $('tzDoseMg'),
   tzInjectedAt:        $('tzInjectedAt'),
+  tzSite:              $('tzSite'),
   tzFormStatus:        $('tzFormStatus'),
   tzDoseList:          $('tzDoseList'),
   // settings
@@ -3102,15 +3103,29 @@ function toLocalDatetimeInputValue(date) {
   return new Date(date.getTime() - tzOffsetMs).toISOString().slice(0, 16);
 }
 
+const TZ_SITE_LABELS = {
+  left_thigh: 'Left thigh', right_thigh: 'Right thigh',
+  left_stomach: 'Left stomach', right_stomach: 'Right stomach',
+  centre_stomach: 'Centre stomach',
+};
+// Fixed rotation order — defaulting the log form to "whatever comes
+// after the last site" nudges rotation without forcing it (still a
+// plain dropdown, freely overridable before saving).
+const TZ_SITE_ORDER = ['left_thigh', 'right_thigh', 'left_stomach', 'right_stomach', 'centre_stomach'];
+function tzNextSite(lastSite) {
+  const idx = TZ_SITE_ORDER.indexOf(lastSite);
+  return TZ_SITE_ORDER[(idx + 1) % TZ_SITE_ORDER.length];
+}
+
 async function fetchTirzepatideDoses() {
   if (!currentUser) return [];
   const { data, error } = await db.from('tirzepatide_doses')
-    .select('id, dose_mg, injected_at')
+    .select('id, dose_mg, injected_at, site')
     .eq('user_id', currentUser.id)
     .order('injected_at', { ascending: true })
     .limit(200);
   if (error) { console.error('fetchTirzepatideDoses error:', error.message); return []; }
-  return (data || []).map(d => ({ id: d.id, doseMg: Number(d.dose_mg), injectedMs: new Date(d.injected_at).getTime() }));
+  return (data || []).map(d => ({ id: d.id, doseMg: Number(d.dose_mg), injectedMs: new Date(d.injected_at).getTime(), site: d.site || null }));
 }
 
 async function loadTirzepatideSection() {
@@ -3172,7 +3187,7 @@ function renderTzSection(doses) {
     el.tzDoseList.innerHTML = sortedDesc.map(d => `
       <div class="tz-dose-item" data-id="${d.id}">
         <div>
-          <div class="tz-dose-item__meta">${fmt1(d.doseMg)} mg</div>
+          <div class="tz-dose-item__meta">${fmt1(d.doseMg)} mg${d.site ? ' · ' + TZ_SITE_LABELS[d.site] : ''}</div>
           <div class="tz-dose-item__date">${new Date(d.injectedMs).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</div>
         </div>
         <button type="button" class="btn btn--icon" data-action="tz-delete" data-id="${d.id}" title="Delete">🗑</button>
@@ -3382,12 +3397,16 @@ el.btnTzLog?.addEventListener('click', () => {
   el.tzLogButtonWrap.hidden = true;
   el.tzLogForm.hidden = false;
   el.tzInjectedAt.value = toLocalDatetimeInputValue(new Date());
-  // Default to the most recently used dose, if any — titration usually
-  // continues at the same dose until a deliberate step-up.
   if (tzDosesCache?.length) {
     const last = [...tzDosesCache].sort((a, b) => b.injectedMs - a.injectedMs)[0];
+    // Dose: default to the most recently used, if any — titration
+    // usually continues at the same dose until a deliberate step-up.
     const opt = [...el.tzDoseMg.options].find(o => Number(o.value) === last.doseMg);
     if (opt) el.tzDoseMg.value = opt.value;
+    // Site: default to the next one in rotation, not a repeat of last time.
+    if (el.tzSite) el.tzSite.value = tzNextSite(last.site);
+  } else if (el.tzSite) {
+    el.tzSite.value = TZ_SITE_ORDER[0];
   }
 });
 
@@ -3403,10 +3422,11 @@ el.btnTzSave?.addEventListener('click', async () => {
   const injectedAtLocal = el.tzInjectedAt.value;
   if (!injectedAtLocal) { el.tzFormStatus.textContent = 'Pick a date and time.'; return; }
   const injectedAtIso = new Date(injectedAtLocal).toISOString();
+  const site = el.tzSite?.value || null;
 
   setBtn(el.btnTzSave, true, 'Save injection', 'Saving…');
   const { error } = await db.from('tirzepatide_doses').insert({
-    user_id: currentUser.id, dose_mg: doseMg, injected_at: injectedAtIso,
+    user_id: currentUser.id, dose_mg: doseMg, injected_at: injectedAtIso, site,
   });
   setBtn(el.btnTzSave, false, 'Save injection');
 
