@@ -357,6 +357,24 @@ function personalCorrectionFactor(resolvedCorrections, opts = {}) {
   return { factor, sampleSize: recent.length, cleanSampleSize: clean.length, sufficient: true };
 }
 
+// Blends the pump's own already-clinically-set correction factor with
+// what's actually been observed here: prefer the observed factor once
+// there's enough clean data to trust it (same >=3-sample gate as
+// personalCorrectionFactor), otherwise fall back to the pump-setting
+// value so dosing isn't blocked purely for lack of history yet. Never
+// fabricates a number when neither is available.
+function resolveCorrectionFactor(resolvedCorrections, settings, opts = {}) {
+  const observed = personalCorrectionFactor(resolvedCorrections, opts);
+  if (observed.sufficient) {
+    return { factor: observed.factor, source: 'observed', sampleSize: observed.sampleSize, cleanSampleSize: observed.cleanSampleSize };
+  }
+  const pumpFactor = Number(settings?.correctionFactor);
+  if (Number.isFinite(pumpFactor) && pumpFactor > 0) {
+    return { factor: pumpFactor, source: 'pump-setting', sampleSize: observed.sampleSize, cleanSampleSize: observed.cleanSampleSize };
+  }
+  return { factor: null, source: null, sampleSize: observed.sampleSize, cleanSampleSize: observed.cleanSampleSize };
+}
+
 // Any dose (bolus or correction) that's 15-110min old and still carries
 // >=0.5u of active IOB — the current high may already be dropping from
 // it. Returns the offending doses so the caller can show why.
@@ -406,7 +424,7 @@ function suggestCorrectionDose(ctx, factorResult, boluses, corrections, now = Da
   if (ctx.effectiveGlucose == null || !Number.isFinite(idealTarget)) {
     return { ...base, withheldReason: 'missing-data' };
   }
-  if (!factorResult.sufficient) return { ...base, withheldReason: 'insufficient-history' };
+  if (factorResult.factor == null) return { ...base, withheldReason: 'insufficient-history' };
   if (factorResult.factor < MIN_RELIABLE_FACTOR) {
     return { ...base, withheldReason: 'low-confidence-factor' };
   }
@@ -434,7 +452,7 @@ function suggestCorrectionDose(ctx, factorResult, boluses, corrections, now = Da
 function evaluateCorrection(input, now = Date.now()) {
   const { glucoseHistory = [], boluses = [], corrections = [], settings = {} } = input || {};
   const resolvedCorrections = resolveCorrections(corrections, glucoseHistory, boluses, now);
-  const factor = personalCorrectionFactor(resolvedCorrections);
+  const factor = resolveCorrectionFactor(resolvedCorrections, settings);
   const context = dosingContext({ glucoseHistory, boluses, corrections, settings }, now);
   const suggestion = suggestCorrectionDose(context, factor, boluses, corrections, now);
   return { context, resolvedCorrections, factor, suggestion };
@@ -1187,8 +1205,8 @@ function hypoForecast2h(input, now = Date.now()) {
   }
 
   const resolvedCorrections = resolveCorrections(corrections, glucoseHistory, boluses, now);
-  const factorResult = personalCorrectionFactor(resolvedCorrections);
-  if (!factorResult.sufficient) {
+  const factorResult = resolveCorrectionFactor(resolvedCorrections, settings);
+  if (factorResult.factor == null) {
     return { tier: null, withheldReason: 'insufficient-history', context: ctx, factor: factorResult };
   }
   const factor = factorResult.factor;
@@ -1557,64 +1575,116 @@ function splitDoseGuide(fatGrams, proteinGrams, settings) {
 // With fewer than 3 comparable past meals this stays the guide's plain
 // population default, clearly labelled as such rather than personalizing
 // off too little data.
+// Weighted outcome bias (recency-weighted, +1 ran high / -1 went low)
+// across a set of past macro-tagged meals cross-referenced against the
+// glucose trace that actually followed each one. Shared by the
+// meal-name and fat-similarity personalization paths below.
+function macroMealOutcomeBias(comparable, readings, low, high, nowMs) {
+  let weightedBias = 0, totalWeight = 0;
+  for (const m of comparable) {
+    const ms = toMs(m.time);
+    const daysAgo = (nowMs - ms) / DAY_MS;
+    const weight = Math.pow(0.5, daysAgo / MEAL_DOSE_RECENCY_HALFLIFE_DAYS);
+    const window = readings.filter(r => r.ms >= ms && r.ms <= ms + 6 * 3600000);
+    if (!window.length) continue;
+    let bias = 0;
+    if (window.some(r => r.value < low)) bias = -1;
+    else if (Math.max(...window.map(r => r.value)) > high) bias = 1;
+    weightedBias += bias * weight;
+    totalWeight += weight;
+  }
+  return totalWeight > 0 ? weightedBias / totalWeight : null;
+}
+
+// Full bolus calculator: carbs/ICR (personalized by exact meal-name
+// history once there's enough of it -- a name match is a far stronger
+// signal than carb-amount similarity -- falling back to fat-similarity
+// otherwise) + (current glucose - target)/factor - active IOB, floored
+// at 0 since insulin can't be un-injected. A low current reading pulls
+// the total down (or to zero) same as it should; a high one adds a
+// correction on top. Split-dosing is applied to the combined total.
 function suggestMacroMealDose(input, meal, now = Date.now()) {
-  const { carbs = 0, fat = 0, protein = 0 } = meal || {};
+  const { carbs = 0, fat = 0, protein = 0, mealName = null } = meal || {};
   const settings = input.settings || {};
-  const base = suggestMealDose(input, carbs, now);
+  const idealTarget = Number(settings.idealTarget);
+  const nowMs = toMs(now);
   const guide = splitDoseGuide(fat, protein, settings);
 
-  if (base.suggestedUnits == null) {
-    return { ...base, guide, upfrontUnits: null, delayedUnits: null, personalized: false };
+  const ctx = dosingContext(input, now);
+  if (ctx.stale) {
+    return { suggestedUnits: null, withheldReason: 'stale-reading', guide, upfrontUnits: null, delayedUnits: null, personalized: false };
   }
 
-  const nowMs = toMs(now);
-  let totalUnits = base.suggestedUnits;
-  let personalized = false;
-  let nudgePct = 0;
+  // --- carb portion ---
+  let carbUnits = 0;
+  let carbBase = { source: 'none' };
+  let personalized = false, personalizedBy = null, personalizedSampleSize = 0, nudgePct = 0;
 
-  const tolerance = Math.max(MACRO_FAT_SIMILARITY_TOLERANCE_G, fat * 0.4);
-  const comparable = (input.macroMealLog || [])
-    .filter(m => m.time != null && toMs(m.time) < nowMs && Number.isFinite(Number(m.fat)))
-    .filter(m => Math.abs(Number(m.fat) - fat) <= tolerance);
+  if (carbs > 0) {
+    carbBase = suggestMealDose(input, carbs, now);
+    if (carbBase.suggestedUnits == null) {
+      return { ...carbBase, guide, upfrontUnits: null, delayedUnits: null, personalized: false };
+    }
+    carbUnits = carbBase.suggestedUnits;
 
-  if (comparable.length >= MACRO_HISTORY_MIN_SAMPLE) {
     const readings = sortedReadings(input.glucoseHistory, -Infinity, nowMs);
-    const high = Number(settings.targetHigh) || 8.5;
     const low = Number(settings.targetLow) || 4.5;
-    let weightedBias = 0, totalWeight = 0;
-    for (const m of comparable) {
-      const ms = toMs(m.time);
-      const daysAgo = (nowMs - ms) / DAY_MS;
-      const weight = Math.pow(0.5, daysAgo / MEAL_DOSE_RECENCY_HALFLIFE_DAYS);
-      const window = readings.filter(r => r.ms >= ms && r.ms <= ms + 6 * 3600000);
-      if (!window.length) continue;
-      let bias = 0; // +1 ran high, -1 went low, 0 stayed in range
-      if (window.some(r => r.value < low)) bias = -1;
-      else if (Math.max(...window.map(r => r.value)) > high) bias = 1;
-      weightedBias += bias * weight;
-      totalWeight += weight;
-    }
-    if (totalWeight > 0) {
-      nudgePct = clamp((weightedBias / totalWeight) * 0.12, -0.2, 0.2); // capped +/-20%
-      personalized = true;
-      totalUnits = Math.max(0, totalUnits * (1 + nudgePct));
+    const high = Number(settings.targetHigh) || 8.5;
+    const log = (input.macroMealLog || []).filter(m => m.time != null && toMs(m.time) < nowMs);
+
+    const byName = mealName ? log.filter(m => (m.mealName || '').trim().toLowerCase() === mealName.trim().toLowerCase()) : [];
+    const useNameMatch = byName.length >= MACRO_HISTORY_MIN_SAMPLE;
+    const tolerance = Math.max(MACRO_FAT_SIMILARITY_TOLERANCE_G, fat * 0.4);
+    const byFat = log.filter(m => Number.isFinite(Number(m.fat)) && Math.abs(Number(m.fat) - fat) <= tolerance);
+    const comparable = useNameMatch ? byName : byFat;
+
+    if (comparable.length >= MACRO_HISTORY_MIN_SAMPLE) {
+      const bias = macroMealOutcomeBias(comparable, readings, low, high, nowMs);
+      if (bias != null) {
+        nudgePct = clamp(bias * 0.12, -0.2, 0.2); // capped +/-20%
+        personalized = true;
+        personalizedBy = useNameMatch ? 'meal-name' : 'fat-similarity';
+        personalizedSampleSize = comparable.length;
+        carbUnits = Math.max(0, carbUnits * (1 + nudgePct));
+      }
     }
   }
 
-  if (guide.highProteinFlag) totalUnits *= (1 + SPLIT_DOSE_PROTEIN_BUMP_PCT);
+  // --- correction portion: current glucose vs target, right now ---
+  const resolvedCorrections = resolveCorrections(input.corrections, input.glucoseHistory, input.boluses, now);
+  const factorResult = resolveCorrectionFactor(resolvedCorrections, settings);
+  const correctionAvailable = Number.isFinite(idealTarget) && factorResult.factor != null;
+  const correctionUnits = correctionAvailable ? (ctx.effectiveGlucose - idealTarget) / factorResult.factor : 0;
 
-  const upfrontUnits = Math.round(totalUnits * guide.upfrontPct * 2) / 2;
-  const delayedUnits = guide.tier === 'single' ? 0 : Math.max(0, Math.round((totalUnits - upfrontUnits) * 2) / 2);
+  let total = carbUnits + correctionUnits - ctx.iob;
+  const zeroedByFloor = total < 0;
+  total = Math.max(0, total);
+
+  if (guide.highProteinFlag) total *= (1 + SPLIT_DOSE_PROTEIN_BUMP_PCT);
+
+  const upfrontUnits = Math.round(total * guide.upfrontPct * 2) / 2;
+  const delayedUnits = guide.tier === 'single' ? 0 : Math.max(0, Math.round((total - upfrontUnits) * 2) / 2);
+  const low = Number(settings.targetLow) || 4.5;
 
   return {
-    ...base,
-    suggestedUnits: Math.round(totalUnits * 2) / 2,
-    guide,
-    upfrontUnits,
-    delayedUnits,
-    personalized,
-    personalizedSampleSize: comparable.length,
+    suggestedUnits: Math.round(total * 2) / 2,
+    carbUnits: Math.round(carbUnits * 100) / 100,
+    correctionUnits: Math.round(correctionUnits * 100) / 100,
+    correctionAvailable,
+    iob: ctx.iob,
+    currentGlucose: ctx.currentGlucose,
+    effectiveGlucose: ctx.effectiveGlucose,
+    idealTarget: Number.isFinite(idealTarget) ? idealTarget : null,
+    factor: factorResult.factor,
+    factorSource: factorResult.source,
+    factorSampleSize: factorResult.sampleSize,
+    source: carbBase.source,
+    guide, upfrontUnits, delayedUnits,
+    personalized, personalizedBy, personalizedSampleSize,
     nudgePct: nudgePct * 100,
+    zeroedByFloor,
+    lowGlucoseWarning: ctx.effectiveGlucose != null && ctx.effectiveGlucose < low,
+    withheldReason: null,
   };
 }
 
@@ -1760,7 +1830,7 @@ function basalWindowReview(input, now = Date.now()) {
   const curveOpts = insulinCurveOpts(settings);
 
   const resolvedCorrections = resolveCorrections(corrections, glucoseHistory, boluses, now);
-  const factorResult = personalCorrectionFactor(resolvedCorrections);
+  const factorResult = resolveCorrectionFactor(resolvedCorrections, settings);
 
   return SENSITIVITY_TOD_BUCKETS.map(bucket => {
     const windowHours = bucket.to - bucket.from;
@@ -1803,7 +1873,7 @@ function basalWindowReview(input, now = Date.now()) {
     if (Math.abs(avgDrift) < REGIMEN_MIN_DRIFT_MMOL || consistency < REGIMEN_MIN_DIRECTION_CONSISTENCY) {
       return { timeOfDay: bucket.label, n: instances.length, avgDrift, withheldReason: 'no-consistent-signal' };
     }
-    if (!factorResult.sufficient || factorResult.factor < MIN_RELIABLE_FACTOR) {
+    if (factorResult.factor == null || factorResult.factor < MIN_RELIABLE_FACTOR) {
       return { timeOfDay: bucket.label, n: instances.length, avgDrift, withheldReason: 'low-confidence-factor' };
     }
     if (!avgBasalRate) {
@@ -1919,6 +1989,7 @@ const DiabetesEngine = {
   resolveCorrection,
   resolveCorrections,
   personalCorrectionFactor,
+  resolveCorrectionFactor,
   detectStackingCaution,
   suggestCorrectionDose,
   evaluateCorrection,

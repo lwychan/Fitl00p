@@ -260,6 +260,7 @@ const el = {
   dxStaleNote:       $('dxStaleNote'),
   dxForecastBody:    $('dxForecastBody'),
   dxCorrectionBody:  $('dxCorrectionBody'),
+  dxMealName:        $('dxMealName'),
   dxMealCarbs:       $('dxMealCarbs'),
   dxMealFat:         $('dxMealFat'),
   dxMealProtein:     $('dxMealProtein'),
@@ -3250,6 +3251,7 @@ async function loadSettings() {
   if ($('setTargetHigh'))      $('setTargetHigh').value      = profile.diabetes_target_high ?? '';
   if ($('setIdealTarget'))     $('setIdealTarget').value     = profile.diabetes_ideal_target ?? '';
   if ($('setCarbRatio'))       $('setCarbRatio').value       = profile.diabetes_carb_ratio   ?? '';
+  if ($('setCorrectionFactor')) $('setCorrectionFactor').value = profile.diabetes_correction_factor ?? '';
   if ($('setInsulinPeak'))     $('setInsulinPeak').value     = profile.diabetes_insulin_peak_min     ?? '';
   if ($('setInsulinDuration')) $('setInsulinDuration').value = profile.diabetes_insulin_duration_min ?? '';
 
@@ -3398,7 +3400,7 @@ async function fetchMacroMealLog() {
   if (!currentUser) return [];
   const { data, error } = await db
     .from('diabetes_meals')
-    .select('eaten_at, carbs_g, fat_g, protein_g')
+    .select('eaten_at, meal_name, carbs_g, fat_g, protein_g')
     .eq('user_id', currentUser.id)
     .order('eaten_at', { ascending: false })
     .limit(200);
@@ -3408,10 +3410,39 @@ async function fetchMacroMealLog() {
   }
   return (data || []).map(r => ({
     time: new Date(r.eaten_at).getTime(),
+    mealName: r.meal_name || null,
     carbs: Number(r.carbs_g),
     fat: Number(r.fat_g),
     protein: Number(r.protein_g),
   }));
+}
+
+// Distinct past meal names, most-recently-used first, for the meal-dose
+// helper's picker — lets a recurring meal be selected instead of retyped,
+// and is exactly what suggestMacroMealDose matches on to personalize.
+async function fetchMealNames() {
+  if (!currentUser) return [];
+  const { data, error } = await db
+    .from('diabetes_meals')
+    .select('meal_name, eaten_at')
+    .eq('user_id', currentUser.id)
+    .not('meal_name', 'is', null)
+    .order('eaten_at', { ascending: false })
+    .limit(200);
+  if (error) {
+    console.error('fetchMealNames error:', error.message);
+    return [];
+  }
+  const seen = new Set();
+  const names = [];
+  for (const r of data || []) {
+    const name = (r.meal_name || '').trim();
+    if (name && !seen.has(name.toLowerCase())) {
+      seen.add(name.toLowerCase());
+      names.push(name);
+    }
+  }
+  return names;
 }
 
 async function recordMacroMeal(entry, doseResult) {
@@ -3419,6 +3450,7 @@ async function recordMacroMeal(entry, doseResult) {
   const { error } = await db.from('diabetes_meals').insert({
     user_id: currentUser.id,
     eaten_at: new Date(entry.time).toISOString(),
+    meal_name: entry.mealName || null,
     carbs_g: entry.carbs,
     fat_g: entry.fat,
     protein_g: entry.protein,
@@ -3467,6 +3499,7 @@ $('btnSaveDiabetesSettings')?.addEventListener('click', async () => {
     diabetes_target_high:           num('setTargetHigh', 8.5),
     diabetes_ideal_target:          Number.isFinite(parseFloat($('setIdealTarget').value)) ? parseFloat($('setIdealTarget').value) : null,
     diabetes_carb_ratio:            Number.isFinite(parseFloat($('setCarbRatio').value)) ? parseFloat($('setCarbRatio').value) : null,
+    diabetes_correction_factor:     Number.isFinite(parseFloat($('setCorrectionFactor').value)) ? parseFloat($('setCorrectionFactor').value) : null,
     diabetes_insulin_peak_min:      num('setInsulinPeak', 57),
     diabetes_insulin_duration_min:  num('setInsulinDuration', 240),
   });
@@ -3510,6 +3543,7 @@ function dxSettings() {
     targetHigh:             profile?.diabetes_target_high ?? 8.5,
     idealTarget:            profile?.diabetes_ideal_target,
     carbRatio:              profile?.diabetes_carb_ratio,
+    correctionFactor:       profile?.diabetes_correction_factor,
     insulinPeakMinutes:     profile?.diabetes_insulin_peak_min ?? 57,
     insulinDurationMinutes: profile?.diabetes_insulin_duration_min ?? 240,
   };
@@ -3524,6 +3558,11 @@ async function loadDiabetes() {
   }
   el.dxNotConnected.hidden = true;
   el.dxConnected.hidden = false;
+
+  fetchMealNames().then(names => {
+    const list = $('dxMealNameOptions');
+    if (list) list.innerHTML = names.map(n => `<option value="${escapeHtml(n)}">`).join('');
+  });
 
   try {
     const data = await fetchDiabetesData();
@@ -3664,12 +3703,19 @@ function renderDxCorrection(s) {
   `;
 }
 
+const DX_MEAL_WITHHELD_MESSAGES = {
+  'stale-reading': 'No recent glucose reading — check your sensor app.',
+  'missing-carb-ratio': 'Set a carb ratio in Settings first.',
+};
+
 $('btnDxMealDose')?.addEventListener('click', async () => {
-  const carbs = parseFloat(el.dxMealCarbs.value);
+  const mealName = el.dxMealName.value.trim();
+  const carbsRaw = parseFloat(el.dxMealCarbs.value);
+  const carbs = Number.isFinite(carbsRaw) && carbsRaw > 0 ? carbsRaw : 0;
   const fat = parseFloat(el.dxMealFat.value) || 0;
   const protein = parseFloat(el.dxMealProtein.value) || 0;
-  if (!Number.isFinite(carbs) || carbs <= 0) {
-    el.dxMealDoseBody.innerHTML = '<p class="empty-state">Enter carbs first.</p>';
+  if (carbs <= 0 && fat <= 0 && protein <= 0) {
+    el.dxMealDoseBody.innerHTML = '<p class="empty-state">Enter carbs (or leave blank just to check your current correction).</p>';
     return;
   }
   try {
@@ -3678,38 +3724,22 @@ $('btnDxMealDose')?.addEventListener('click', async () => {
     const now = Date.now();
     const input = { ...data, settings: dxSettings(), activities: { workouts: [] }, macroMealLog: await fetchMacroMealLog() };
 
-    if (fat <= 0 && protein <= 0) {
-      const r = DiabetesEngine.suggestMealDose(input, carbs, now);
-      if (r.suggestedUnits == null) {
-        el.dxMealDoseBody.innerHTML = `<p class="empty-state">${r.withheldReason === 'missing-carb-ratio' ? 'Set a carb ratio in Settings first.' : 'Not enough meal history yet.'}</p>`;
-        return;
-      }
-      const src = r.source === 'weighted-history'
-        ? `from ${r.sampleSize} similar past meals${r.nudgePct ? `, nudged ${fmtSigned(r.nudgePct, 0)}% by past outcomes` : ''}`
-        : 'from your manual carb ratio (not enough matching meal history yet)';
-      el.dxMealDoseBody.innerHTML = `
-        <div class="dx-suggestion">
-          <span class="dx-suggestion__val">${fmt1(r.suggestedUnits)}u</span>
-          <span class="dx-suggestion__meta">${escapeHtml(src)}</span>
-        </div>`;
-      return;
-    }
-
-    const r = DiabetesEngine.suggestMacroMealDose(input, { carbs, fat, protein }, now);
+    const r = DiabetesEngine.suggestMacroMealDose(input, { carbs, fat, protein, mealName: mealName || null }, now);
     if (r.suggestedUnits == null) {
-      el.dxMealDoseBody.innerHTML = `<p class="empty-state">${r.withheldReason === 'missing-carb-ratio' ? 'Set a carb ratio in Settings first.' : 'Not enough meal history yet.'}</p>`;
+      el.dxMealDoseBody.innerHTML = `<p class="empty-state">${DX_MEAL_WITHHELD_MESSAGES[r.withheldReason] || 'Not enough data yet.'}</p>`;
       return;
     }
 
-    if (r.guide.tier === 'single') {
-      el.dxMealDoseBody.innerHTML = `
-        <div class="dx-suggestion">
+    const glucoseLine = r.currentGlucose != null
+      ? `${fmt1(r.currentGlucose)} mmol/L now${r.idealTarget != null ? ` → target ${fmt1(r.idealTarget)}` : ''}`
+      : null;
+
+    const doseHtml = r.guide.tier === 'single'
+      ? `<div class="dx-suggestion">
           <span class="dx-suggestion__val">${fmt1(r.suggestedUnits)}u</span>
-          <span class="dx-suggestion__meta">single dose — ${escapeHtml(r.guide.message)}</span>
-        </div>`;
-    } else {
-      el.dxMealDoseBody.innerHTML = `
-        <div class="dx-split-dose">
+          <span class="dx-suggestion__meta">${escapeHtml(r.guide.message)}</span>
+        </div>`
+      : `<div class="dx-split-dose">
           <div class="dx-split-dose__part">
             <span class="dx-split-dose__label">Now</span>
             <span class="dx-split-dose__val">${fmt1(r.upfrontUnits)}u</span>
@@ -3720,12 +3750,32 @@ $('btnDxMealDose')?.addEventListener('click', async () => {
             <span class="dx-split-dose__val">${fmt1(r.delayedUnits)}u</span>
           </div>
         </div>
-        <p class="dx-note">${escapeHtml(r.guide.message)}</p>
-        <p class="dx-note">${r.personalized ? `Personalized from ${r.personalizedSampleSize} similar past meals${r.nudgePct ? `, nudged ${fmtSigned(r.nudgePct, 0)}%` : ''}.` : 'Guide default — log a few more meals like this to personalize it.'}</p>
-      `;
-    }
+        <p class="dx-note">${escapeHtml(r.guide.message)}</p>`;
 
-    await recordMacroMeal({ time: now, carbs, fat, protein }, r);
+    const breakdownParts = [];
+    if (carbs > 0) breakdownParts.push(`${fmt1(r.carbUnits)}u for carbs`);
+    if (r.correctionAvailable && Math.abs(r.correctionUnits) >= 0.05) {
+      breakdownParts.push(`${fmtSigned(r.correctionUnits, 1)}u correction (factor ${fmt1(r.factor)}, ${r.factorSource === 'pump-setting' ? 'from pump settings' : `learned from ${r.factorSampleSize} corrections`})`);
+    }
+    if (r.iob >= 0.05) breakdownParts.push(`−${fmt1(r.iob)}u active IOB`);
+
+    const personalizedNote = carbs > 0
+      ? (r.personalized
+        ? `Personalized from ${r.personalizedSampleSize} ${r.personalizedBy === 'meal-name' ? `past "${escapeHtml(mealName)}" meals` : 'similar-fat past meals'}${r.nudgePct ? `, nudged ${fmtSigned(r.nudgePct, 0)}%` : ''}.`
+        : 'Guide default — log a few more meals like this to personalize it.')
+      : '';
+
+    el.dxMealDoseBody.innerHTML = `
+      ${glucoseLine ? `<p class="dx-note" style="margin-bottom:8px">${escapeHtml(glucoseLine)}</p>` : ''}
+      ${doseHtml}
+      ${breakdownParts.length ? `<p class="dx-note">${escapeHtml(breakdownParts.join(' + '))}</p>` : ''}
+      ${r.zeroedByFloor ? '<p class="dx-note" style="color:var(--orange)">The math went negative — capped at 0u since you\'re currently low.</p>' : ''}
+      ${r.lowGlucoseWarning ? '<p class="dx-note" style="color:var(--orange)">You\'re below target right now — treat the low first if you need to.</p>' : ''}
+      ${!r.correctionAvailable && r.idealTarget == null ? '<p class="dx-note">Set a correction target and factor in Settings to have this account for your current glucose.</p>' : ''}
+      ${personalizedNote ? `<p class="dx-note">${personalizedNote}</p>` : ''}
+    `;
+
+    if (carbs > 0) await recordMacroMeal({ time: now, mealName: mealName || null, carbs, fat, protein }, r);
   } catch (err) {
     el.dxMealDoseBody.innerHTML = `<p class="empty-state" style="color:var(--red)">${escapeHtml(err.message)}</p>`;
   }

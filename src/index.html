@@ -1109,7 +1109,14 @@
             <label for="setCarbRatio">Carb ratio <span class="field-hint">grams per unit</span></label>
             <input type="number" id="setCarbRatio" step="0.5" min="1" max="60" placeholder="10" inputmode="decimal">
           </div>
+          <div class="field">
+            <label for="setCorrectionFactor">Correction factor (ISF) <span class="field-hint">mmol/L drop per unit</span></label>
+            <input type="number" id="setCorrectionFactor" step="0.1" min="0.5" max="15" placeholder="e.g. from your pump settings" inputmode="decimal">
+          </div>
         </div>
+        <p style="font-size:11px;color:var(--ink-3);line-height:1.5;margin-top:2px">
+          The correction factor is used until there's enough of your own resolved corrections to learn one from scratch (it'll then prefer the learned value automatically) — set it to whatever your pump is currently programmed with, and change it any time it doesn't seem right.
+        </p>
         <p style="font-size:11px;color:var(--ink-3);line-height:1.5;margin-top:2px">
           Insulin curve is pre-set for Lyumjev (peak ~57min, ~4h duration). Change it below if you use a different rapid-acting insulin.
         </p>
@@ -1191,12 +1198,17 @@
 
         <div class="card">
           <div class="card-eyebrow">
-            Meal dose &amp; split-dosing helper
-            <span class="field-hint" style="text-transform:none;letter-spacing:0;font-weight:400">fat/protein optional</span>
+            Meal bolus calculator
+            <span class="field-hint" style="text-transform:none;letter-spacing:0;font-weight:400">fat/protein/name optional</span>
           </div>
           <p style="font-size:12px;color:var(--ink-3);line-height:1.5;margin-bottom:10px">
-            Add fat and protein for a split-dose suggestion — high-fat meals digest slowly, so a same-time bolus can peak before the food does. Leave them blank for a plain carb-ratio dose.
+            Factors in your current glucose and IOB alongside the carbs — running low reduces the suggestion, running high adds a correction on top. Add fat/protein for a split-dose suggestion, and a meal name to build up per-meal history (pick a past one to see what actually worked last time).
           </p>
+          <div class="field">
+            <label for="dxMealName">Meal name <span class="field-hint">optional — pick a past one or type a new one</span></label>
+            <input type="text" id="dxMealName" list="dxMealNameOptions" placeholder="e.g. Pizza, Porridge…" autocomplete="off">
+            <datalist id="dxMealNameOptions"></datalist>
+          </div>
           <div class="field-grid">
             <div class="field">
               <label for="dxMealCarbs">Carbs <span class="field-hint">grams</span></label>
@@ -1211,7 +1223,7 @@
               <input type="number" id="dxMealProtein" min="0" step="1" placeholder="0" inputmode="numeric">
             </div>
           </div>
-          <button class="btn btn--ghost btn--small" id="btnDxMealDose">Suggest dose</button>
+          <button class="btn btn--ghost btn--small" id="btnDxMealDose">Calculate dose</button>
           <div id="dxMealDoseBody"></div>
         </div>
 
