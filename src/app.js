@@ -235,10 +235,14 @@ const el = {
   historyTableBody:    $('historyTableBody'),
   btnExportCsv:        $('btnExportCsv'),
   btnTzToggle:         $('btnTzToggle'),
+  btnTzClose:          $('btnTzClose'),
   tzCard:              $('tzCard'),
   tzChart:             $('tzChart'),
   tzChartEmpty:        $('tzChartEmpty'),
   tzCurrentLevel:      $('tzCurrentLevel'),
+  tzPreviewRow:        $('tzPreviewRow'),
+  tzPreviewDoseMg:     $('tzPreviewDoseMg'),
+  tzPreviewLabel:      $('tzPreviewLabel'),
   tzLogForm:           $('tzLogForm'),
   tzLogButtonWrap:     $('tzLogButtonWrap'),
   btnTzLog:            $('btnTzLog'),
@@ -3049,26 +3053,43 @@ function renderWeightVariance(series) {
 
 /* ═══════════════════════════════════════════════════════════
    TIRZEPATIDE TRACKER — hidden section on the History tab,
-   toggled by the needle icon.
+   opened by the needle icon, closed by its own ✕.
 
-   Level estimate is a simple single-compartment first-order-decay
-   model: each dose contributes doseMg * 0.5^((t-injectedAt)/halfLife)
-   at any time t, summed across all doses (linear superposition of
-   independent decays — same shape of math as the insulin-on-board
-   curve elsewhere in this app). This is NOT a real PK simulation —
-   it ignores the absorption phase/Tmax, so the very first hours
-   after a dose are approximate — but it's close enough for "roughly
-   how elevated am I right now" at-a-glance tracking. 5 days is
-   tirzepatide's published terminal half-life.
+   Level estimate uses a two-phase absorption + elimination curve
+   (the standard Bateman-function shape for a subcutaneous dose),
+   not just a decay from an instant peak: each dose rises to its own
+   peak at 48h post-injection (tirzepatide's published average Tmax)
+   then decays with a 5-day terminal half-life, and doses superpose
+   linearly (same principle as the insulin-on-board curve elsewhere
+   in this app). ka is solved once, offline, so the peak of a single
+   isolated dose lands exactly at 48h — see the comment above
+   TZ_KA_PER_HOUR. Still an approximation (real absorption varies by
+   injection site/individual), but far closer to reality than a flat
+   instant-peak model, and matches the shape of the reference chart
+   this was built from.
 ═══════════════════════════════════════════════════════════ */
-const TZ_HALF_LIFE_MS = 5 * 24 * 3600 * 1000;
+const TZ_KE_PER_HOUR = Math.log(2) / 120; // 5-day (120h) terminal half-life
+// Solved numerically so that Tmax = ln(ka/ke)/(ka-ke) = 48h exactly,
+// given TZ_KE_PER_HOUR above — see scratchpad for the bisection search.
+const TZ_KA_PER_HOUR = 0.05125785820006391;
+const TZ_PEAK_HOURS = 48;
+function tzDoseShape(hoursSince) {
+  if (hoursSince < 0) return 0;
+  return Math.exp(-TZ_KE_PER_HOUR * hoursSince) - Math.exp(-TZ_KA_PER_HOUR * hoursSince);
+}
+const TZ_SHAPE_AT_PEAK = tzDoseShape(TZ_PEAK_HOURS); // normalizer: dose peaks at exactly doseMg
+
 let tzDosesCache = null;
+let tzHypothetical = null;   // { doseMg, injectedMs } — draggable "what if" preview, never persisted
+let tzChartGeom = null;      // last draw's coordinate mapping, for pointer→time conversion
+let tzDragging = false;
 
 function tzLevelAt(doses, atMs) {
   let total = 0;
   for (const d of doses) {
-    if (d.injectedMs > atMs) continue;
-    total += d.doseMg * Math.pow(0.5, (atMs - d.injectedMs) / TZ_HALF_LIFE_MS);
+    const hoursSince = (atMs - d.injectedMs) / 3600000;
+    if (hoursSince < 0) continue;
+    total += d.doseMg * (tzDoseShape(hoursSince) / TZ_SHAPE_AT_PEAK);
   }
   return total;
 }
@@ -3095,7 +3116,34 @@ async function fetchTirzepatideDoses() {
 async function loadTirzepatideSection() {
   const doses = await fetchTirzepatideDoses();
   tzDosesCache = doses;
+
+  if (doses.length) {
+    const lastDose = [...doses].sort((a, b) => b.injectedMs - a.injectedMs)[0];
+    // Default preview: same dose, one week after the last real injection
+    // (or "now" if that's already past) — the common weekly cadence.
+    tzHypothetical = {
+      doseMg: lastDose.doseMg,
+      injectedMs: Math.max(Date.now(), lastDose.injectedMs + 7 * 24 * 3600000),
+    };
+    if (el.tzPreviewDoseMg) {
+      const opt = [...el.tzPreviewDoseMg.options].find(o => Number(o.value) === lastDose.doseMg);
+      if (opt) el.tzPreviewDoseMg.value = opt.value;
+    }
+  } else {
+    tzHypothetical = null;
+  }
+
   renderTzSection(doses);
+}
+
+function updateTzPreviewLabel() {
+  if (!el.tzPreviewLabel) return;
+  if (!tzHypothetical) { el.tzPreviewLabel.textContent = ''; return; }
+  const withHypo = [...(tzDosesCache || []), tzHypothetical];
+  const peakMs = tzHypothetical.injectedMs + TZ_PEAK_HOURS * 3600000;
+  const peakLevel = tzLevelAt(withHypo, peakMs);
+  el.tzPreviewLabel.textContent =
+    `Next dose ${new Date(tzHypothetical.injectedMs).toLocaleDateString([], { month: 'short', day: 'numeric' })} → peaks ~${fmt1(peakLevel)} mg`;
 }
 
 function renderTzSection(doses) {
@@ -3103,8 +3151,9 @@ function renderTzSection(doses) {
 
   if (!doses.length) {
     if (el.tzCurrentLevel) el.tzCurrentLevel.hidden = true;
+    if (el.tzPreviewRow) el.tzPreviewRow.hidden = true;
     if (el.tzDoseList) el.tzDoseList.innerHTML = '<p class="empty-state">No injections logged yet.</p>';
-    drawTzChart(el.tzChart, el.tzChartEmpty, []);
+    drawTzChart(el.tzChart, el.tzChartEmpty, [], null);
     return;
   }
 
@@ -3114,6 +3163,9 @@ function renderTzSection(doses) {
     el.tzCurrentLevel.hidden = false;
     el.tzCurrentLevel.innerHTML = `<span class="tz-current-level__value">${fmt1(currentLevel)} mg</span><span class="tz-current-level__label">estimated level now</span>`;
   }
+
+  if (el.tzPreviewRow) el.tzPreviewRow.hidden = false;
+  updateTzPreviewLabel();
 
   const sortedDesc = [...doses].sort((a, b) => b.injectedMs - a.injectedMs);
   if (el.tzDoseList) {
@@ -3128,14 +3180,17 @@ function renderTzSection(doses) {
     `).join('');
   }
 
-  drawTzChart(el.tzChart, el.tzChartEmpty, doses);
+  drawTzChart(el.tzChart, el.tzChartEmpty, doses, tzHypothetical);
 }
 
-function drawTzChart(canvas, emptyEl, doses) {
+// hypothetical: optional { doseMg, injectedMs } draggable "what if next
+// dose" preview — folded into the future curve, never persisted.
+function drawTzChart(canvas, emptyEl, doses, hypothetical) {
   if (!canvas) return;
   if (!doses.length) {
     if (emptyEl) emptyEl.hidden = false;
     canvas.hidden = true;
+    tzChartGeom = null;
     return;
   }
   if (emptyEl) emptyEl.hidden = true;
@@ -3161,14 +3216,19 @@ function drawTzChart(canvas, emptyEl, doses) {
   const sorted = [...doses].sort((a, b) => a.injectedMs - b.injectedMs);
   const windowStart = sorted[0].injectedMs;
   const FUTURE_MS = 7 * 24 * 3600 * 1000;
-  const windowEnd = now + FUTURE_MS;
+  // Extend the window to cover the previewed dose's own decay, not just
+  // a flat 7 days out, so dragging it far forward doesn't clip its curve.
+  const windowEnd = Math.max(now + FUTURE_MS, hypothetical ? hypothetical.injectedMs + FUTURE_MS : 0);
+
+  const projectionDoses = hypothetical ? [...sorted, hypothetical] : sorted;
 
   const STEP_MS = 3 * 3600 * 1000; // 3h resolution
   const pastPts = [];
   for (let t = windowStart; t <= now; t += STEP_MS) pastPts.push({ ms: t, v: tzLevelAt(sorted, t) });
   pastPts.push({ ms: now, v: tzLevelAt(sorted, now) });
   const futurePts = [];
-  for (let t = now; t <= windowEnd; t += STEP_MS) futurePts.push({ ms: t, v: tzLevelAt(sorted, t) });
+  for (let t = now; t <= windowEnd; t += STEP_MS) futurePts.push({ ms: t, v: tzLevelAt(projectionDoses, t) });
+  futurePts.push({ ms: windowEnd, v: tzLevelAt(projectionDoses, windowEnd) });
 
   const allVals = [...pastPts, ...futurePts].map(p => p.v);
   const vMax = Math.max(1, ...allVals) * 1.15;
@@ -3177,6 +3237,9 @@ function drawTzChart(canvas, emptyEl, doses) {
   const plotW = W - padL - padR, plotH = H - padTop - padBottom;
   const xAt = ms => padL + ((ms - windowStart) / (windowEnd - windowStart)) * plotW;
   const yAt = v => padTop + plotH - (v / vMax) * plotH;
+
+  // Stash geometry so pointer handlers can convert screen x back to time.
+  tzChartGeom = { windowStart, windowEnd, padL, padR, plotW, padTop, plotH };
 
   // Y gridlines
   ctx.strokeStyle = 'rgba(255,255,255,0.06)';
@@ -3213,7 +3276,7 @@ function drawTzChart(canvas, emptyEl, doses) {
   pastPts.forEach((p, i) => { const x = xAt(p.ms), y = yAt(p.v); if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
   ctx.stroke();
 
-  // Future — dashed
+  // Future — dashed (includes the previewed dose, if any)
   ctx.strokeStyle = 'rgba(59, 158, 255, 0.65)';
   ctx.lineWidth = 1.5;
   ctx.setLineDash([4, 3]);
@@ -3222,18 +3285,97 @@ function drawTzChart(canvas, emptyEl, doses) {
   ctx.stroke();
   ctx.setLineDash([]);
 
-  // Dose markers
+  // Real dose markers
   ctx.fillStyle = '#3B9EFF';
   sorted.forEach(d => {
     const x = xAt(d.injectedMs), y = yAt(tzLevelAt(sorted, d.injectedMs));
     ctx.beginPath(); ctx.arc(x, y, 2.5, 0, Math.PI * 2); ctx.fill();
   });
+
+  // Draggable "next dose" preview handle — a full-height amber line with
+  // a generously-sized grab circle at the top (grabbing a point on the
+  // curve itself is fiddly on touch; a fixed time-axis handle is not).
+  if (hypothetical) {
+    const hx = xAt(hypothetical.injectedMs);
+    ctx.strokeStyle = 'rgba(245, 166, 35, 0.55)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.moveTo(hx, padTop); ctx.lineTo(hx, padTop + plotH); ctx.stroke();
+    ctx.setLineDash([]);
+
+    const hy = yAt(tzLevelAt(projectionDoses, hypothetical.injectedMs));
+    ctx.fillStyle = '#F5A623';
+    ctx.beginPath(); ctx.arc(hx, hy, 3, 0, Math.PI * 2); ctx.fill();
+
+    ctx.beginPath(); ctx.arc(hx, padTop + 8, 7, 0, Math.PI * 2);
+    ctx.fillStyle = '#F5A623'; ctx.fill();
+    ctx.strokeStyle = '#1a1d24'; ctx.lineWidth = 1.5; ctx.stroke();
+  }
+}
+
+function tzXToMs(x) {
+  if (!tzChartGeom) return null;
+  const { windowStart, windowEnd, padL, plotW } = tzChartGeom;
+  const frac = (x - padL) / plotW;
+  return windowStart + frac * (windowEnd - windowStart);
+}
+
+function tzHandleX() {
+  if (!tzHypothetical || !tzChartGeom) return null;
+  const { windowStart, windowEnd, padL, plotW } = tzChartGeom;
+  return padL + ((tzHypothetical.injectedMs - windowStart) / (windowEnd - windowStart)) * plotW;
 }
 
 el.btnTzToggle?.addEventListener('click', () => {
-  const willShow = el.tzCard.hidden;
-  el.tzCard.hidden = !willShow;
-  if (willShow) loadTirzepatideSection();
+  el.tzCard.hidden = false;
+  loadTirzepatideSection();
+});
+
+el.btnTzClose?.addEventListener('click', () => {
+  el.tzCard.hidden = true;
+  tzDragging = false;
+});
+
+el.tzPreviewDoseMg?.addEventListener('change', () => {
+  if (!tzHypothetical) return;
+  tzHypothetical.doseMg = parseFloat(el.tzPreviewDoseMg.value);
+  drawTzChart(el.tzChart, el.tzChartEmpty, tzDosesCache || [], tzHypothetical);
+  updateTzPreviewLabel();
+});
+
+// Draggable "next dose" preview — pointer events unify touch/mouse.
+// touch-action: none on the canvas (see app.css) stops the page from
+// scrolling while dragging.
+el.tzChart?.addEventListener('pointerdown', (e) => {
+  if (!tzHypothetical || !tzChartGeom) return;
+  const rect = el.tzChart.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const hx = tzHandleX();
+  if (hx == null || Math.abs(x - hx) > 24) return; // generous touch hit-test
+  tzDragging = true;
+  el.tzChart.setPointerCapture(e.pointerId);
+  e.preventDefault();
+});
+
+el.tzChart?.addEventListener('pointermove', (e) => {
+  if (!tzDragging || !tzChartGeom || !tzHypothetical) return;
+  const rect = el.tzChart.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const ms = tzXToMs(x);
+  if (ms == null) return;
+  const now = Date.now();
+  tzHypothetical.injectedMs = Math.min(now + 28 * 24 * 3600000, Math.max(now, ms));
+  drawTzChart(el.tzChart, el.tzChartEmpty, tzDosesCache || [], tzHypothetical);
+  updateTzPreviewLabel();
+  e.preventDefault();
+});
+
+['pointerup', 'pointercancel'].forEach(evt => {
+  el.tzChart?.addEventListener(evt, (e) => {
+    if (!tzDragging) return;
+    tzDragging = false;
+    try { el.tzChart.releasePointerCapture(e.pointerId); } catch {}
+  });
 });
 
 el.btnTzLog?.addEventListener('click', () => {

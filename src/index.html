@@ -794,7 +794,10 @@
       </div>
 
       <div class="card" id="tzCard" hidden>
-        <div class="card-eyebrow">Tirzepatide tracker</div>
+        <div class="tz-card-head">
+          <span class="card-eyebrow">Tirzepatide tracker</span>
+          <button type="button" class="btn btn--icon" id="btnTzClose" title="Close" aria-label="Close">✕</button>
+        </div>
         <div class="chart-wrap">
           <canvas id="tzChart" height="200"></canvas>
           <p class="chart-empty" id="tzChartEmpty">Log an injection to see your levels.</p>
@@ -802,8 +805,24 @@
         <div class="history-legend">
           <span class="legend-item legend-item--actual">— Past level</span>
           <span class="legend-item legend-item--proj">- - Projected decay</span>
+          <span class="legend-item legend-item--tz-preview">● Drag to preview next dose</span>
         </div>
         <div id="tzCurrentLevel" class="tz-current-level" hidden></div>
+
+        <div id="tzPreviewRow" class="tz-preview-row" hidden>
+          <div class="field">
+            <label>Preview next dose</label>
+            <select id="tzPreviewDoseMg">
+              <option value="2.5">2.5 mg</option>
+              <option value="5">5 mg</option>
+              <option value="7.5">7.5 mg</option>
+              <option value="10">10 mg</option>
+              <option value="12.5">12.5 mg</option>
+              <option value="15">15 mg</option>
+            </select>
+          </div>
+          <div id="tzPreviewLabel" class="tz-preview-label"></div>
+        </div>
 
         <div id="tzLogForm" class="tz-log-form" hidden>
           <div class="field">
