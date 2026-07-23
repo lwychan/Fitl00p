@@ -3186,7 +3186,9 @@ body { font-size: 15px; }
   border-radius: 0;
 }
 #dxMfpImportsBody {
-  max-height: 420px;
+  /* ~3-4 meal cards visible (measured ~90-165px each depending on
+     ingredient-list wrapping) before scrolling kicks in. */
+  max-height: 460px;
   overflow-y: auto;
 }
 .dx-mfp-item {
