@@ -129,13 +129,19 @@
 
 /* ── RESET ───────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-html { -webkit-text-size-adjust: 100%; height: 100%; background: var(--bg); }
+html {
+  -webkit-text-size-adjust: 100%;
+  height: 100%;
+  background: var(--bg);
+  overflow-x: hidden; /* hard cap — nothing can ever push the page sideways, no matter what misbehaves inside it */
+}
 body {
   font-family: var(--ui);
   background: var(--bg);
   color: var(--ink);
   line-height: 1.5;
   min-height: 100dvh;
+  overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -2596,12 +2602,15 @@ body { font-size: 15px; }
   border: 1px solid var(--border-2);
 }
 
-/* Table */
+/* Table — only ever 2 narrow columns (date + value), so it never
+   actually needs the shared .data-table's 460px min-width; sizing it
+   naturally avoids forcing a horizontal scroll for content that fits. */
 .metric-sheet-table-wrap {
   border-radius: var(--r-md);
-  overflow: hidden;
+  overflow-x: auto;
   border: 1px solid var(--border-2);
 }
+.metric-sheet-table-wrap .data-table { min-width: 0; }
 
 /* ── NET CALORIES CARD ───────────────────────────────────── */
 .card--net-cals { grid-column: 1 / -1; }
