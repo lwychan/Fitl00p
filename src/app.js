@@ -6508,6 +6508,69 @@ document.querySelectorAll('.theme-btn').forEach(btn => {
   btn.addEventListener('click', () => applyTheme(btn.dataset.theme));
 });
 
+/* ═══════════════════════════════════════════════════════════
+   SCREEN WAKE LOCK — keeps the phone from sleeping while fitl00p
+   is the active foreground tab. A device-local preference, not
+   synced to Supabase — carrying "keep my phone awake" across to a
+   different device doesn't mean anything, unlike theme/profile
+   settings. Requires iOS 16.4+ (Safari's Wake Lock API support) —
+   feature-detected below, degrades to a disabled/explained checkbox
+   on anything older.
+
+   The browser force-releases the lock the instant the tab is
+   backgrounded (screen locked, app-switched away from, etc.) — that
+   part is outside our control by design (it's what stops a hidden
+   tab draining the battery forever). We only re-acquire it on
+   visibilitychange while the preference is still on, so it comes
+   back the moment the user returns to the app.
+═══════════════════════════════════════════════════════════ */
+const KEEP_AWAKE_KEY = 'fitl00p:keepAwake';
+let wakeLockSentinel = null;
+
+async function requestWakeLock() {
+  if (!('wakeLock' in navigator)) return false;
+  try {
+    wakeLockSentinel = await navigator.wakeLock.request('screen');
+    wakeLockSentinel.addEventListener('release', () => { wakeLockSentinel = null; });
+    return true;
+  } catch (err) {
+    // Can legitimately fail (e.g. Low Power Mode) — not an error worth
+    // surfacing to the user, the checkbox just won't have taken effect.
+    console.warn('Wake lock request failed (non-fatal):', err?.message || err);
+    wakeLockSentinel = null;
+    return false;
+  }
+}
+
+function releaseWakeLock() {
+  if (wakeLockSentinel) {
+    wakeLockSentinel.release().catch(() => {});
+    wakeLockSentinel = null;
+  }
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && localStorage.getItem(KEEP_AWAKE_KEY) === '1') {
+    requestWakeLock();
+  }
+});
+
+const keepAwakeCheckbox = $('setKeepAwake');
+if (keepAwakeCheckbox) {
+  if (!('wakeLock' in navigator)) {
+    keepAwakeCheckbox.disabled = true;
+    const unsupportedEl = $('keepAwakeUnsupported');
+    if (unsupportedEl) unsupportedEl.hidden = false;
+  } else {
+    keepAwakeCheckbox.checked = localStorage.getItem(KEEP_AWAKE_KEY) === '1';
+    if (keepAwakeCheckbox.checked) requestWakeLock();
+    keepAwakeCheckbox.addEventListener('change', () => {
+      localStorage.setItem(KEEP_AWAKE_KEY, keepAwakeCheckbox.checked ? '1' : '0');
+      if (keepAwakeCheckbox.checked) requestWakeLock(); else releaseWakeLock();
+    });
+  }
+}
+
 // Show auth screen immediately so there's never a black screen gap
 // It will be replaced by the app screen if a valid session is found
 showScreen('auth');
