@@ -4097,8 +4097,8 @@ $('btnSaveDiabetesSettings')?.addEventListener('click', async () => {
    input" with no dialog, no network request, nothing. (Confirmed by
    reproducing it with a one-line comment in a real click-triggered
    javascript: URL — addScriptTag-based tests don't go through the
-   URL parser and won't catch this.) `/* */` block comments are safe
-   if ever needed (explicit terminator, not newline-dependent), but
+   URL parser and won't catch this.) Slash-star block comments are
+   safe if ever needed (explicit terminator, not newline-dependent), but
    simplest is just: keep this template comment-free and put any
    explanation here instead. */
 const MFP_BOOKMARKLET_SRC = `(function(){
