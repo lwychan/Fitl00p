@@ -3435,7 +3435,7 @@ async function fetchMfpImports() {
   const sinceIso = new Date(Date.now() - 3 * 24 * 60 * 60000).toISOString();
   const { data, error } = await db
     .from('diabetes_meals')
-    .select('id, eaten_at, meal_name, carbs_g, fat_g, protein_g, match_status, hypo_treatment, matched_bolus_time, matched_bolus_units')
+    .select('id, eaten_at, meal_name, carbs_g, fat_g, protein_g, match_status, hypo_treatment, matched_bolus_time, matched_bolus_units, suggested_units, upfront_units, delayed_units')
     .eq('user_id', currentUser.id)
     .eq('source', 'mfp')
     .gte('eaten_at', sinceIso)
@@ -3620,8 +3620,21 @@ const MFP_BOOKMARKLET_SRC = `(function(){
     body: JSON.stringify({ token: TOKEN, date: dateVal, items: items }),
   }).then(function(r){ return r.json(); }).then(function(res){
     if (res.error) { alert('fitl00p import failed: ' + res.error); return; }
-    alert('fitl00p: imported ' + res.imported + ' (skipped ' + res.skippedDuplicate + ' already sent). ' +
-      res.autoMatched + ' matched to a bolus, ' + res.hypoTagged + ' tagged as hypo treatments, ' + res.unmatched + ' need linking by hand.');
+    var lines = (res.suggestions || []).map(function(s){
+      if (s.suggestedUnits != null) {
+        var line = s.name + ': ' + s.suggestedUnits + 'u';
+        if (s.splitTier && s.splitTier !== 'single' && s.delayedUnits > 0) {
+          line += ' (' + s.upfrontUnits + 'u now, ' + s.delayedUnits + 'u delayed)';
+        }
+        if (s.lowGlucoseWarning) line += ' \\u26a0 glucose is low — double-check before dosing';
+        return line;
+      }
+      if (s.hypoTreatment) return s.name + ': hypo treatment — no bolus needed';
+      if (s.withheldReason) return s.name + ': no suggestion (' + s.withheldReason + ') — check the Diabetes tab';
+      return null;
+    }).filter(Boolean);
+    var summary = res.autoMatched + ' already matched to an existing bolus' + (res.skippedDuplicate ? ', ' + res.skippedDuplicate + ' already sent before' : '') + '.';
+    alert('fitl00p:\\n\\n' + (lines.length ? lines.join('\\n\\n') : 'Nothing new to suggest.') + '\\n\\n' + summary);
   }).catch(function(err){
     alert('fitl00p import failed: ' + err.message);
   });
@@ -4220,6 +4233,8 @@ function renderDxMfpImports(items, boluses) {
   el.dxMfpImportsBody.innerHTML = items.map(it => {
     const eatenMs = new Date(it.eaten_at).getTime();
     const isMatched = it.match_status === 'auto' || it.match_status === 'manual';
+    const isSuggested = it.match_status === 'suggested';
+    let suggestedHtml = '';
     let actionHtml;
     if (isMatched) {
       actionHtml = `<span class="badge badge--green">✓ ${fmt1(it.matched_bolus_units)}u${it.match_status === 'manual' ? ' (linked)' : ''}</span>`;
@@ -4227,6 +4242,14 @@ function renderDxMfpImports(items, boluses) {
       actionHtml = `<span class="badge badge--blue">Hypo treatment — no bolus needed</span>
         <button class="btn btn--ghost btn--small" data-action="unhypo" data-id="${it.id}" style="margin-left:6px">Not a hypo?</button>`;
     } else {
+      // Both a plain 'unmatched' row (couldn't compute a suggestion) and a
+      // 'suggested' row (computed one, but the real bolus hasn't shown up
+      // in Nightscout to confirm yet) still need the same "link once you've
+      // actually dosed" action — a suggestion isn't a substitute for that.
+      if (isSuggested) {
+        suggestedHtml = `<div style="margin-bottom:6px"><span class="badge badge--orange">Suggested ${fmt1(it.suggested_units)}u</span>
+          ${it.delayed_units > 0 ? `<span class="field-hint" style="margin-left:6px">${fmt1(it.upfront_units)}u now, ${fmt1(it.delayed_units)}u delayed</span>` : ''}</div>`;
+      }
       const dayBoluses = boluses.filter(b => {
         const bd = new Date(Number(b.time));
         const id_ = new Date(eatenMs);
@@ -4234,7 +4257,7 @@ function renderDxMfpImports(items, boluses) {
       });
       actionHtml = `
         <select data-role="mfp-bolus-pick" data-id="${it.id}">
-          <option value="">Link a dose…</option>
+          <option value="">Link the actual dose…</option>
           ${dayBoluses.map(b => `<option value="${b.time}|${b.units}">${new Date(Number(b.time)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} — ${fmt1(b.units)}u</option>`).join('')}
         </select>
         <button class="btn btn--ghost btn--small" data-action="link" data-id="${it.id}">Link</button>
@@ -4246,6 +4269,7 @@ function renderDxMfpImports(items, boluses) {
           <strong>${escapeHtml(it.meal_name)}</strong>
           <span class="field-hint">${fmt1(it.carbs_g)}g carbs · ${new Date(eatenMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
         </div>
+        ${suggestedHtml}
         <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px">${actionHtml}</div>
       </div>`;
   }).join('');

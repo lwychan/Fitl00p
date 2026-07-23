@@ -1142,7 +1142,7 @@
           MyFitnessPal blocks server-side access to diaries, so this works as a bookmarklet instead: a button you drag to your bookmarks bar. Open your own MFP diary while logged in, tap it, and it reads the page directly in your session and sends today's food to fitl00p — no password ever touches this app. For best results, turn on the Carbs/Fat/Protein columns under MFP → Settings → Diary Settings → Nutrients Displayed.
         </p>
         <p style="font-size:13px;color:var(--ink-3);line-height:1.6">
-          Each item is auto-matched to the nearest Nightscout bolus with a similar carb count. If nothing matches and your glucose is low or falling, it's tagged as a hypo treatment instead — no bolus expected. Anything else is left for you to link by hand in the Diabetes tab.
+          This is meant to be the fast path to a dose: log a meal in MFP, tap the bookmarklet, and it shows you a suggested dose right there — the same current-glucose/IOB-aware calculation as the Meal bolus calculator below, using whatever you already logged instead of retyping it. If you'd already dosed before syncing, it matches to that bolus instead; if it's a hypo treatment (glucose low or falling), it skips the suggestion entirely. Once you've actually dosed for a suggested item, link the real bolus to it in the Diabetes tab so fitl00p can learn from what you actually did.
         </p>
         <div id="mfpNoToken">
           <button class="btn btn--primary btn--small" id="btnMfpGenerateToken">Set up MyFitnessPal import</button>

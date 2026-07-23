@@ -67,21 +67,24 @@ exports.handler = async function (event) {
     insulinDurationMinutes: profile.diabetes_insulin_duration_min ?? 240,
   };
 
-  // Pull a day's worth of Nightscout history to match against — enough
-  // to cover same-day meals without a heavy fetch on every bookmarklet click.
-  let boluses = [], ctx = { stale: true, currentGlucose: null, effectiveGlucose: null };
+  // Pull a day's worth of Nightscout history — enough to both match
+  // against existing boluses (if the user already dosed before syncing)
+  // and to compute a live dose suggestion (if they're syncing to decide
+  // what to bolus, which is now the primary path).
+  let boluses = [], nsData = null, ctx = { stale: true, currentGlucose: null, effectiveGlucose: null };
   if (profile.diabetes_ns_url) {
-    const nsData = await fetchNightscoutWindow(profile);
+    nsData = await fetchNightscoutWindow(profile);
     if (nsData) {
       boluses = nsData.boluses || [];
       ctx = DiabetesEngine.dosingContext({ ...nsData, settings }, Date.now());
     }
   }
+  const macroMealLog = await fetchMacroMealLogForUser(userId);
 
   const nowMs = Date.now();
   const importDate = date || new Date(nowMs).toISOString().slice(0, 10);
 
-  const results = { imported: 0, skippedDuplicate: 0, skippedInvalid: 0, autoMatched: 0, hypoTagged: 0, unmatched: 0 };
+  const results = { imported: 0, skippedDuplicate: 0, skippedInvalid: 0, autoMatched: 0, hypoTagged: 0, suggested: 0, unmatched: 0, suggestions: [] };
   const rows = [];
 
   for (const raw of items) {
@@ -98,9 +101,20 @@ exports.handler = async function (event) {
 
     const fingerprint = crypto.createHash('sha1').update(`${importDate}|${mealSection}|${name.toLowerCase()}`).digest('hex');
 
+    // Priority order matters here: an already-existing bolus (they'd
+    // already dosed before syncing) always wins over computing a fresh
+    // suggestion. Below that, suggestMacroMealDose is always given the
+    // chance to run — it already reduces/floors the dose using current
+    // glucose and IOB, which is the correct way to handle "a bit low but
+    // eating a normal meal." Only when its own math floors to zero AND
+    // glucose is actually low/falling do we call it a hypo treatment;
+    // that's more accurate than gating on the glucose threshold alone,
+    // which would also suppress legitimate reduced-but-nonzero doses.
     let matchStatus = 'unmatched';
     let matchedBolusTime = null;
     let matchedBolusUnits = null;
+    let doseFields = {};
+    let suggestionForResponse = null;
 
     const match = findBestBolusMatch(boluses, carbsG, nowMs);
     if (match) {
@@ -108,13 +122,48 @@ exports.handler = async function (event) {
       matchedBolusTime = new Date(match.time).toISOString();
       matchedBolusUnits = match.units;
       results.autoMatched++;
-    } else if (!ctx.stale && ctx.currentGlucose != null &&
-               (ctx.currentGlucose < HYPO_GLUCOSE_THRESHOLD || (ctx.effectiveGlucose != null && ctx.effectiveGlucose < HYPO_GLUCOSE_THRESHOLD))) {
-      matchStatus = 'hypo-auto';
-      results.hypoTagged++;
     } else {
-      results.unmatched++;
+      const meal = { carbs: carbsG || 0, fat: fatG || 0, protein: proteinG || 0, mealName: name };
+      const engineInput = {
+        glucoseHistory: nsData?.glucoseHistory || [],
+        boluses: nsData?.boluses || [],
+        corrections: nsData?.corrections || [],
+        settings,
+        macroMealLog,
+      };
+      const doseResult = DiabetesEngine.suggestMacroMealDose(engineInput, meal, nowMs);
+      const lowOrFalling = !ctx.stale && ctx.currentGlucose != null &&
+        (ctx.currentGlucose < HYPO_GLUCOSE_THRESHOLD || (ctx.effectiveGlucose != null && ctx.effectiveGlucose < HYPO_GLUCOSE_THRESHOLD));
+
+      if (doseResult.suggestedUnits == null) {
+        matchStatus = 'unmatched';
+        results.unmatched++;
+        suggestionForResponse = { name, withheldReason: doseResult.withheldReason };
+      } else if (doseResult.suggestedUnits === 0 && lowOrFalling) {
+        matchStatus = 'hypo-auto';
+        results.hypoTagged++;
+        suggestionForResponse = { name, hypoTreatment: true };
+      } else {
+        matchStatus = 'suggested';
+        results.suggested++;
+        doseFields = {
+          suggested_units: doseResult.suggestedUnits,
+          upfront_units: doseResult.upfrontUnits,
+          delayed_units: doseResult.delayedUnits,
+          dose_source: doseResult.personalized ? `mfp-auto:${doseResult.personalizedBy}` : 'mfp-auto',
+        };
+        suggestionForResponse = {
+          name,
+          suggestedUnits: doseResult.suggestedUnits,
+          upfrontUnits: doseResult.upfrontUnits,
+          delayedUnits: doseResult.delayedUnits,
+          splitTier: doseResult.guide?.tier || 'single',
+          lowGlucoseWarning: !!doseResult.lowGlucoseWarning,
+        };
+      }
     }
+
+    if (suggestionForResponse) results.suggestions.push(suggestionForResponse);
 
     rows.push({
       user_id: userId,
@@ -129,6 +178,7 @@ exports.handler = async function (event) {
       matched_bolus_time: matchedBolusTime,
       matched_bolus_units: matchedBolusUnits,
       mfp_fingerprint: fingerprint,
+      ...doseFields,
     });
   }
 
@@ -178,6 +228,18 @@ function findBestBolusMatch(boluses, carbsG, nowMs) {
     if (score < bestScore) { bestScore = score; best = b; }
   }
   return best;
+}
+
+async function fetchMacroMealLogForUser(userId) {
+  const res = await sbFetch(`/rest/v1/diabetes_meals?user_id=eq.${userId}&select=eaten_at,meal_name,carbs_g,fat_g,protein_g&order=eaten_at.desc&limit=200`);
+  if (!res.ok) return [];
+  return (res.data || []).map(r => ({
+    time: new Date(r.eaten_at).getTime(),
+    mealName: r.meal_name || null,
+    carbs: Number(r.carbs_g),
+    fat: Number(r.fat_g),
+    protein: Number(r.protein_g),
+  }));
 }
 
 async function fetchNightscoutWindow(profile) {
