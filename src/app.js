@@ -4079,7 +4079,28 @@ $('btnSaveDiabetesSettings')?.addEventListener('click', async () => {
    POSTs the parsed items to mfp-import.js, which does the actual
    bolus-matching against Nightscout. The __TOKEN__/__ENDPOINT__
    placeholders get swapped for real values (as JSON string literals,
-   so they're safely quoted) when the bookmarklet is built. */
+   so they're safely quoted) when the bookmarklet is built.
+
+   Parsing builds one item per meal *section* (not per ingredient) —
+   dosing happens per meal, so the section's own totals row (already
+   summed by MFP) becomes the item's macros, with individual food
+   names joined into the label purely for display.
+
+   IMPORTANT — no `//` line comments inside MFP_BOOKMARKLET_SRC or
+   MFP_SHORTCUT_SRC below, ever. When this string is actually clicked
+   as a real bookmark (not just read as a JS variable), the browser
+   parses it through the WHATWG URL algorithm first, which strips
+   every ASCII tab/newline from the string *before* it's handed to
+   eval. A `//` comment has no other terminator — with the newline
+   after it gone, the comment silently swallows every line after it,
+   including the closing `})();`, producing a bare "Unexpected end of
+   input" with no dialog, no network request, nothing. (Confirmed by
+   reproducing it with a one-line comment in a real click-triggered
+   javascript: URL — addScriptTag-based tests don't go through the
+   URL parser and won't catch this.) `/* */` block comments are safe
+   if ever needed (explicit terminator, not newline-dependent), but
+   simplest is just: keep this template comment-free and put any
+   explanation here instead. */
 const MFP_BOOKMARKLET_SRC = `(function(){
   var TOKEN = __TOKEN__;
   var ENDPOINT = __ENDPOINT__;
@@ -4103,10 +4124,6 @@ const MFP_BOOKMARKLET_SRC = `(function(){
     var names = {'1':'breakfast','2':'lunch','3':'dinner','4':'snacks','5':'snacks','6':'snacks'};
     return names[numStr] || 'snacks';
   }
-  // One item per meal *section* (not per ingredient) — dosing happens
-  // per meal, so the section's own totals row (already summed by MFP)
-  // becomes the item's macros, and the individual food names are joined
-  // into the label purely for display/reference.
   var items = [];
   var rows = document.querySelectorAll('#diary-table tr');
   var section = 'breakfast';
@@ -4214,10 +4231,6 @@ const MFP_SHORTCUT_SRC = `(function(){
     var names = {'1':'breakfast','2':'lunch','3':'dinner','4':'snacks','5':'snacks','6':'snacks'};
     return names[numStr] || 'snacks';
   }
-  // One item per meal *section* (not per ingredient) — dosing happens
-  // per meal, so the section's own totals row (already summed by MFP)
-  // becomes the item's macros, and the individual food names are joined
-  // into the label purely for display/reference.
   var items = [];
   var rows = document.querySelectorAll('#diary-table tr');
   var section = 'breakfast';
