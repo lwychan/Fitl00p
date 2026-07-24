@@ -802,37 +802,24 @@
           <p class="chart-empty" id="tzChartEmpty">Log an injection to see your levels.</p>
         </div>
         <div class="history-legend">
-          <span class="legend-item legend-item--actual">— Past level</span>
-          <span class="legend-item legend-item--proj">- - Projected decay</span>
-          <span class="legend-item legend-item--tz-preview">● Drag to preview next dose</span>
+          <span class="legend-item legend-item--actual">— Logged level</span>
+          <span class="legend-item legend-item--proj">- - If routine continues</span>
+          <span class="legend-item legend-item--tz-preview">● Tap the chart to inspect a day</span>
         </div>
         <div id="tzCurrentLevel" class="tz-current-level" hidden></div>
-
-        <div id="tzPreviewRow" class="tz-preview-row" hidden>
-          <div class="field">
-            <label>Preview next dose</label>
-            <select id="tzPreviewDoseMg">
-              <option value="2.5">2.5 mg</option>
-              <option value="5">5 mg</option>
-              <option value="7.5">7.5 mg</option>
-              <option value="10">10 mg</option>
-              <option value="12.5">12.5 mg</option>
-              <option value="15">15 mg</option>
-            </select>
-          </div>
-          <div id="tzPreviewLabel" class="tz-preview-label"></div>
-        </div>
+        <div id="tzInspectPanel" class="tz-inspect-panel" hidden></div>
 
         <div id="tzLogForm" class="tz-log-form" hidden>
           <div class="field">
             <label>Dose</label>
             <select id="tzDoseMg">
-              <option value="2.5">2.5 mg</option>
-              <option value="5">5 mg</option>
-              <option value="7.5">7.5 mg</option>
-              <option value="10">10 mg</option>
-              <option value="12.5">12.5 mg</option>
-              <option value="15">15 mg</option>
+              <option value="1">1 mg — 8 clicks</option>
+              <option value="2">2 mg — 16 clicks</option>
+              <option value="3">3 mg — 24 clicks</option>
+              <option value="4">4 mg — 32 clicks</option>
+              <option value="5">5 mg — 40 clicks</option>
+              <option value="6">6 mg — 48 clicks</option>
+              <option value="7">7 mg — 56 clicks</option>
             </select>
           </div>
           <div class="field">

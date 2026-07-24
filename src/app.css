@@ -3363,20 +3363,20 @@ body { font-size: 15px; }
 .tz-card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
 .tz-card-head .btn--icon { width: 28px; height: 28px; font-size: 13px; }
 .legend-item--tz-preview { color: #F5A623; }
-.tz-preview-row[hidden] { display: none; }
-.tz-preview-row {
+.tz-inspect-panel[hidden] { display: none; }
+.tz-inspect-panel {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin: 8px 0;
-  padding: 8px 10px;
+  align-items: baseline;
+  gap: 6px;
+  margin: 10px 0;
+  padding: 10px 14px;
   border-radius: var(--r-sm);
-  background: var(--surface-2);
+  background: rgba(245,166,35,.12);
+  width: fit-content;
 }
-.tz-preview-row .field { margin: 0; flex: 0 0 auto; }
-.tz-preview-label { font-size: 12px; color: var(--ink-3); text-align: right; line-height: 1.4; }
-#tzChart { touch-action: none; }
+.tz-inspect-panel__value { font-size: 20px; font-weight: 700; color: #F5A623; }
+.tz-inspect-panel__label { font-size: 12px; color: var(--ink-3); }
+#tzChart { touch-action: none; cursor: pointer; }
 .dx-mfp-item {
   padding: 10px 0;
   border-top: 1px solid var(--border-2);
