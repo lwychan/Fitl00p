@@ -371,7 +371,6 @@ body {
   background: none;
   border: none;
   cursor: pointer;
-  color: var(--ink-4);
   transition: color .15s;
   padding: 10px 4px;
   position: relative;
@@ -386,9 +385,26 @@ body {
   transition: background .18s;
 }
 .tab-btn svg { width: 24px; height: 24px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; transition: stroke .15s; }
-.tab-btn--active { color: var(--blue); }
-.tab-btn--active svg { stroke: var(--blue); }
-.tab-btn--active .tab-btn__pill { background: var(--blue-light); }
+
+/* Each tab carries its own accent from the palette — muted when
+   inactive, fully saturated with a tinted pill when active — rather
+   than one flat grey/blue pairing for all four. Colours borrowed
+   from the dashboard's own score rings where there's a natural fit
+   (Workout↔Strain's orange, History↔Recovery's purple). */
+.tab-btn[data-view="dashboard"] { color: color-mix(in srgb, var(--blue) 55%, transparent); }
+.tab-btn[data-view="workout"]   { color: color-mix(in srgb, var(--orange) 55%, transparent); }
+.tab-btn[data-view="history"]   { color: color-mix(in srgb, var(--purple) 55%, transparent); }
+.tab-btn[data-view="diabetes"]  { color: color-mix(in srgb, var(--red) 55%, transparent); }
+
+.tab-btn--active[data-view="dashboard"] { color: var(--blue); }
+.tab-btn--active[data-view="workout"]   { color: var(--orange); }
+.tab-btn--active[data-view="history"]   { color: var(--purple); }
+.tab-btn--active[data-view="diabetes"]  { color: var(--red); }
+
+.tab-btn--active[data-view="dashboard"] .tab-btn__pill { background: var(--blue-light); }
+.tab-btn--active[data-view="workout"]   .tab-btn__pill { background: var(--orange-light); }
+.tab-btn--active[data-view="history"]   .tab-btn__pill { background: var(--purple-light); }
+.tab-btn--active[data-view="diabetes"]  .tab-btn__pill { background: var(--red-light); }
 /* ── VIEWS ───────────────────────────────────────────────── */
 .view {
   flex: 1;
