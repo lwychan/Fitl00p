@@ -1,6 +1,9 @@
 /* ═══════════════════════════════════════════════════════════
-   fitl00p — UI v1 — Slate Structure / Three themes
-   Obsidian · Aurora · Slate
+   fitl00p — UI v1 — Three themes, derived from the fitl00p mark
+   Light · Dark · Hybrid
+   (data-theme values kept as slate/obsidian/aurora for backward
+   compatibility with stored profile.theme values — only the
+   palette and on-screen labels changed)
 ═══════════════════════════════════════════════════════════ */
 
 /* ── SHARED STRUCTURAL TOKENS (never theme-dependent) ──── */
@@ -16,15 +19,15 @@
 }
 
 /* ══════════════════════════════════════════════════════════
-   THEME A — OBSIDIAN
-   Deep black · Electric teal + violet accent
+   THEME A — DARK
+   Near-black · Lime primary + cyan secondary
    data-theme="obsidian"
 ══════════════════════════════════════════════════════════ */
 :root[data-theme="obsidian"] {
-  --bg:         #0A0A0F;
-  --surface:    #13131A;
-  --surface-2:  #1C1C26;
-  --border:     rgba(255,255,255,.07);
+  --bg:         #121212;
+  --surface:    #1E1E1E;
+  --surface-2:  #262626;
+  --border:     rgba(255,255,255,.08);
   --border-2:   rgba(255,255,255,.04);
 
   --ink:        #FFFFFF;
@@ -32,20 +35,20 @@
   --ink-3:      rgba(255,255,255,.38);
   --ink-4:      rgba(255,255,255,.18);
 
-  --blue:       #00D4B4;  /* teal — primary accent */
-  --blue-light: rgba(0,212,180,.12);
-  --blue-dark:  #00FFDA;
-  --accent-b:   #7B61FF;  /* violet — secondary */
-  --accent-b-light: rgba(123,97,255,.12);
+  --blue:       #C6FF00;  /* lime — primary accent */
+  --blue-light: rgba(198,255,0,.14);
+  --blue-dark:  #AEEA00;
+  --accent-b:   #00BCD4;  /* cyan — secondary */
+  --accent-b-light: rgba(0,188,212,.14);
 
-  --green:      #00D4B4;
-  --green-light:rgba(0,212,180,.12);
+  --green:      #C6FF00;
+  --green-light:rgba(198,255,0,.14);
   --orange:     #FF9F43;
   --orange-light:rgba(255,159,67,.12);
-  --red:        #FF4545;
-  --red-light:  rgba(255,69,69,.12);
-  --purple:     #7B61FF;
-  --purple-light:rgba(123,97,255,.12);
+  --red:        #FF5252;
+  --red-light:  rgba(255,82,82,.12);
+  --purple:     #B18CFF;
+  --purple-light:rgba(177,140,255,.14);
 
   --shadow-sm:  0 1px 3px rgba(0,0,0,.5),  0 1px 2px rgba(0,0,0,.4);
   --shadow-md:  0 4px 16px rgba(0,0,0,.6), 0 1px 4px rgba(0,0,0,.5);
@@ -53,78 +56,79 @@
 }
 
 /* ══════════════════════════════════════════════════════════
-   THEME B — AURORA
-   Warm parchment · Coral + amber
+   THEME B — LIGHT
+   White · Navy text, cyan primary + lime secondary
    data-theme="aurora"
 ══════════════════════════════════════════════════════════ */
 :root[data-theme="aurora"] {
-  --bg:         #FAF8F5;
-  --surface:    #FFFFFF;
-  --surface-2:  #F5F1EB;
-  --border:     #E8E2D8;
-  --border-2:   #F0EDE6;
+  --bg:         #FFFFFF;
+  --surface:    #E0F7FA;
+  --surface-2:  #CDEFF5;
+  --border:     #C9E9EF;
+  --border-2:   #DDF3F7;
 
-  --ink:        #1A1209;
-  --ink-2:      #5C4D38;
-  --ink-3:      #9B8878;
-  --ink-4:      #C8B8A8;
+  --ink:        #004080;
+  --ink-2:      #2C6099;
+  --ink-3:      #7295B8;
+  --ink-4:      #B4C9DC;
 
-  --blue:       #E85D26;  /* coral — primary accent */
-  --blue-light: rgba(232,93,38,.10);
-  --blue-dark:  #C94510;
-  --accent-b:   #F5A623;  /* amber — secondary */
-  --accent-b-light: rgba(245,166,35,.12);
+  --blue:       #00BCD4;  /* cyan — primary accent */
+  --blue-light: rgba(0,188,212,.12);
+  --blue-dark:  #0097A7;
+  --accent-b:   #AEEA00;  /* lime — secondary */
+  --accent-b-light: rgba(174,234,0,.16);
 
-  --green:      #2D7A5F;
-  --green-light:rgba(45,122,95,.10);
+  --green:      #2E9E5B;
+  --green-light:rgba(46,158,91,.10);
   --orange:     #F5A623;
   --orange-light:rgba(245,166,35,.12);
-  --red:        #C93535;
-  --red-light:  rgba(201,53,53,.10);
-  --purple:     #7C3AED;
-  --purple-light:rgba(124,58,237,.10);
+  --red:        #D64545;
+  --red-light:  rgba(214,69,69,.10);
+  --purple:     #7C5CFC;
+  --purple-light:rgba(124,92,252,.10);
 
-  --shadow-sm:  0 1px 4px rgba(26,18,9,.06), 0 1px 2px rgba(26,18,9,.04);
-  --shadow-md:  0 4px 16px rgba(26,18,9,.08),0 1px 4px rgba(26,18,9,.05);
-  --shadow-lg:  0 8px 32px rgba(26,18,9,.10),0 2px 8px rgba(26,18,9,.06);
+  --shadow-sm:  0 1px 4px rgba(0,64,128,.06), 0 1px 2px rgba(0,64,128,.04);
+  --shadow-md:  0 4px 16px rgba(0,64,128,.08),0 1px 4px rgba(0,64,128,.05);
+  --shadow-lg:  0 8px 32px rgba(0,64,128,.10),0 2px 8px rgba(0,64,128,.06);
 }
 
 /* ══════════════════════════════════════════════════════════
-   THEME C — SLATE (default)
-   Dark charcoal · Electric lime
+   THEME C — HYBRID (default)
+   Light grey · Navy structure, cyan primary + lime secondary
    data-theme="" or data-theme="slate"
 ══════════════════════════════════════════════════════════ */
 :root,
 [data-theme="slate"] {
-  --bg:         #111318;
-  --surface:    #1C1F26;
-  --surface-2:  #252830;
-  --border:     rgba(255,255,255,.07);
-  --border-2:   rgba(255,255,255,.04);
+  --bg:         #F5F5F5;
+  --surface:    #FFFFFF;
+  --surface-2:  #EDEEF2;
+  --border:     #E3E5EA;
+  --border-2:   #ECEDF1;
 
-  --ink:        #F0F2F7;
-  --ink-2:      rgba(240,242,247,.65);
-  --ink-3:      rgba(240,242,247,.38);
-  --ink-4:      rgba(240,242,247,.18);
+  --ink:        #004080;
+  --ink-2:      #2C6099;
+  --ink-3:      #7295B8;
+  --ink-4:      #BFCBD6;
 
-  --blue:       #C8F000;  /* electric lime — primary accent */
-  --blue-light: rgba(200,240,0,.12);
-  --blue-dark:  #DBFF1A;
-  --accent-b:   #00B4D8;  /* cyan — secondary */
-  --accent-b-light: rgba(0,180,216,.12);
+  --blue:       #00BCD4;  /* cyan — primary accent */
+  --blue-light: rgba(0,188,212,.12);
+  --blue-dark:  #0097A7;
+  --accent-b:   #AEEA00;  /* lime — secondary */
+  --accent-b-light: rgba(174,234,0,.16);
+  --navy:       #004080;  /* structural — hybrid app bar */
 
-  --green:      #C8F000;
-  --green-light:rgba(200,240,0,.12);
-  --orange:     #FF9F43;
-  --orange-light:rgba(255,159,67,.12);
-  --red:        #FF5252;
-  --red-light:  rgba(255,82,82,.12);
-  --purple:     #C084FC;
-  --purple-light:rgba(192,132,252,.12);
+  --green:      #2E9E5B;
+  --green-light:rgba(46,158,91,.10);
+  --orange:     #F5A623;
+  --orange-light:rgba(245,166,35,.12);
+  --red:        #D64545;
+  --red-light:  rgba(214,69,69,.10);
+  --purple:     #6D4FEF;
+  --purple-light:rgba(109,79,239,.10);
 
-  --shadow-sm:  0 1px 3px rgba(0,0,0,.4),  0 1px 2px rgba(0,0,0,.3);
-  --shadow-md:  0 4px 16px rgba(0,0,0,.5), 0 1px 4px rgba(0,0,0,.4);
-  --shadow-lg:  0 8px 40px rgba(0,0,0,.6), 0 2px 8px rgba(0,0,0,.5);
+  --shadow-sm:  0 1px 3px rgba(0,32,64,.06),  0 1px 2px rgba(0,32,64,.04);
+  --shadow-md:  0 4px 16px rgba(0,32,64,.08), 0 1px 4px rgba(0,32,64,.05);
+  --shadow-lg:  0 8px 40px rgba(0,32,64,.10), 0 2px 8px rgba(0,32,64,.06);
 }
 
 /* ── RESET ───────────────────────────────────────────────── */
@@ -261,6 +265,19 @@ body {
   box-shadow: 0 1px 0 var(--border);
 }
 .appbar__brand { display: flex; align-items: center; margin-right: 32px; flex-shrink: 0; }
+
+/* Hybrid theme — navy app bar, matching the fitl00p mark's own gradient */
+[data-theme="slate"] .appbar {
+  background: var(--navy);
+  border-bottom-color: rgba(255,255,255,.12);
+  box-shadow: 0 1px 0 rgba(255,255,255,.12);
+}
+[data-theme="slate"] .appbar .brand-fit,
+[data-theme="slate"] .appbar .brand-loop,
+[data-theme="slate"] .appbar__user { color: #FFFFFF; }
+[data-theme="slate"] .appbar__signout { color: rgba(255,255,255,.75); }
+[data-theme="slate"] .appbar__signout:hover,
+[data-theme="slate"] .appbar__signout:active { color: #fff; background: rgba(255,255,255,.14); }
 .appbar__nav { display: none; } /* hidden — we use bottom tabs */
 .appbar__right { display: flex; align-items: center; gap: 10px; }
 .appbar__user {
@@ -1529,13 +1546,13 @@ input[type="checkbox"].import-check {
 /* Swatch colour fills — hardcoded so they always look correct regardless of active theme */
 /* Each swatch shows: background colour (left) + accent colour (right diagonal) */
 .swatch--slate    {
-  background: linear-gradient(135deg, #111318 50%, #C8F000 50%);
+  background: linear-gradient(135deg, #004080 50%, #AEEA00 50%);
 }
 .swatch--obsidian {
-  background: linear-gradient(135deg, #0A0A0F 50%, #00D4B4 50%);
+  background: linear-gradient(135deg, #121212 50%, #C6FF00 50%);
 }
 .swatch--aurora   {
-  background: linear-gradient(135deg, #FAF8F5 50%, #E85D26 50%);
+  background: linear-gradient(135deg, #FFFFFF 50%, #00BCD4 50%);
 }
 
 /* ── APPLE HEALTH KEY UI ────────────────────────────────── */
@@ -2937,10 +2954,6 @@ body { font-size: 15px; }
 
 /* Default logo accent colours per theme */
 :root,
-[data-theme="slate"]    { --logo-accent: #C8F000; }
-:root[data-theme="obsidian"] { --logo-accent: #00D4B4; }
-:root[data-theme="aurora"]   { --logo-accent: #E85D26; }
-
 .brand-wordmark {
   display: flex;
   align-items: center;
@@ -2951,9 +2964,11 @@ body { font-size: 15px; }
   flex-shrink: 0;
   line-height: 0;
 }
-.brand-mark svg rect {
-  /* In aurora (light) theme, use ink for the mark bg */
-  fill: var(--ink);
+.brand-mark img {
+  display: block;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
 }
 
 .brand-name {
@@ -2971,27 +2986,33 @@ body { font-size: 15px; }
   font-size: 16px;
   font-weight: 800;
   letter-spacing: -.03em;
-  color: var(--logo-accent);
+  color: var(--blue);
 }
 
-/* Auth screen logo — larger version */
+/* Auth screen logo — larger version. The hero panel behind it is always
+   a dark navy/teal gradient regardless of theme (see .auth-features
+   below), so brand-fit is forced white here rather than following
+   --ink, which is navy in two of the three themes and would otherwise
+   go near-invisible against its own dark backdrop. */
 .auth-brand .brand-wordmark { gap: 10px; }
-.auth-brand .brand-mark svg { width: 32px; height: 32px; }
+.auth-brand .brand-mark img { width: 32px; height: 32px; }
 .auth-brand .brand-fit,
 .auth-brand .brand-loop { font-size: 22px; }
+.auth-brand .brand-fit { color: #FFFFFF; }
 
 /* Onboarding logo */
 .onboard-brand .brand-wordmark { gap: 10px; }
-.onboard-brand .brand-mark svg { width: 36px; height: 36px; }
+.onboard-brand .brand-mark img { width: 36px; height: 36px; }
 .onboard-brand .brand-fit,
 .onboard-brand .brand-loop { font-size: 26px; }
 
-/* Feature tiles on auth screen — update background per theme */
-[data-theme="slate"]    .auth-features { background: linear-gradient(160deg, #1C1F26 0%, #0A0C10 100%); }
-[data-theme="obsidian"] .auth-features { background: linear-gradient(160deg, #0A0A0F 0%, #13131A 100%); }
-[data-theme="aurora"]   .auth-features { background: linear-gradient(160deg, #1A1209 0%, #3D2A14 100%); }
+/* Feature tiles on auth screen — always a dark hero panel so the white
+   tile text reads well, but tinted toward each theme's own brand hue */
+[data-theme="slate"]    .auth-features { background: linear-gradient(160deg, #004080 0%, #001830 100%); }
+[data-theme="obsidian"] .auth-features { background: linear-gradient(160deg, #121212 0%, #003044 100%); }
+[data-theme="aurora"]   .auth-features { background: linear-gradient(160deg, #005066 0%, #002233 100%); }
 
-/* Tab bar accent per theme — use --logo-accent for active tab */
+/* Tab bar accent per theme */
 .tab-btn--active { color: var(--blue); }
 .tab-btn--active svg { stroke: var(--blue); }
 .tab-btn--active::before { background: var(--blue); }

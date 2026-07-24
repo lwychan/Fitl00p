@@ -6643,18 +6643,15 @@ function applyTheme(theme, persist = true) {
     btn.classList.toggle('is-active', btn.dataset.theme === t);
   });
 
-  // Update logo accent colour
-  updateLogoTheme(t);
-
   // Update PWA theme-color meta
   const metaTheme = document.querySelector('meta[name="theme-color"]');
   if (metaTheme) {
     const themeColors = {
-      slate:    '#111318',
-      obsidian: '#0A0A0F',
-      aurora:   '#FAF8F5',
+      slate:    '#F5F5F5', // Hybrid
+      obsidian: '#121212', // Dark
+      aurora:   '#FFFFFF', // Light
     };
-    metaTheme.content = themeColors[t] || '#111318';
+    metaTheme.content = themeColors[t] || '#F5F5F5';
   }
 
   // Persist to Supabase if logged in — fire and forget, never block login
@@ -6668,18 +6665,6 @@ function applyTheme(theme, persist = true) {
       })
       .catch(err => console.warn('Theme persist error (non-critical):', err));
   }
-}
-
-function updateLogoTheme(theme) {
-  // Update logo accent colours in the SVG appbar logo
-  const accentMap = {
-    slate:    '#C8F000',
-    obsidian: '#00D4B4',
-    aurora:   '#E85D26',
-  };
-  const accent = accentMap[theme] || '#C8F000';
-  // Update any CSS variable we use for logo accent
-  document.documentElement.style.setProperty('--logo-accent', accent);
 }
 
 // ── BOOT ─────────────────────────────────────────────────
