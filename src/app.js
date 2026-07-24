@@ -5356,15 +5356,23 @@ function renderDxMfpImports(items, boluses) {
         suggestedHtml = `<div style="margin-bottom:6px"><span class="badge badge--orange">Suggested ${fmt1(it.suggested_units)}u</span>
           ${it.delayed_units > 0 ? `<span class="field-hint" style="margin-left:6px">${fmt1(it.upfront_units)}u now, ${fmt1(it.delayed_units)}u delayed</span>` : ''}</div>`;
       }
-      const dayBoluses = boluses.filter(b => {
-        const bd = new Date(Number(b.time));
-        const id_ = new Date(eatenMs);
-        return Number(b.units) > 0 && bd.toDateString() === id_.toDateString();
-      });
+      // Same-calendar-day used to gate this list, but that silently drops
+      // a real bolus given a few minutes on the other side of local
+      // midnight from the meal (e.g. meal logged 00:48, dose given
+      // 23:58 the "day before") — a pure time-window match, same idea
+      // as the server-side auto-matcher's MATCH_WINDOW_MIN in
+      // mfp-import.js, has no day-boundary to fall foul of. Kept wider
+      // (4h) than that 90min auto-match window since this is a manual
+      // fallback for whatever the auto-matcher missed — too narrow here
+      // would just recreate the same "why isn't my dose showing" problem.
+      const NEARBY_BOLUS_WINDOW_MS = 4 * 3600000;
+      const nearbyBoluses = boluses.filter(b =>
+        Number(b.units) > 0 && Math.abs(Number(b.time) - eatenMs) <= NEARBY_BOLUS_WINDOW_MS
+      );
       actionHtml = `
         <select data-role="mfp-bolus-pick" data-id="${it.id}">
           <option value="">Link the actual dose…</option>
-          ${dayBoluses.map(b => `<option value="${b.time}|${b.units}">${new Date(Number(b.time)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} — ${fmt1(b.units)}u</option>`).join('')}
+          ${nearbyBoluses.map(b => `<option value="${b.time}|${b.units}">${new Date(Number(b.time)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} — ${fmt1(b.units)}u</option>`).join('')}
         </select>
         <button class="btn btn--ghost btn--small" data-action="link" data-id="${it.id}">Link</button>
         <button class="btn btn--ghost btn--small" data-action="hypo" data-id="${it.id}">Mark hypo</button>`;
