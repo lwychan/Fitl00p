@@ -40,7 +40,12 @@ exports.handler = async function (event) {
 
   try {
     const result = await sendWebPush(subscription, payload);
-    return { statusCode: 200, headers, body: JSON.stringify({ sent: true, pushStatus: result.status }) };
+    const ok = result.status >= 200 && result.status < 300;
+    return {
+      statusCode: ok ? 200 : 502,
+      headers,
+      body: JSON.stringify({ sent: ok, pushStatus: result.status, pushBody: ok ? undefined : result.body }),
+    };
   } catch (err) {
     return { statusCode: 502, headers, body: JSON.stringify({ error: err.message }) };
   }

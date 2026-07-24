@@ -1,6 +1,5 @@
-// Shared Web Push sender — VAPID JWT signing + POST to the push service.
-// Extracted from push-send.js so scheduled notification functions don't
-// each carry their own copy of the crypto.
+// Shared Web Push sender — VAPID JWT signing, RFC 8291 payload
+// encryption, and the POST to the push service.
 
 const https = require('https');
 const crypto = require('crypto');
@@ -48,8 +47,60 @@ async function generateVapidHeaders(audience, subject, publicKey, privateKey) {
   const jwt = `${sigInput}.${base64urlEncode(sigBuf)}`;
   return {
     Authorization: `vapid t=${jwt},k=${publicKey}`,
-    'Content-Type': 'application/octet-stream',
   };
+}
+
+function hmac(key, input) {
+  return crypto.createHmac('sha256', key).update(input).digest();
+}
+
+// Single-step HKDF as used by RFC 8291 (extract with the given salt, then
+// expand to `length` bytes using `info` with a single-record counter).
+function hkdf(salt, ikm, info, length) {
+  const prk = hmac(salt, ikm);
+  const okm = hmac(prk, Buffer.concat([info, Buffer.from([1])]));
+  return okm.subarray(0, length);
+}
+
+// Encrypts the payload per RFC 8291 (Message Encryption for Web Push)
+// using the aes128gcm content-coding (RFC 8188) — required by every push
+// service (Apple, Chrome/FCM, Firefox) for any push carrying a body.
+// Sending the payload as plaintext, as this used to, gets silently
+// rejected by the push service with a 400 — no error surfaces anywhere
+// in this app's own logs since that rejection happens entirely on the
+// push service's side, past the point sendWebPush() considers "sent".
+function encryptPayload(payloadBuffer, p256dhB64, authB64) {
+  const userPublicKey = base64urlDecode(p256dhB64); // 65-byte uncompressed EC point
+  const userAuth = base64urlDecode(authB64);         // 16-byte auth secret
+
+  const localEcdh = crypto.createECDH('prime256v1');
+  localEcdh.generateKeys();
+  const localPublicKey = localEcdh.getPublicKey(); // 65-byte uncompressed point
+  const sharedSecret = localEcdh.computeSecret(userPublicKey);
+
+  const salt = crypto.randomBytes(16);
+
+  const keyInfo = Buffer.concat([
+    Buffer.from('WebPush: info\0', 'utf8'),
+    userPublicKey,
+    localPublicKey,
+  ]);
+  const ikm = hkdf(userAuth, sharedSecret, keyInfo, 32);
+
+  const cek   = hkdf(salt, ikm, Buffer.from('Content-Encoding: aes128gcm\0', 'utf8'), 16);
+  const nonce = hkdf(salt, ikm, Buffer.from('Content-Encoding: nonce\0', 'utf8'), 12);
+
+  // Single-record message: payload + 0x02 delimiter byte, no further padding.
+  const paddedPayload = Buffer.concat([payloadBuffer, Buffer.from([2])]);
+  const cipher = crypto.createCipheriv('aes-128-gcm', cek, nonce);
+  const ciphertext = Buffer.concat([cipher.update(paddedPayload), cipher.final(), cipher.getAuthTag()]);
+
+  // aes128gcm header: salt(16) | record size(4, BE uint32) | keyid length(1) | keyid(65)
+  const recordSize = Buffer.alloc(4);
+  recordSize.writeUInt32BE(ciphertext.length, 0);
+  const header = Buffer.concat([salt, recordSize, Buffer.from([localPublicKey.length]), localPublicKey]);
+
+  return Buffer.concat([header, ciphertext]);
 }
 
 // subscription: { endpoint, keys: { p256dh, auth } }
@@ -61,9 +112,15 @@ function sendWebPush(subscription, payload) {
     }
     const endpoint = new url.URL(subscription.endpoint);
     const audience = `${endpoint.protocol}//${endpoint.host}`;
-    const body = Buffer.from(JSON.stringify(payload));
+    const body = encryptPayload(
+      Buffer.from(JSON.stringify(payload)),
+      subscription.keys.p256dh,
+      subscription.keys.auth
+    );
 
     const headers = await generateVapidHeaders(audience, VAPID_SUBJECT, VAPID_PUBLIC, VAPID_PRIVATE);
+    headers['Content-Type'] = 'application/octet-stream';
+    headers['Content-Encoding'] = 'aes128gcm';
     headers['Content-Length'] = body.length;
     headers['TTL'] = '86400';
 

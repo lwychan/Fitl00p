@@ -57,8 +57,8 @@ exports.handler = async function () {
     const payload = { title: 'Tirzepatide reminder', body, url: '/', tag: 'tirzepatide-reminder' };
     for (const s of userSubs) {
       try {
-        await sendWebPush({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth_key } }, payload);
-        sent++;
+        const r = await sendWebPush({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth_key } }, payload);
+        if (r.status >= 200 && r.status < 300) sent++; else failed++;
       } catch { failed++; }
     }
   }
