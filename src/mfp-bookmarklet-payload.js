@@ -92,8 +92,15 @@
     return;
   }
 
+  function macroStr(it) {
+    var parts = [];
+    if (it.carbsG != null) parts.push(it.carbsG + 'g carbs');
+    if (it.fatG != null) parts.push(it.fatG + 'g fat');
+    if (it.proteinG != null) parts.push(it.proteinG + 'g protein');
+    return parts.length ? ' (' + parts.join(', ') + ')' : ' (no macro figures — turn on Carbs/Fat/Protein columns in MFP Diary Settings for better matching)';
+  }
   var preview = items.slice(0, 8).map(function (it) {
-    return '- ' + it.name + (it.carbsG != null ? ' (' + it.carbsG + 'g carbs)' : ' (no carb figure — turn on Carbs/Fat/Protein columns in MFP Diary Settings for better matching)');
+    return '- ' + it.name + macroStr(it);
   }).join('\n') + (items.length > 8 ? '\n…and ' + (items.length - 8) + ' more' : '');
   if (!confirm('Send ' + items.length + ' item(s) to fitl00p?\n\n' + preview)) return;
 
