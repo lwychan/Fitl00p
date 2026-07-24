@@ -507,9 +507,36 @@ function initApp() {
   });
 
   // Sign out — call Supabase signOut then reload for clean state.
-  // Shared by both the Settings-page button and the new header icon.
+  // Shared by both the Settings-page button and the new header icon (and
+  // the session-broken banner's "Sign in again" button — see below).
+  //
+  // Two defensive layers, because the whole point of this function is to
+  // get someone UNSTUCK, including from exactly the broken-session state
+  // that motivated the session-broken banner in the first place:
+  //   1. signOut() calls the Auth API to revoke the token server-side —
+  //      an ordinary network call with no built-in timeout. From inside
+  //      an already-broken session this can hang indefinitely (seen in
+  //      practice), and since await never resolves OR rejects on a hang,
+  //      .catch() alone doesn't help — the redirect below would just
+  //      never run. Bounded with a timeout so it always moves on.
+  //   2. Even if that network call fails outright rather than hanging,
+  //      still directly clear the local session token — what actually
+  //      determines "am I signed in" on next load is this local storage
+  //      key, not whether the server-side revoke succeeded.
   async function handleSignOut() {
-    await db.auth.signOut().catch(() => {});
+    try {
+      await Promise.race([
+        db.auth.signOut(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('signOut timed out')), 5000)),
+      ]);
+    } catch (err) {
+      console.error('Sign out call failed or timed out — clearing session locally anyway:', err?.message || err);
+    }
+    try {
+      Object.keys(localStorage)
+        .filter(k => k.startsWith('sb-') && k.endsWith('-auth-token'))
+        .forEach(k => localStorage.removeItem(k));
+    } catch {}
     window.location.href = window.location.origin + window.location.pathname;
   }
 
