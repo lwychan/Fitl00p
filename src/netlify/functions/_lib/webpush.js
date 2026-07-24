@@ -175,4 +175,12 @@ function londonDateStrOf(isoOrDate) {
   return londonParts(d).dateStr;
 }
 
-module.exports = { sendWebPush, londonNow, londonDateStrOf };
+// Hardcoded rather than a per-user preferences table — there are two
+// users on this app, and the notification set differs enough between
+// them (Gemma doesn't use Tirzepatide/diabetes tracking, wants a daily
+// rather than weekly weigh-in nudge, and a different steps-check tone)
+// that a couple of `if (userId === GEMMA_USER_ID)` branches is simpler
+// than building settings UI + a schema for two people.
+const GEMMA_USER_ID = '2c8bf000-b870-4ea1-8a67-ec00ee7d4041';
+
+module.exports = { sendWebPush, londonNow, londonDateStrOf, GEMMA_USER_ID };

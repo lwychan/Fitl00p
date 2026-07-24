@@ -8,7 +8,7 @@
 // for today (from either MFP-synced health_daily or a manual log entry),
 // then goes quiet for the rest of the day.
 
-const { sendWebPush, londonNow } = require('./_lib/webpush');
+const { sendWebPush, londonNow, GEMMA_USER_ID } = require('./_lib/webpush');
 
 const SB_URL     = process.env.SUPABASE_URL;
 const SB_SERVICE = process.env.SUPABASE_SERVICE_KEY;
@@ -62,6 +62,7 @@ exports.handler = async function () {
 
   let sent = 0, failed = 0, skipped = 0;
   for (const [userId, userSubs] of Object.entries(byUser)) {
+    if (userId === GEMMA_USER_ID) { skipped++; continue; } // has her own daily reminder — see notify-weighin-gemma.js
     const body = await buildReminder(userId, now.dateStr);
     if (!body) { skipped++; continue; }
     const payload = { title: 'Weigh-in day', body, url: '/', tag: 'weighin-reminder' };

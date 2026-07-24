@@ -5,7 +5,7 @@
 // both known (synced) and under 9,000 — no data yet is treated as "don't
 // know", not "behind", so it stays silent rather than false-alarming.
 
-const { sendWebPush, londonNow } = require('./_lib/webpush');
+const { sendWebPush, londonNow, GEMMA_USER_ID } = require('./_lib/webpush');
 
 const SB_URL     = process.env.SUPABASE_URL;
 const SB_SERVICE = process.env.SUPABASE_SERVICE_KEY;
@@ -38,8 +38,9 @@ exports.handler = async function () {
     if (steps == null || steps >= STEP_THRESHOLD) { skipped++; continue; }
 
     const toGo = STEP_GOAL - steps;
+    const title = userId === GEMMA_USER_ID ? 'Darling get off your bum lazy! 🚶🏻💨💨' : 'Get a move on suckaa!! 🚶🏻💨💨';
     const payload = {
-      title: 'Get a move on suckaa!! 🚶🏻💨💨',
+      title,
       body: `${steps.toLocaleString()} steps so far today — ${toGo.toLocaleString()} to go to hit your ${STEP_GOAL.toLocaleString()} goal.`,
       url: '/', tag: 'steps-check',
     };

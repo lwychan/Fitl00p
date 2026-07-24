@@ -18,8 +18,14 @@
 [functions."notify-weighin"]
   schedule = "10 9-21 * * 2"    # hourly, Tuesday 10:00-21:00 Europe/London, until logged
 
+[functions."notify-weighin-gemma"]
+  schedule = "15 6,7 * * *"     # 07:15 Europe/London daily — Gemma only
+
 [functions."notify-steps-check"]
   schedule = "0 15,16 * * *"    # 16:00 Europe/London daily
+
+[functions."notify-sync-reminder-gemma"]
+  schedule = "0 8,9,11,12,15,16,19,20 * * *"    # 09:00, 12:00, 16:00, 20:00 Europe/London daily — Gemma only
 
 # IMPORTANT: Add these environment variables in Netlify dashboard
 # Site → Site configuration → Environment variables:

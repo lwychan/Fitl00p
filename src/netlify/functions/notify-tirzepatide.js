@@ -7,7 +7,7 @@
 // injection has been logged for today, then goes quiet for the rest of
 // the day.
 
-const { sendWebPush, londonNow, londonDateStrOf } = require('./_lib/webpush');
+const { sendWebPush, londonNow, londonDateStrOf, GEMMA_USER_ID } = require('./_lib/webpush');
 
 const SB_URL     = process.env.SUPABASE_URL;
 const SB_SERVICE = process.env.SUPABASE_SERVICE_KEY;
@@ -90,6 +90,7 @@ exports.handler = async function () {
 
   let sent = 0, failed = 0, skipped = 0;
   for (const [userId, userSubs] of Object.entries(byUser)) {
+    if (userId === GEMMA_USER_ID) { skipped++; continue; } // doesn't use Tirzepatide
     const body = await buildReminder(userId, now.dateStr);
     if (!body) { skipped++; continue; }
     const payload = { title: '💉', body, url: '/', tag: 'tirzepatide-reminder' };
