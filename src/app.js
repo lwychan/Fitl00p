@@ -631,6 +631,7 @@ function initApp() {
             showScreen('app');
             const adminSec = $('adminSection');
             if (adminSec) adminSec.hidden = role !== 'admin';
+            applyDiabetesTabVisibility();
 
             const uiState = loadUIState();
             const targetTab = uiState?.tab || 'dashboard';
@@ -663,6 +664,7 @@ function initApp() {
           showScreen('app');
           const adminSec = $('adminSection');
           if (adminSec) adminSec.hidden = (profile?.role || '') !== 'admin';
+          applyDiabetesTabVisibility();
           await navigateTo('dashboard');
         } catch (fallbackErr) {
           console.error('Fallback also failed:', fallbackErr?.message || fallbackErr);
@@ -721,7 +723,17 @@ const viewLoaders = {
   workoutAdmin: loadWorkoutAdminData,
 };
 
+// Hides the Diabetes tab button (and bounces off the Diabetes view itself,
+// if somehow still on it) whenever profile.diabetes_enabled is explicitly
+// false — off by default only ever means "never asked" (NOT NULL column
+// defaulting true), so nobody currently using it loses access silently.
+function applyDiabetesTabVisibility() {
+  const enabled = profile?.diabetes_enabled !== false;
+  document.querySelectorAll('.tab-btn[data-view="diabetes"]').forEach(b => { b.hidden = !enabled; });
+}
+
 async function navigateTo(name) {
+  if (name === 'diabetes' && profile?.diabetes_enabled === false) name = 'dashboard';
   // Hide all views including the admin screen
   Object.values(views).forEach(v => { if (v) v.hidden = true; });
   // Only update tab bar for main tabs — admin screen has no tab
@@ -4218,6 +4230,17 @@ async function loadSettings() {
 
   // Diabetes tracking (Nightscout) config — stored on the profile row,
   // same as every other per-user setting, so it survives across devices.
+  // Defaults to enabled (profile.diabetes_enabled is a NOT NULL column
+  // defaulting true) so nobody currently using it loses access silently.
+  const diabetesToggle = $('setDiabetesEnabled');
+  const diabetesControls = $('diabetesTrackingControls');
+  if (diabetesToggle) {
+    diabetesToggle.checked = profile.diabetes_enabled !== false;
+    if (diabetesControls) diabetesControls.hidden = !diabetesToggle.checked;
+    diabetesToggle.addEventListener('change', () => {
+      if (diabetesControls) diabetesControls.hidden = !diabetesToggle.checked;
+    });
+  }
   if ($('setNsUrl'))    $('setNsUrl').value    = profile.diabetes_ns_url    || '';
   if ($('setNsToken'))  $('setNsToken').value  = profile.diabetes_ns_token  || '';
   if ($('setNsSecret')) $('setNsSecret').value = profile.diabetes_ns_secret || '';
@@ -4500,6 +4523,7 @@ $('btnSaveDiabetesSettings')?.addEventListener('click', async () => {
   };
   setBtn(btn, true, 'Save diabetes settings', 'Saving…');
   const { error } = await saveNsProfileFields({
+    diabetes_enabled:               !!$('setDiabetesEnabled')?.checked,
     diabetes_target_low:            num('setTargetLow', 4.5),
     diabetes_target_high:           num('setTargetHigh', 8.5),
     diabetes_ideal_target:          Number.isFinite(parseFloat($('setIdealTarget').value)) ? parseFloat($('setIdealTarget').value) : null,
@@ -4514,6 +4538,7 @@ $('btnSaveDiabetesSettings')?.addEventListener('click', async () => {
     return;
   }
   diabetesData = null;
+  applyDiabetesTabVisibility();
   flash($('diabetesSettingsStatus'), 'Saved.');
 });
 
@@ -6873,6 +6898,7 @@ function initOnboarding() {
     $('obSaving').textContent = 'All set! Loading your dashboard…';
     await new Promise(r => setTimeout(r, 600));
     showScreen('app');
+    applyDiabetesTabVisibility();
     navigateTo('dashboard');
     requestNotificationPermission();
   }

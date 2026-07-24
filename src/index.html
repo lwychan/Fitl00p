@@ -1165,6 +1165,13 @@
         <p style="font-size:13px;color:var(--ink-3);line-height:1.6">
           Connects to your own Nightscout site (fed by tconnectsync, xDrip, Loop, or any Nightscout uploader) to pull glucose, bolus and basal history. A single-user, heuristic pattern-spotting tool built on population-average insulin curves — not a clinical dosing calculator. It never writes anything back to your pump or CGM.
         </p>
+        <div class="field" style="margin-top:14px">
+          <label class="checkbox-option checkbox-option--full">
+            <input type="checkbox" id="setDiabetesEnabled" checked>
+            <span>Enable diabetes tracking <span class="field-hint">turns off Nightscout sync and hides the Diabetes tab entirely — for anyone who doesn't need it</span></span>
+          </label>
+        </div>
+        <div id="diabetesTrackingControls">
         <div class="field">
           <label for="setNsUrl">Nightscout URL</label>
           <input type="url" id="setNsUrl" placeholder="https://your-site.duckdns.org" inputmode="url">
@@ -1225,6 +1232,7 @@
         <div class="settings-actions">
           <button class="btn btn--primary btn--small" id="btnSaveDiabetesSettings">Save diabetes settings</button>
           <span class="save-status" id="diabetesSettingsStatus"></span>
+        </div>
         </div>
       </div>
 
