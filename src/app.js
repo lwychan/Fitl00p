@@ -2556,7 +2556,11 @@ async function selectRoutine(routineId) {
     ...ex,
     media: mediaByName[ex.name] || null,
     pr: prByName[ex.name] || null,
-    restSeconds: restSecs,
+    // Per-exercise override (set e.g. for a superset/circuit authored with
+    // its own specific rest period) takes priority over the profile/routine
+    // default, matching the comment above — this field was already being
+    // fetched onto every exercise row but never actually consulted here.
+    restSeconds: ex.rest_seconds_override ?? restSecs,
     sets: Array.from({ length: ex.sets }, (_, i) => ({
       setNum: i + 1,
       reps:   ex.reps ? String(ex.reps) : '',
@@ -2574,36 +2578,10 @@ async function selectRoutine(routineId) {
   renderActiveWorkout();
 }
 
-// Returns { role: 'first'|'second', partnerIndex } for an exercise that's
-// part of an active superset pair, or null if it should behave as a normal
-// standalone exercise (Superset Mode off, or this exercise isn't grouped).
-function getSupersetInfo(ei) {
-  if (!supersetModeOn) return null;
-
-  const anyGrouped = activeExercises.some(e => e.superset_group);
-
-  if (anyGrouped) {
-    const ex = activeExercises[ei];
-    if (!ex.superset_group) return null;
-    const next = activeExercises[ei + 1];
-    const prev = activeExercises[ei - 1];
-    if (next && next.superset_group === ex.superset_group) return { role: 'first', partnerIndex: ei + 1 };
-    if (prev && prev.superset_group === ex.superset_group) return { role: 'second', partnerIndex: ei - 1 };
-    return null;
-  }
-
-  // No predefined pairs anywhere in this routine — the toggle still does
-  // something useful by pairing consecutive exercises by position.
-  const isFirstOfPair = ei % 2 === 0;
-  const partnerIndex  = isFirstOfPair ? ei + 1 : ei - 1;
-  if (partnerIndex < 0 || partnerIndex >= activeExercises.length) return null; // odd one out
-  return { role: isFirstOfPair ? 'first' : 'second', partnerIndex };
-}
-
 // Manually pair two exercises as a superset — breaks either one out of
 // whatever pair it was already in, tags both with a shared group id, and
 // moves the second one to sit directly after the first so the existing
-// adjacency-based rendering/rest-timer logic in getSupersetInfo() just works.
+// adjacency-based rendering/rest-timer logic in getBlockExercises() just works.
 function pairExercises(idxA, idxB) {
   [idxA, idxB].forEach(idx => {
     const g = activeExercises[idx].superset_group;
@@ -2626,7 +2604,7 @@ function unlinkPair(ei) {
   const g = activeExercises[ei]?.superset_group;
   if (!g) return;
   activeExercises.forEach(e => { if (e.superset_group === g) e.superset_group = null; });
-  // getSupersetInfo() falls back to pairing consecutive exercises purely by
+  // getBlockExercises() falls back to pairing consecutive exercises purely by
   // array position whenever Superset Mode is on and nothing has a real
   // superset_group left — that fallback exists for routines that never had
   // explicit pairs authored at all. Leaving Superset Mode on here would
@@ -2638,12 +2616,35 @@ function unlinkPair(ei) {
 }
 
 // Returns the array of activeExercises indices belonging to the block that
-// starts at ei — a superset's two exercises (always adjacent by
-// construction, see pairExercises) or a single standalone exercise.
+// starts at ei — every consecutive exercise sharing ei's superset_group
+// (a superset/circuit can be 2, 3, or more exercises performed back-to-
+// back before one shared rest, always kept adjacent by construction, see
+// pairExercises), a single standalone exercise, or null if ei sits in the
+// MIDDLE of a group that started earlier (already covered by that group's
+// own start index, so the caller should skip rendering it again here).
 function getBlockExercises(ei) {
-  const ssInfo = getSupersetInfo(ei);
-  if (ssInfo?.role === 'first') return [ei, ssInfo.partnerIndex];
-  return [ei];
+  if (!activeExercises[ei]) return null;
+  if (!supersetModeOn) return [ei];
+
+  const ex = activeExercises[ei];
+  const anyGrouped = activeExercises.some(e => e.superset_group);
+
+  if (anyGrouped) {
+    if (!ex.superset_group) return [ei];
+    const prev = activeExercises[ei - 1];
+    if (prev && prev.superset_group === ex.superset_group) return null; // mid-group
+    const group = [ei];
+    for (let j = ei + 1; activeExercises[j] && activeExercises[j].superset_group === ex.superset_group; j++) {
+      group.push(j);
+    }
+    return group;
+  }
+
+  // No predefined pairs anywhere in this routine — the toggle still does
+  // something useful by pairing consecutive exercises by position, 2 at a time.
+  if (ei % 2 !== 0) return null; // second-of-pair by position — covered by ei-1
+  const partnerIndex = ei + 1;
+  return partnerIndex < activeExercises.length ? [ei, partnerIndex] : [ei];
 }
 
 // Moves the whole block starting at fromEi to sit immediately before (or,
@@ -2788,16 +2789,17 @@ function renderStandaloneCard(ei) {
     </div>`;
 }
 
-// A superset now renders as one card organised by round (Set 1, Set 2, …)
-// instead of two independent exercise cards each with their own set
-// table — both exercises' reps/weight for a round sit together, with one
-// tick that completes the round for both at once and starts the shared
-// rest timer, matching how a superset is actually performed (straight
-// from one exercise into the other, then rest).
-function renderSupersetCard(eiA, eiB) {
+// A superset/circuit renders as one card organised by round (Set 1, Set
+// 2, …) instead of separate independent exercise cards each with their
+// own set table — every member exercise's reps/weight for a round sit
+// together, with one tick that completes the round for all of them at
+// once and starts the shared rest timer, matching how a superset is
+// actually performed (straight from one exercise into the next, then
+// rest). group is 2 or more activeExercises indices, in order.
+function renderSupersetCard(group) {
   const unit = profile?.weight_unit || 'kg';
-  const A = activeExercises[eiA], B = activeExercises[eiB];
-  const roundCount = Math.max(A.sets.length, B.sets.length);
+  const members = group.map(ei => ({ ei, ex: activeExercises[ei] }));
+  const roundCount = Math.max(...members.map(({ ex }) => ex.sets.length));
 
   const exHeaderRow = (ei, ex) => `
       <div class="superset-card__exrow">
@@ -2813,7 +2815,7 @@ function renderSupersetCard(eiA, eiB) {
   let activeAssigned = false;
   const roundsHtml = [];
   for (let ri = 0; ri < roundCount; ri++) {
-    const present = [[eiA, A, A.sets[ri]], [eiB, B, B.sets[ri]]].filter(([, , s]) => s);
+    const present = members.map(({ ei, ex }) => [ei, ex, ex.sets[ri]]).filter(([, , s]) => s);
     if (!present.length) continue;
     const allDone = present.every(([, , s]) => s.done);
     let state;
@@ -2837,6 +2839,7 @@ function renderSupersetCard(eiA, eiB) {
           </div>`).join('');
 
     const setNum = present[0][2].setNum;
+    const presentEis = present.map(([ei]) => ei).join(',');
     roundsHtml.push(`
       <div class="round round--${state}">
         <div class="round__label-row">
@@ -2845,22 +2848,21 @@ function renderSupersetCard(eiA, eiB) {
         </div>
         <div class="round__exercises">${exRowsHtml}</div>
         <div class="round__tick-row">
-          <button type="button" class="round__tick" data-round-ei-a="${eiA}" data-round-ei-b="${eiB}" data-round-si="${ri}" ${state === 'done' ? 'data-round-done="1"' : ''}>
-            ${state === 'done' ? '✓ Both done' : '○ Tap when both done'}
+          <button type="button" class="round__tick" data-round-eis="${presentEis}" data-round-si="${ri}" ${state === 'done' ? 'data-round-done="1"' : ''}>
+            ${state === 'done' ? '✓ All done' : '○ Tap when all done'}
           </button>
         </div>
       </div>`);
   }
 
-  return `<div class="superset-card" data-block-start="${eiA}">
+  return `<div class="superset-card" data-block-start="${group[0]}">
       <div class="superset-card__head">
         <span class="drag-handle" title="Drag to reorder">⠿</span>
         <div class="superset-card__titles">
           <div class="superset-card__eyebrow">⚡ Superset</div>
-          ${exHeaderRow(eiA, A)}
-          ${exHeaderRow(eiB, B)}
+          ${members.map(({ ei, ex }) => exHeaderRow(ei, ex)).join('')}
         </div>
-        <button type="button" class="superset-card__unlink" data-ei="${eiA}">Unpair</button>
+        <button type="button" class="superset-card__unlink" data-ei="${group[0]}">Unpair</button>
       </div>
       ${roundsHtml.join('')}
     </div>`;
@@ -2899,9 +2901,9 @@ function renderActiveWorkout() {
 
   const blocksHtml = [];
   for (let ei = 0; ei < activeExercises.length; ei++) {
-    const ssInfo = getSupersetInfo(ei);
-    if (ssInfo?.role === 'second') continue; // rendered as part of its partner's block
-    blocksHtml.push(ssInfo?.role === 'first' ? renderSupersetCard(ei, ssInfo.partnerIndex) : renderStandaloneCard(ei));
+    const group = getBlockExercises(ei);
+    if (!group) continue; // mid-group — already rendered as part of its group's start index
+    blocksHtml.push(group.length > 1 ? renderSupersetCard(group) : renderStandaloneCard(ei));
   }
   elW.activeExList.innerHTML = blocksHtml.join('') + `<button type="button" class="add-exercise-btn" id="btnAddExercise">+ Add exercise</button>`;
 
@@ -3044,25 +3046,27 @@ function renderActiveWorkout() {
   });
 
   // Wire round ticks — one tick completes (or reopens) the current round
-  // for BOTH exercises in a superset at once, then starts the shared rest
-  // timer exactly once, instead of ticking each exercise separately.
+  // for every exercise in the superset/circuit at once, then starts the
+  // shared rest timer exactly once, instead of ticking each exercise
+  // separately. Works for a pair or a larger circuit alike since it just
+  // operates on however many indices the round's data-round-eis lists.
   elW.activeExList.querySelectorAll('.round__tick').forEach(btn => {
     btn.addEventListener('click', async () => {
-      const eiA = +btn.dataset.roundEiA, eiB = +btn.dataset.roundEiB, si = +btn.dataset.roundSi;
-      const exA = activeExercises[eiA], exB = activeExercises[eiB];
-      const sA = exA.sets[si], sB = exB.sets[si];
+      const eis = btn.dataset.roundEis.split(',').map(Number);
+      const si = +btn.dataset.roundSi;
+      const exs = eis.map(ei => activeExercises[ei]);
+      const sets = exs.map(ex => ex.sets[si]);
 
       if (btn.dataset.roundDone === '1') {
-        if (sA) sA.done = false;
-        if (sB) sB.done = false;
+        sets.forEach(s => { if (s) s.done = false; });
         renderActiveWorkout();
         return;
       }
 
-      if (sA) sA.done = true;
-      if (sB) sB.done = true;
+      sets.forEach(s => { if (s) s.done = true; });
 
-      [[exA, sA], [exB, sB]].forEach(([ex, s]) => {
+      exs.forEach((ex, i) => {
+        const s = sets[i];
         if (!s || !s.weight) return;
         for (let laterSi = si + 1; laterSi < ex.sets.length; laterSi++) {
           if (!ex.sets[laterSi].done && !ex.sets[laterSi].weight) ex.sets[laterSi].weight = s.weight;
@@ -3071,14 +3075,15 @@ function renderActiveWorkout() {
 
       renderActiveWorkout();
 
-      const nextRoundSet = exA.sets[si + 1] || exB.sets[si + 1];
-      const nextEx = !nextRoundSet ? activeExercises[eiB + 1] : null;
+      const lastEi = eis[eis.length - 1];
+      const nextRoundSet = exs.map(ex => ex.sets[si + 1]).find(Boolean);
+      const nextEx = !nextRoundSet ? activeExercises[lastEi + 1] : null;
       const nextLabel = nextRoundSet
-        ? `Set ${nextRoundSet.setNum} of ${exA.name} + ${exB.name}`
+        ? `Set ${nextRoundSet.setNum} of ${exs.map(ex => ex.name).join(' + ')}`
         : nextEx ? nextEx.name : null;
 
       if (nextLabel) {
-        await startRestTimer(exA.restSeconds, nextLabel);
+        await startRestTimer(exs[0].restSeconds, nextLabel);
       }
     });
   });
