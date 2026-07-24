@@ -198,7 +198,6 @@ const el = {
   dTodaySteps:    $('dTodaySteps'),
   dTodayCals:     $('dTodayCals'),
   dTodayBurn:     $('dTodayBurn'),
-  dTodayDistance: $('dTodayDistance'),
   dLogTodayBtn:   $('dLogTodayBtn'),
   rSteps:         $('rSteps'),
   rStepsPct:      $('rStepsPct'),
@@ -1024,12 +1023,6 @@ async function _loadDashboardInner() {
   if (el.dTodayBurn) {
     const burn = totalBurn(health, log, estimatedBmr);
     el.dTodayBurn.textContent = burn != null ? fmtInt(burn) : '—';
-  }
-
-  // Distance — walking + running, from Apple Watch
-  if (el.dTodayDistance) {
-    const distance = health?.distance_km;
-    el.dTodayDistance.textContent = distance != null ? fmt1(distance) : '—';
   }
 
   // Last sync label

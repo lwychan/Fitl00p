@@ -701,7 +701,7 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
 .plan-stat__val--hero { font-size: 22px; color: var(--blue); }
 
 /* Today card */
-.today-metrics { display: grid; grid-template-columns: repeat(5,1fr); gap: 8px; margin-bottom: 16px; }
+.today-metrics { display: grid; grid-template-columns: repeat(4,1fr); gap: 8px; margin-bottom: 16px; }
 .today-metric__val {
   font-size: 18px; font-weight: 800; letter-spacing: -.02em;
   color: var(--ink); line-height: 1.15;
@@ -1021,14 +1021,14 @@ input[type="checkbox"].import-check {
   .dash-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
   .card { margin-bottom: 0; }
   .card--chart     { grid-column: 1 / -1; }
-  .today-metrics   { grid-template-columns: repeat(5,1fr); }
+  .today-metrics   { grid-template-columns: repeat(4,1fr); }
   .meal-grid       { grid-template-columns: repeat(4,1fr); }
 }
 
 @media (max-width: 480px) {
   .stat__val { font-size: 30px; }
   .today-metrics {
-    grid-template-columns: repeat(5, minmax(52px, 1fr));
+    grid-template-columns: repeat(4, minmax(52px, 1fr));
     gap: 6px;
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
