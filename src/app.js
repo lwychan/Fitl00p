@@ -4425,7 +4425,7 @@ const MFP_SHORTCUT_SRC = `(function(){
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ token: TOKEN, date: dateVal, items: items }),
   }).then(function(r){ return r.json(); }).then(function(res){
-    if (res.error) { completion('fitl00p import failed: ' + res.error); return; }
+    if (res.error) { completion('fitl00p import failed: ' + res.error + (res.detail ? '\\n\\n' + res.detail : '')); return; }
     var lines = (res.suggestions || []).map(function(s){
       if (s.suggestedUnits != null) {
         var line = s.name + ': ' + s.suggestedUnits + 'u';

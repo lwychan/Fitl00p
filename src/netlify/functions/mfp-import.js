@@ -229,7 +229,16 @@ exports.handler = async function (event) {
       matched_bolus_time: matchedBolusTime,
       matched_bolus_units: matchedBolusUnits,
       mfp_fingerprint: fingerprint,
-      ...doseFields,
+      // Explicit nulls rather than a conditional spread: PostgREST's bulk
+      // insert (PGRST102) requires every object in the batch to have the
+      // exact same key set, so a batch mixing a 'suggested' item (which
+      // has these four extra keys) with an 'unmatched'/'auto' one (which
+      // didn't) failed the whole insert — even the fully-matched items in
+      // the same batch got no error surfaced beyond a generic 500.
+      suggested_units: doseFields.suggested_units ?? null,
+      upfront_units: doseFields.upfront_units ?? null,
+      delayed_units: doseFields.delayed_units ?? null,
+      dose_source: doseFields.dose_source ?? null,
     });
   }
 
