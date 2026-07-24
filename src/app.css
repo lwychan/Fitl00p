@@ -1174,34 +1174,116 @@ input[type="checkbox"].import-check {
 }
 .superset-toggle:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 
-/* Superset pairing — wraps two exercise cards so they read as one unit */
-.superset-block {
-  border: 1.5px dashed var(--blue);
-  border-radius: var(--r-lg);
-  padding: 10px 10px 2px;
-  margin-bottom: 12px;
-  background: var(--blue-light);
-}
-.superset-block .exercise-card { margin-bottom: 10px; }
-.superset-block__label {
-  display: flex; align-items: center; justify-content: space-between;
-  font-size: 11px; font-weight: 800; letter-spacing: .04em;
-  color: var(--blue-dark); margin: 2px 4px 8px;
-}
-.superset-block__unlink {
-  background: none; border: none; color: var(--blue-dark);
-  font-size: 11px; font-weight: 700; letter-spacing: 0;
-  text-decoration: underline; cursor: pointer; padding: 0;
-}
 .link-mode-hint {
   font-size: 12px; font-weight: 600; color: var(--blue-dark);
   margin-top: 4px;
 }
-.exercise-card__pair-badge {
-  font-size: 10px; font-weight: 700; color: var(--blue-dark);
-  background: var(--blue-light); border-radius: 6px; padding: 1px 6px;
-  white-space: nowrap;
+
+/* Drag-to-reorder handle — shared by standalone and superset cards */
+.drag-handle {
+  cursor: grab; color: var(--ink-4); font-size: 15px;
+  padding: 4px 2px; flex-shrink: 0; touch-action: none;
+  line-height: 1; user-select: none;
 }
+.drag-handle:active { cursor: grabbing; }
+.exercise-card.is-dragging,
+.superset-card.is-dragging {
+  position: relative; z-index: 50;
+  box-shadow: var(--shadow-lg);
+  opacity: .92;
+}
+.exercise-card.is-drop-target,
+.superset-card.is-drop-target {
+  outline: 2px dashed var(--blue);
+  outline-offset: 2px;
+}
+
+/* Superset — one card, organised by round, instead of two separate
+   exercise cards. */
+.superset-card {
+  background: var(--surface);
+  border: 1.5px solid var(--blue);
+  border-radius: var(--r-lg);
+  margin-bottom: 12px;
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+.superset-card__head {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 12px 14px 11px;
+  background: var(--blue);
+}
+.superset-card__titles { flex: 1; min-width: 0; }
+.superset-card__eyebrow {
+  font-size: 10px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase;
+  color: rgba(255,255,255,.85); margin-bottom: 4px;
+}
+.superset-card__exrow {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 3px 0;
+}
+.superset-card__exname {
+  font-size: 14px; font-weight: 700; color: #fff;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.superset-card__exactions { display: flex; gap: 4px; align-items: center; flex-shrink: 0; }
+.superset-card__exactions .exercise-card__info-btn,
+.superset-card__exactions .exercise-card__equip-btn,
+.superset-card__exactions .exercise-card__remove-btn {
+  width: 24px; height: 24px; font-size: 11px;
+  background: rgba(255,255,255,.16); border-color: rgba(255,255,255,.3); color: #fff;
+}
+.superset-card__exactions .exercise-card__remove-btn:hover { background: rgba(220,38,38,.5); border-color: #fff; color: #fff; }
+.superset-card__unlink {
+  background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.3);
+  color: #fff; font-size: 11px; font-weight: 700;
+  border-radius: 999px; padding: 5px 11px; cursor: pointer;
+  white-space: nowrap; flex-shrink: 0; margin-top: 1px;
+}
+
+.round {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-2);
+}
+.round:last-child { border-bottom: none; }
+.round--done { background: var(--green-light); }
+.round--active { background: var(--blue-light); }
+.round--upcoming .round__exercises { opacity: .5; }
+
+.round__label-row {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px;
+}
+.round__label {
+  font-size: 10.5px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--ink-3);
+}
+.round--active .round__label { color: var(--blue-dark); }
+.round--done .round__label { color: var(--green); }
+.round__status { font-size: 10.5px; font-weight: 700; color: var(--green); }
+
+.round__exercises { display: flex; flex-direction: column; gap: 7px; margin-bottom: 8px; }
+.round-ex { display: flex; align-items: center; gap: 8px; }
+.round-ex__name {
+  flex: 1; min-width: 0; font-size: 13px; font-weight: 600; color: var(--ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.round-ex__inputs { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.round-ex__input.set-input { width: 52px; text-align: center; padding: 6px 4px; font-size: 14px; }
+.round-ex__unit { font-size: 10px; color: var(--ink-4); width: 22px; }
+
+.round__tick-row { display: flex; justify-content: flex-end; }
+.round__tick {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 700;
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1.5px solid var(--border);
+  background: var(--surface-2); color: var(--ink-3); cursor: pointer;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.round--active .round__tick { background: var(--blue); color: #fff; border-color: var(--blue); }
+.round--done .round__tick { background: var(--green); color: #fff; border-color: var(--green); }
 
 /* Exercise card in active workout */
 .exercise-card {

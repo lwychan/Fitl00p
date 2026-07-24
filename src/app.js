@@ -2626,99 +2626,62 @@ function unlinkPair(ei) {
   const g = activeExercises[ei]?.superset_group;
   if (!g) return;
   activeExercises.forEach(e => { if (e.superset_group === g) e.superset_group = null; });
+  // getSupersetInfo() falls back to pairing consecutive exercises purely by
+  // array position whenever Superset Mode is on and nothing has a real
+  // superset_group left — that fallback exists for routines that never had
+  // explicit pairs authored at all. Leaving Superset Mode on here would
+  // immediately re-trigger it once the group we just cleared was the last
+  // one left, silently re-pairing whatever now happens to sit next to each
+  // other — the opposite of "unlink this pair back to individual exercises".
+  if (!activeExercises.some(e => e.superset_group)) supersetModeOn = false;
   saveWorkoutState();
 }
 
-function renderActiveWorkout() {
-  const unit = profile?.weight_unit || 'kg';
-  const split = activeRoutine.split_type;
-  const cls   = split.replace(/\s+/g,'-');
+// Returns the array of activeExercises indices belonging to the block that
+// starts at ei — a superset's two exercises (always adjacent by
+// construction, see pairExercises) or a single standalone exercise.
+function getBlockExercises(ei) {
+  const ssInfo = getSupersetInfo(ei);
+  if (ssInfo?.role === 'first') return [ei, ssInfo.partnerIndex];
+  return [ei];
+}
 
-  elW.activeHeader.innerHTML = `
-    <div>
-      <div class="routine-name">${activeRoutine.name}</div>
-      <div class="routine-meta">${activeRoutine.rest_seconds}s rest · ${activeRoutine.min_duration}–${activeRoutine.max_duration} min</div>
-      ${linkModeOn ? `<div class="link-mode-hint">${linkPendingIndex === null ? 'Tap an exercise, then its partner, to pair them' : 'Now tap the exercise to pair it with'}</div>` : ''}
-    </div>
-    <div class="active-header__right">
-      <button type="button" id="btnLinkMode" class="superset-toggle ${linkModeOn ? 'is-on' : ''}" title="Tap two exercises to pair them as a superset">
-        🔗 Link ${linkModeOn ? 'On' : 'Off'}
-      </button>
-      <button type="button" id="btnSupersetToggle" class="superset-toggle ${supersetModeOn ? 'is-on' : ''}" title="Pair exercises as supersets — rest only after each pair">
-        ⚡ Supersets ${supersetModeOn ? 'On' : 'Off'}
-      </button>
-      <span class="split-tag split-tag--${cls}">${split}</span>
-    </div>`;
+// Moves the whole block starting at fromEi to sit immediately before (or,
+// with insertAfter, immediately after) the block starting at toEi. Works
+// by object identity rather than raw indices so splicing the dragged block
+// out first can never desync the target lookup afterward — a superset's
+// two exercises always move together, preserving their required adjacency.
+//
+// insertAfter matters: removing the dragged block first shifts every later
+// index down by its length, so "always insert before the target" would
+// silently put a downward drag back where it started the moment the
+// target ends up sitting exactly one slot above where the drag began.
+// Splitting on which half of the target block the pointer was over when
+// it was released is what makes dragging downward actually move anything.
+function reorderBlock(fromEi, toEi, insertAfter) {
+  const fromBlock = getBlockExercises(fromEi);
+  const toBlock = getBlockExercises(toEi);
+  if (fromBlock.some(ei => toBlock.includes(ei))) return; // dropped on itself/own partner
 
-  $('btnSupersetToggle')?.addEventListener('click', () => {
-    supersetModeOn = !supersetModeOn;
-    renderActiveWorkout();
+  const draggedExercises = fromBlock.map(ei => activeExercises[ei]);
+  const anchorEi = insertAfter ? toBlock[toBlock.length - 1] : toBlock[0];
+  const targetAnchor = activeExercises[anchorEi];
+
+  draggedExercises.forEach(obj => {
+    activeExercises.splice(activeExercises.indexOf(obj), 1);
   });
+  const insertIndex = activeExercises.indexOf(targetAnchor) + (insertAfter ? 1 : 0);
+  activeExercises.splice(insertIndex, 0, ...draggedExercises);
 
-  $('btnLinkMode')?.addEventListener('click', () => {
-    linkModeOn = !linkModeOn;
-    linkPendingIndex = null;
-    renderActiveWorkout();
-  });
+  saveWorkoutState();
+  renderActiveWorkout();
+}
 
-  elW.activeExList.innerHTML = activeExercises.map((ex, ei) => {
-    const hasMedia = !!ex.media;
-    const ssInfo = getSupersetInfo(ei);
-    const wrapOpen  = ssInfo?.role === 'first'
-      ? `<div class="superset-block"><div class="superset-block__label">
-           <span>⚡ SUPERSET · a set of each, then rest</span>
-           <button type="button" class="superset-block__unlink" data-ei="${ei}">Unpair</button>
-         </div>`
-      : '';
-    const wrapClose = ssInfo?.role === 'second' ? `</div>` : '';
-    const pairBadge = ssInfo
-      ? `<span class="exercise-card__pair-badge">${ssInfo.role === 'first' ? '1st' : '2nd'} of pair</span>`
-      : '';
-    // NOTE: injury-substitution system removed. wasSubstituted is never set
-    // by anything currently, so this badge is inert. Reuse this pattern once
-    // the variant-swap / skip-and-replace system sets an equivalent flag.
-    const subBadge = ex.wasSubstituted
-      ? `<span style="font-size:10px;background:var(--orange-light);color:var(--orange);border-radius:4px;padding:2px 6px;font-weight:600">Adapted</span>`
-      : '';
-
-    const setsHtml = ex.sets.map((s, si) => `
-      <tr class="set-row ${s.done ? 'is-done' : ''}" data-ei="${ei}" data-si="${si}">
-        <td class="set-num-cell">${s.setNum}</td>
-        <td><input type="number" class="set-input ${s.done?'is-done':''}" step="1" min="0"
-          placeholder="${ex.reps||'0'}" value="${s.reps}"
-          data-ei="${ei}" data-si="${si}" data-field="reps" inputmode="numeric"
-          ${s.done?'readonly':''}></td>
-        <td><input type="number" class="set-input ${s.done?'is-done':''}" step="0.5" min="0"
-          placeholder="0" value="${s.weight}"
-          data-ei="${ei}" data-si="${si}" data-field="weight" inputmode="decimal"
-          ${s.done?'readonly':''}></td>
-        <td style="font-size:11px;color:var(--ink-3)">${unit}</td>
-        <td>
-          ${s.done
-            ? `<button type="button" class="set-action-btn is-complete" data-ei="${ei}" data-si="${si}" title="Tap to edit this set">✓</button>`
-            : `<button type="button" class="set-action-btn is-done-btn" data-ei="${ei}" data-si="${si}">Done</button>`
-          }
-        </td>
-      </tr>`).join('');
-
-    return `${wrapOpen}<div class="exercise-card" data-ei="${ei}">
-      <div class="exercise-card__head">
-        <div class="exercise-card__name">
-          ${ei === 0 ? '<span class="exercise-card__focus-tag">FOCUS</span>' : ''}
-          <div class="exercise-card__name-text">${ex.name} ${subBadge} ${pairBadge}</div>
-        </div>
-        <div class="exercise-card__actions">
-          ${linkModeOn ? `<button type="button" class="exercise-card__link-btn ${linkPendingIndex === ei ? 'is-pending' : ''}" data-ei="${ei}" title="Tap to pair with another exercise">🔗</button>` : ''}
-          ${hasMedia ? `<button type="button" class="exercise-card__info-btn" data-ei="${ei}" title="Exercise guide">ⓘ</button>` : ''}
-          <button type="button" class="exercise-card__equip-btn" data-ei="${ei}" title="Change equipment">🔁</button>
-          <button type="button" class="exercise-card__remove-btn" data-ei="${ei}" title="Remove exercise">✕</button>
-        </div>
-      </div>
-      ${ex.pr && ex.pr.best_weight != null ? `<div class="exercise-card__pr" style="font-size:12px;color:var(--ink-2);margin-bottom:4px">
-        🏆 Last best: ${ex.pr.best_weight}${ex.pr.best_weight_unit || 'kg'} × ${ex.pr.best_weight_reps || '?'} reps
-      </div>` : ''}
-      ${ex.notes ? `<div class="exercise-card__notes">${ex.notes}</div>` : ''}
-      ${hasMedia ? `
+// Shared by both standalone and superset cards — identical markup to what
+// was previously always inline, just parameterized so it can be dropped
+// into either exercise-card__head layout.
+function renderInfoDrawer(ei, ex) {
+  return `
       <div class="exercise-info-drawer" id="drawer-${ei}">
         <div class="exercise-info-drawer__inner">
           <div class="exercise-info-drawer__gif ${ex.media?.gif_url ? '' : 'exercise-info-drawer__gif--loading'}" id="gif-${ei}">
@@ -2761,7 +2724,59 @@ function renderActiveWorkout() {
             </div>` : ''}
           </div>
         </div>
+      </div>`;
+}
+
+function renderStandaloneCard(ei) {
+  const unit = profile?.weight_unit || 'kg';
+  const ex = activeExercises[ei];
+  const hasMedia = !!ex.media;
+  // NOTE: injury-substitution system removed. wasSubstituted is never set
+  // by anything currently, so this badge is inert. Reuse this pattern once
+  // the variant-swap / skip-and-replace system sets an equivalent flag.
+  const subBadge = ex.wasSubstituted
+    ? `<span style="font-size:10px;background:var(--orange-light);color:var(--orange);border-radius:4px;padding:2px 6px;font-weight:600">Adapted</span>`
+    : '';
+
+  const setsHtml = ex.sets.map((s, si) => `
+      <tr class="set-row ${s.done ? 'is-done' : ''}" data-ei="${ei}" data-si="${si}">
+        <td class="set-num-cell">${s.setNum}</td>
+        <td><input type="number" class="set-input ${s.done?'is-done':''}" step="1" min="0"
+          placeholder="${ex.reps||'0'}" value="${s.reps}"
+          data-ei="${ei}" data-si="${si}" data-field="reps" inputmode="numeric"
+          ${s.done?'readonly':''}></td>
+        <td><input type="number" class="set-input ${s.done?'is-done':''}" step="0.5" min="0"
+          placeholder="0" value="${s.weight}"
+          data-ei="${ei}" data-si="${si}" data-field="weight" inputmode="decimal"
+          ${s.done?'readonly':''}></td>
+        <td style="font-size:11px;color:var(--ink-3)">${unit}</td>
+        <td>
+          ${s.done
+            ? `<button type="button" class="set-action-btn is-complete" data-ei="${ei}" data-si="${si}" title="Tap to edit this set">✓</button>`
+            : `<button type="button" class="set-action-btn is-done-btn" data-ei="${ei}" data-si="${si}">Done</button>`
+          }
+        </td>
+      </tr>`).join('');
+
+  return `<div class="exercise-card" data-block-start="${ei}">
+      <div class="exercise-card__head">
+        <span class="drag-handle" title="Drag to reorder">⠿</span>
+        <div class="exercise-card__name">
+          ${ei === 0 ? '<span class="exercise-card__focus-tag">FOCUS</span>' : ''}
+          <div class="exercise-card__name-text">${ex.name} ${subBadge}</div>
+        </div>
+        <div class="exercise-card__actions">
+          ${linkModeOn ? `<button type="button" class="exercise-card__link-btn ${linkPendingIndex === ei ? 'is-pending' : ''}" data-ei="${ei}" title="Tap to pair with another exercise">🔗</button>` : ''}
+          ${hasMedia ? `<button type="button" class="exercise-card__info-btn" data-ei="${ei}" title="Exercise guide">ⓘ</button>` : ''}
+          <button type="button" class="exercise-card__equip-btn" data-ei="${ei}" title="Change equipment">🔁</button>
+          <button type="button" class="exercise-card__remove-btn" data-ei="${ei}" title="Remove exercise">✕</button>
+        </div>
+      </div>
+      ${ex.pr && ex.pr.best_weight != null ? `<div class="exercise-card__pr" style="font-size:12px;color:var(--ink-2);margin:0 16px 4px">
+        🏆 Last best: ${ex.pr.best_weight}${ex.pr.best_weight_unit || 'kg'} × ${ex.pr.best_weight_reps || '?'} reps
       </div>` : ''}
+      ${ex.notes ? `<div class="exercise-card__notes">${ex.notes}</div>` : ''}
+      ${hasMedia ? renderInfoDrawer(ei, ex) : ''}
       <table class="active-sets-table">
         <thead>
           <tr>
@@ -2770,8 +2785,125 @@ function renderActiveWorkout() {
         </thead>
         <tbody>${setsHtml}</tbody>
       </table>
-    </div>${wrapClose}`;
-  }).join('') + `<button type="button" class="add-exercise-btn" id="btnAddExercise">+ Add exercise</button>`;
+    </div>`;
+}
+
+// A superset now renders as one card organised by round (Set 1, Set 2, …)
+// instead of two independent exercise cards each with their own set
+// table — both exercises' reps/weight for a round sit together, with one
+// tick that completes the round for both at once and starts the shared
+// rest timer, matching how a superset is actually performed (straight
+// from one exercise into the other, then rest).
+function renderSupersetCard(eiA, eiB) {
+  const unit = profile?.weight_unit || 'kg';
+  const A = activeExercises[eiA], B = activeExercises[eiB];
+  const roundCount = Math.max(A.sets.length, B.sets.length);
+
+  const exHeaderRow = (ei, ex) => `
+      <div class="superset-card__exrow">
+        <span class="superset-card__exname">${ex.name}</span>
+        <div class="superset-card__exactions">
+          ${ex.media ? `<button type="button" class="exercise-card__info-btn" data-ei="${ei}" title="Exercise guide">ⓘ</button>` : ''}
+          <button type="button" class="exercise-card__equip-btn" data-ei="${ei}" title="Change equipment">🔁</button>
+          <button type="button" class="exercise-card__remove-btn" data-ei="${ei}" title="Remove exercise">✕</button>
+        </div>
+      </div>
+      ${ex.media ? renderInfoDrawer(ei, ex) : ''}`;
+
+  let activeAssigned = false;
+  const roundsHtml = [];
+  for (let ri = 0; ri < roundCount; ri++) {
+    const present = [[eiA, A, A.sets[ri]], [eiB, B, B.sets[ri]]].filter(([, , s]) => s);
+    if (!present.length) continue;
+    const allDone = present.every(([, , s]) => s.done);
+    let state;
+    if (allDone) state = 'done';
+    else if (!activeAssigned) { state = 'active'; activeAssigned = true; }
+    else state = 'upcoming';
+
+    const exRowsHtml = present.map(([ei, ex, s]) => `
+          <div class="round-ex">
+            <span class="round-ex__name">${ex.name}</span>
+            <div class="round-ex__inputs">
+              <input type="number" class="set-input round-ex__input ${s.done?'is-done':''}" step="1" min="0"
+                placeholder="${ex.reps||'0'}" value="${s.reps}"
+                data-ei="${ei}" data-si="${ri}" data-field="reps" inputmode="numeric" ${s.done?'readonly':''}>
+              <span class="round-ex__unit">reps</span>
+              <input type="number" class="set-input round-ex__input ${s.done?'is-done':''}" step="0.5" min="0"
+                placeholder="0" value="${s.weight}"
+                data-ei="${ei}" data-si="${ri}" data-field="weight" inputmode="decimal" ${s.done?'readonly':''}>
+              <span class="round-ex__unit">${unit}</span>
+            </div>
+          </div>`).join('');
+
+    const setNum = present[0][2].setNum;
+    roundsHtml.push(`
+      <div class="round round--${state}">
+        <div class="round__label-row">
+          <span class="round__label">Set ${setNum}</span>
+          ${state === 'done' ? `<span class="round__status">✓ Done</span>` : ''}
+        </div>
+        <div class="round__exercises">${exRowsHtml}</div>
+        <div class="round__tick-row">
+          <button type="button" class="round__tick" data-round-ei-a="${eiA}" data-round-ei-b="${eiB}" data-round-si="${ri}" ${state === 'done' ? 'data-round-done="1"' : ''}>
+            ${state === 'done' ? '✓ Both done' : '○ Tap when both done'}
+          </button>
+        </div>
+      </div>`);
+  }
+
+  return `<div class="superset-card" data-block-start="${eiA}">
+      <div class="superset-card__head">
+        <span class="drag-handle" title="Drag to reorder">⠿</span>
+        <div class="superset-card__titles">
+          <div class="superset-card__eyebrow">⚡ Superset</div>
+          ${exHeaderRow(eiA, A)}
+          ${exHeaderRow(eiB, B)}
+        </div>
+        <button type="button" class="superset-card__unlink" data-ei="${eiA}">Unpair</button>
+      </div>
+      ${roundsHtml.join('')}
+    </div>`;
+}
+
+function renderActiveWorkout() {
+  const split = activeRoutine.split_type;
+  const cls   = split.replace(/\s+/g,'-');
+
+  elW.activeHeader.innerHTML = `
+    <div>
+      <div class="routine-name">${activeRoutine.name}</div>
+      <div class="routine-meta">${activeRoutine.rest_seconds}s rest · ${activeRoutine.min_duration}–${activeRoutine.max_duration} min</div>
+      ${linkModeOn ? `<div class="link-mode-hint">${linkPendingIndex === null ? 'Tap an exercise, then its partner, to pair them' : 'Now tap the exercise to pair it with'}</div>` : ''}
+    </div>
+    <div class="active-header__right">
+      <button type="button" id="btnLinkMode" class="superset-toggle ${linkModeOn ? 'is-on' : ''}" title="Tap two exercises to pair them as a superset">
+        🔗 Link ${linkModeOn ? 'On' : 'Off'}
+      </button>
+      <button type="button" id="btnSupersetToggle" class="superset-toggle ${supersetModeOn ? 'is-on' : ''}" title="Pair exercises as supersets — rest only after each pair">
+        ⚡ Supersets ${supersetModeOn ? 'On' : 'Off'}
+      </button>
+      <span class="split-tag split-tag--${cls}">${split}</span>
+    </div>`;
+
+  $('btnSupersetToggle')?.addEventListener('click', () => {
+    supersetModeOn = !supersetModeOn;
+    renderActiveWorkout();
+  });
+
+  $('btnLinkMode')?.addEventListener('click', () => {
+    linkModeOn = !linkModeOn;
+    linkPendingIndex = null;
+    renderActiveWorkout();
+  });
+
+  const blocksHtml = [];
+  for (let ei = 0; ei < activeExercises.length; ei++) {
+    const ssInfo = getSupersetInfo(ei);
+    if (ssInfo?.role === 'second') continue; // rendered as part of its partner's block
+    blocksHtml.push(ssInfo?.role === 'first' ? renderSupersetCard(ei, ssInfo.partnerIndex) : renderStandaloneCard(ei));
+  }
+  elW.activeExList.innerHTML = blocksHtml.join('') + `<button type="button" class="add-exercise-btn" id="btnAddExercise">+ Add exercise</button>`;
 
   const addBtn = document.getElementById('btnAddExercise');
   if (addBtn) addBtn.addEventListener('click', () => openAddExercisePicker());
@@ -2843,14 +2975,16 @@ function renderActiveWorkout() {
     });
   });
 
-  elW.activeExList.querySelectorAll('.superset-block__unlink').forEach(btn => {
+  elW.activeExList.querySelectorAll('.superset-card__unlink').forEach(btn => {
     btn.addEventListener('click', () => {
       unlinkPair(+btn.dataset.ei);
       renderActiveWorkout();
     });
   });
 
-  // Wire set inputs
+  // Wire set inputs — shared by the standalone table and superset round
+  // rows alike, since both key their inputs by the same data-ei/data-si/
+  // data-field attributes regardless of which layout they sit inside.
   elW.activeExList.querySelectorAll('.set-input').forEach(inp => {
     inp.addEventListener('input', () => {
       const ei = +inp.dataset.ei, si = +inp.dataset.si;
@@ -2859,7 +2993,7 @@ function renderActiveWorkout() {
     });
   });
 
-  // Wire done buttons — complete set + start rest timer
+  // Wire done buttons — complete set + start rest timer (standalone exercises)
   elW.activeExList.querySelectorAll('.set-action-btn.is-done-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       const ei = +btn.dataset.ei, si = +btn.dataset.si;
@@ -2882,18 +3016,7 @@ function renderActiveWorkout() {
         }
       }
 
-      // Superset pairing: the first exercise of a pair goes straight into
-      // its partner with no rest — the whole point of pairing them — and
-      // only the second exercise of the pair triggers the real rest period.
-      const ssInfo = getSupersetInfo(ei);
-
       renderActiveWorkout();
-
-      if (ssInfo?.role === 'first') {
-        const partner = activeExercises[ssInfo.partnerIndex];
-        showToast(`Now: ${partner.name} — no rest, straight into the pair`);
-        return;
-      }
 
       // Find next set label
       const nextSet = ex.sets[si + 1];
@@ -2920,8 +3043,111 @@ function renderActiveWorkout() {
     });
   });
 
+  // Wire round ticks — one tick completes (or reopens) the current round
+  // for BOTH exercises in a superset at once, then starts the shared rest
+  // timer exactly once, instead of ticking each exercise separately.
+  elW.activeExList.querySelectorAll('.round__tick').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const eiA = +btn.dataset.roundEiA, eiB = +btn.dataset.roundEiB, si = +btn.dataset.roundSi;
+      const exA = activeExercises[eiA], exB = activeExercises[eiB];
+      const sA = exA.sets[si], sB = exB.sets[si];
+
+      if (btn.dataset.roundDone === '1') {
+        if (sA) sA.done = false;
+        if (sB) sB.done = false;
+        renderActiveWorkout();
+        return;
+      }
+
+      if (sA) sA.done = true;
+      if (sB) sB.done = true;
+
+      [[exA, sA], [exB, sB]].forEach(([ex, s]) => {
+        if (!s || !s.weight) return;
+        for (let laterSi = si + 1; laterSi < ex.sets.length; laterSi++) {
+          if (!ex.sets[laterSi].done && !ex.sets[laterSi].weight) ex.sets[laterSi].weight = s.weight;
+        }
+      });
+
+      renderActiveWorkout();
+
+      const nextRoundSet = exA.sets[si + 1] || exB.sets[si + 1];
+      const nextEx = !nextRoundSet ? activeExercises[eiB + 1] : null;
+      const nextLabel = nextRoundSet
+        ? `Set ${nextRoundSet.setNum} of ${exA.name} + ${exB.name}`
+        : nextEx ? nextEx.name : null;
+
+      if (nextLabel) {
+        await startRestTimer(exA.restSeconds, nextLabel);
+      }
+    });
+  });
+
+  wireBlockDragging();
+
   elW.picker.hidden = true;
   elW.active.hidden = false;
+}
+
+// Touch-friendly drag-to-reorder for the whole exercise list, built on
+// Pointer Events rather than the HTML5 drag-and-drop API — iOS Safari
+// (this app's primary target) doesn't fire native dragstart from touch on
+// plain elements, only from mouse input, so the desktop-only DnD API used
+// elsewhere in this file (the routine admin editor) wouldn't work here.
+// The dragged block visually follows the finger via a translateY while
+// held; dropping snaps it to sit before or after whichever other block the
+// pointer was last over, depending on which half of it the pointer ended
+// up on (see the comment on reorderBlock for why that half matters).
+function wireBlockDragging() {
+  const blocks = Array.from(elW.activeExList.querySelectorAll('[data-block-start]'));
+  let drag = null;
+
+  blocks.forEach(blockEl => {
+    const handle = blockEl.querySelector('.drag-handle');
+    if (!handle) return;
+
+    handle.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      drag = {
+        blockEl,
+        startY: e.clientY,
+        target: null,
+        insertAfter: false,
+        rects: blocks.map(b => {
+          const r = b.getBoundingClientRect();
+          return { el: b, top: r.top, height: r.height };
+        }),
+      };
+      blockEl.classList.add('is-dragging');
+      try { handle.setPointerCapture(e.pointerId); } catch {}
+    });
+
+    handle.addEventListener('pointermove', e => {
+      if (!drag || drag.blockEl !== blockEl) return;
+      blockEl.style.transform = `translateY(${e.clientY - drag.startY}px)`;
+
+      blocks.forEach(b => b.classList.remove('is-drop-target'));
+      const hit = drag.rects.find(r => r.el !== blockEl && e.clientY >= r.top && e.clientY <= r.top + r.height);
+      drag.target = hit ? hit.el : null;
+      drag.insertAfter = hit ? e.clientY > hit.top + hit.height / 2 : false;
+      if (drag.target) drag.target.classList.add('is-drop-target');
+    });
+
+    const finishDrag = () => {
+      if (!drag || drag.blockEl !== blockEl) return;
+      blockEl.classList.remove('is-dragging');
+      blockEl.style.transform = '';
+      blocks.forEach(b => b.classList.remove('is-drop-target'));
+      const target = drag.target;
+      const insertAfter = drag.insertAfter;
+      drag = null;
+      if (target) {
+        reorderBlock(+blockEl.dataset.blockStart, +target.dataset.blockStart, insertAfter);
+      }
+    };
+    handle.addEventListener('pointerup', finishDrag);
+    handle.addEventListener('pointercancel', finishDrag);
+  });
 }
 
 // ── Lazy GIF fetching via Netlify Function proxy ──────────
