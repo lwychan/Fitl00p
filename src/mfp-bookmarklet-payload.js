@@ -70,22 +70,42 @@
     return new Date().toISOString().slice(0, 10);
   }
 
+  // MFP diary sections normally get combined into one fitl00p entry per
+  // meal (one carb/fat/protein total instead of N slivers) \u2014 but a
+  // "Sugar" section is used for ad-hoc hypo-treatment sweets logged
+  // throughout the day, not a meal, so those import as individual items
+  // instead, each matched/dosed on its own.
+  function isSugarSection(label) {
+    return /^sugar$/i.test((label || '').trim());
+  }
+
   var items = [];
   var rows = document.querySelectorAll('#diary-table tr');
   var section = 'breakfast';
   var sectionLabel = 'Breakfast';
-  var sectionNames = [];
+  var sectionItems = []; // { name, calories, carbsG, fatG, proteinG }
   function flushSection(totalsRow) {
-    if (!sectionNames.length) return;
+    if (!sectionItems.length) return;
+    if (isSugarSection(sectionLabel)) {
+      for (var i = 0; i < sectionItems.length; i++) {
+        var it = sectionItems[i];
+        if (it.carbsG != null || it.fatG != null || it.proteinG != null || it.calories != null) {
+          items.push({ mealSection: section, name: it.name, carbsG: it.carbsG, fatG: it.fatG, proteinG: it.proteinG, calories: it.calories });
+        }
+      }
+      sectionItems = [];
+      return;
+    }
     var cells = totalsRow.querySelectorAll('td');
     var calories = numFromCell(cells[1]);
     var carbsG = numFromCell(cells[2]);
     var fatG = numFromCell(cells[3]);
     var proteinG = numFromCell(cells[4]);
     if (carbsG != null || fatG != null || proteinG != null || calories != null) {
-      items.push({ mealSection: section, name: sectionLabel + ' \u2014 ' + sectionNames.join(', '), carbsG: carbsG, fatG: fatG, proteinG: proteinG, calories: calories });
+      var names = sectionItems.map(function (it) { return it.name; });
+      items.push({ mealSection: section, name: sectionLabel + ' \u2014 ' + names.join(', '), carbsG: carbsG, fatG: fatG, proteinG: proteinG, calories: calories });
     }
-    sectionNames = [];
+    sectionItems = [];
   }
   for (var r = 0; r < rows.length; r++) {
     var row = rows[r];
@@ -95,7 +115,7 @@
       var rawSection = headCell ? (headCell.textContent || '').trim() : '';
       section = sectionName(rawSection);
       sectionLabel = rawSection && !/^\d+$/.test(rawSection) ? rawSection : (section.charAt(0).toUpperCase() + section.slice(1));
-      sectionNames = [];
+      sectionItems = [];
       continue;
     }
     if (/bottom|total/i.test(cls)) {
@@ -107,7 +127,13 @@
     var rawName = (cells[0].textContent || '').trim();
     if (!rawName) continue;
     var name = rawName.replace(/\s*\/?,\s*[\d.]+\s*[a-zA-Z%]*\s*$/, '').trim() || rawName;
-    sectionNames.push(name);
+    sectionItems.push({
+      name: name,
+      calories: numFromCell(cells[1]),
+      carbsG: numFromCell(cells[2]),
+      fatG: numFromCell(cells[3]),
+      proteinG: numFromCell(cells[4]),
+    });
   }
 
   if (!items.length) {

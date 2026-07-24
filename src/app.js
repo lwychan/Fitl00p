@@ -4376,22 +4376,36 @@ const MFP_SHORTCUT_SRC = `(function(){
     }
     return new Date().toISOString().slice(0, 10);
   }
+  function isSugarSection(label){
+    return /^sugar$/i.test((label || '').trim());
+  }
   var items = [];
   var rows = document.querySelectorAll('#diary-table tr');
   var section = 'breakfast';
   var sectionLabel = 'Breakfast';
-  var sectionNames = [];
+  var sectionItems = [];
   function flushSection(totalsRow){
-    if (!sectionNames.length) return;
+    if (!sectionItems.length) return;
+    if (isSugarSection(sectionLabel)) {
+      for (var i = 0; i < sectionItems.length; i++) {
+        var it = sectionItems[i];
+        if (it.carbsG != null || it.fatG != null || it.proteinG != null || it.calories != null) {
+          items.push({ mealSection: section, name: it.name, carbsG: it.carbsG, fatG: it.fatG, proteinG: it.proteinG, calories: it.calories });
+        }
+      }
+      sectionItems = [];
+      return;
+    }
     var cells = totalsRow.querySelectorAll('td');
     var calories = numFromCell(cells[1]);
     var carbsG = numFromCell(cells[2]);
     var fatG = numFromCell(cells[3]);
     var proteinG = numFromCell(cells[4]);
     if (carbsG != null || fatG != null || proteinG != null || calories != null) {
-      items.push({ mealSection: section, name: sectionLabel + ' \\u2014 ' + sectionNames.join(', '), carbsG: carbsG, fatG: fatG, proteinG: proteinG, calories: calories });
+      var names = sectionItems.map(function(it){ return it.name; });
+      items.push({ mealSection: section, name: sectionLabel + ' \\u2014 ' + names.join(', '), carbsG: carbsG, fatG: fatG, proteinG: proteinG, calories: calories });
     }
-    sectionNames = [];
+    sectionItems = [];
   }
   for (var r = 0; r < rows.length; r++) {
     var row = rows[r];
@@ -4401,7 +4415,7 @@ const MFP_SHORTCUT_SRC = `(function(){
       var rawSection = headCell ? (headCell.textContent || '').trim() : '';
       section = sectionName(rawSection);
       sectionLabel = rawSection && !/^\\d+$/.test(rawSection) ? rawSection : (section.charAt(0).toUpperCase() + section.slice(1));
-      sectionNames = [];
+      sectionItems = [];
       continue;
     }
     if (/bottom|total/i.test(cls)) {
@@ -4413,7 +4427,13 @@ const MFP_SHORTCUT_SRC = `(function(){
     var rawName = (cells[0].textContent || '').trim();
     if (!rawName) continue;
     var name = rawName.replace(/\\s*\\/?,\\s*[\\d.]+\\s*[a-zA-Z%]*\\s*$/, '').trim() || rawName;
-    sectionNames.push(name);
+    sectionItems.push({
+      name: name,
+      calories: numFromCell(cells[1]),
+      carbsG: numFromCell(cells[2]),
+      fatG: numFromCell(cells[3]),
+      proteinG: numFromCell(cells[4]),
+    });
   }
   if (!items.length) {
     completion('fitl00p: no food rows found on this page.');
