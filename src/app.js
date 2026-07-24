@@ -6828,7 +6828,8 @@ function initOnboarding() {
       .eq('id', currentUser.id);
 
     if (pe) {
-      $('obSaving').textContent = 'Something went wrong — try again';
+      console.error('Onboarding save failed:', pe.message);
+      $('obSaving').textContent = `Something went wrong — ${pe.message}`;
       $('obNext').disabled = false;
       return;
     }
