@@ -595,7 +595,10 @@ function initApp() {
         if (cached) {
           profile = cached.profile;
           activePlan = cached.activePlan;
-          loadProfileWithTimeout().catch(() => {}); // best-effort refresh, not awaited
+          // Best-effort refresh, not awaited — but re-apply anything that
+          // depends on profile fields once it lands, since the stale cache
+          // rendered first (see applyDiabetesTabVisibility).
+          loadProfileWithTimeout().then(() => applyDiabetesTabVisibility()).catch(() => {});
         } else {
           if (el.msgSignin) el.msgSignin.textContent = 'Connecting…';
           await loadProfileWithTimeout();
@@ -631,7 +634,6 @@ function initApp() {
             showScreen('app');
             const adminSec = $('adminSection');
             if (adminSec) adminSec.hidden = role !== 'admin';
-            applyDiabetesTabVisibility();
 
             const uiState = loadUIState();
             const targetTab = uiState?.tab || 'dashboard';
@@ -664,7 +666,6 @@ function initApp() {
           showScreen('app');
           const adminSec = $('adminSection');
           if (adminSec) adminSec.hidden = (profile?.role || '') !== 'admin';
-          applyDiabetesTabVisibility();
           await navigateTo('dashboard');
         } catch (fallbackErr) {
           console.error('Fallback also failed:', fallbackErr?.message || fallbackErr);
@@ -734,6 +735,10 @@ function applyDiabetesTabVisibility() {
 
 async function navigateTo(name) {
   if (name === 'diabetes' && profile?.diabetes_enabled === false) name = 'dashboard';
+  // Re-checked on every navigation, not just at login — profile can change
+  // underneath an already-open session (e.g. the background refresh below
+  // for a returning device with a stale cached profile, or a settings save).
+  applyDiabetesTabVisibility();
   // Hide all views including the admin screen
   Object.values(views).forEach(v => { if (v) v.hidden = true; });
   // Only update tab bar for main tabs — admin screen has no tab
@@ -6898,7 +6903,6 @@ function initOnboarding() {
     $('obSaving').textContent = 'All set! Loading your dashboard…';
     await new Promise(r => setTimeout(r, 600));
     showScreen('app');
-    applyDiabetesTabVisibility();
     navigateTo('dashboard');
     requestNotificationPermission();
   }
