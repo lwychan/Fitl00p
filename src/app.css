@@ -275,11 +275,13 @@ body {
 [data-theme="slate"] .appbar .brand-fit,
 [data-theme="slate"] .appbar .brand-loop,
 [data-theme="slate"] .appbar__user { color: #FFFFFF; }
-[data-theme="slate"] .appbar__signout { color: rgba(255,255,255,.75); }
+[data-theme="slate"] .appbar__icon-btn { color: rgba(255,255,255,.75); }
+[data-theme="slate"] .appbar__settings:hover,
+[data-theme="slate"] .appbar__settings:active { color: #fff; background: rgba(255,255,255,.14); }
 [data-theme="slate"] .appbar__signout:hover,
 [data-theme="slate"] .appbar__signout:active { color: #fff; background: rgba(255,255,255,.14); }
 .appbar__nav { display: none; } /* hidden — we use bottom tabs */
-.appbar__right { display: flex; align-items: center; gap: 10px; }
+.appbar__right { display: flex; align-items: center; gap: 4px; }
 .appbar__user {
   font-size: 12px;
   color: var(--ink-3);
@@ -287,8 +289,9 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  margin-right: 6px;
 }
-.appbar__signout {
+.appbar__icon-btn {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -301,6 +304,11 @@ body {
   color: var(--ink-3);
   cursor: pointer;
   transition: color .15s, background .15s;
+}
+.appbar__settings:hover,
+.appbar__settings:active {
+  color: var(--blue);
+  background: var(--blue-light);
 }
 .appbar__signout:hover,
 .appbar__signout:active {
@@ -358,34 +366,29 @@ body {
 .tab-btn {
   flex: 1;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
   background: none;
   border: none;
   cursor: pointer;
   color: var(--ink-4);
-  font-family: var(--ui);
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: .01em;
   transition: color .15s;
-  padding: 8px 4px 2px;
+  padding: 10px 4px;
   position: relative;
 }
-.tab-btn svg { width: 26px; height: 26px; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; transition: stroke .15s; }
+.tab-btn__pill {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 40px;
+  border-radius: var(--r-lg);
+  transition: background .18s;
+}
+.tab-btn svg { width: 24px; height: 24px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; transition: stroke .15s; }
 .tab-btn--active { color: var(--blue); }
 .tab-btn--active svg { stroke: var(--blue); }
-.tab-btn--active::before {
-  content: '';
-  position: absolute;
-  top: 0; left: 25%; right: 25%;
-  height: 2px;
-  background: var(--blue);
-  border-radius: 0 0 2px 2px;
-}
-
+.tab-btn--active .tab-btn__pill { background: var(--blue-light); }
 /* ── VIEWS ───────────────────────────────────────────────── */
 .view {
   flex: 1;
@@ -2971,11 +2974,6 @@ body { font-size: 15px; }
 [data-theme="slate"]    .auth-features { background: linear-gradient(160deg, #004080 0%, #001830 100%); }
 [data-theme="obsidian"] .auth-features { background: linear-gradient(160deg, #121212 0%, #003044 100%); }
 [data-theme="aurora"]   .auth-features { background: linear-gradient(160deg, #005066 0%, #002233 100%); }
-
-/* Tab bar accent per theme */
-.tab-btn--active { color: var(--blue); }
-.tab-btn--active svg { stroke: var(--blue); }
-.tab-btn--active::before { background: var(--blue); }
 
 /* Today card metric tiles — individual card style (Slate structure) */
 .today-metric {

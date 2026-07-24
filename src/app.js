@@ -172,6 +172,7 @@ const el = {
   tabBar:        $('tabBar'),
   btnSignout:    $('btnSignout'),
   btnSignoutHeader: $('btnSignoutHeader'),
+  btnOpenSettingsHeader: $('btnOpenSettingsHeader'),
   sessionBrokenBanner:     $('sessionBrokenBanner'),
   btnFixSession:           $('btnFixSession'),
   btnDismissSessionBanner: $('btnDismissSessionBanner'),
@@ -547,6 +548,7 @@ function initApp() {
 
   el.btnSignout.addEventListener('click', handleSignOut);
   el.btnSignoutHeader?.addEventListener('click', handleSignOut);
+  el.btnOpenSettingsHeader?.addEventListener('click', () => navigateTo('settings'));
   el.btnFixSession?.addEventListener('click', handleSignOut);
   el.btnDismissSessionBanner?.addEventListener('click', () => {
     if (el.sessionBrokenBanner) el.sessionBrokenBanner.hidden = true;
