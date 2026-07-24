@@ -4328,6 +4328,20 @@ const MFP_SHORTCUT_SRC = `(function(){
     var names = {'1':'breakfast','2':'lunch','3':'dinner','4':'snacks','5':'snacks','6':'snacks'};
     return names[numStr] || 'snacks';
   }
+  function detectDiaryDate(){
+    try {
+      var urlDate = new URL(location.href).searchParams.get('date');
+      if (urlDate && /^\\d{4}-\\d{2}-\\d{2}$/.test(urlDate)) return urlDate;
+    } catch (e) {}
+    var headingMatch = (document.body.innerText || '').match(/Food Diary For:\\s*([A-Za-z]+,?\\s*[A-Za-z]+\\s+\\d{1,2},?\\s+\\d{4})/);
+    if (headingMatch) {
+      var parsed = new Date(headingMatch[1]);
+      if (!isNaN(parsed.getTime())) {
+        return parsed.getFullYear() + '-' + String(parsed.getMonth() + 1).padStart(2, '0') + '-' + String(parsed.getDate()).padStart(2, '0');
+      }
+    }
+    return new Date().toISOString().slice(0, 10);
+  }
   var items = [];
   var rows = document.querySelectorAll('#diary-table tr');
   var section = 'breakfast';
@@ -4371,8 +4385,7 @@ const MFP_SHORTCUT_SRC = `(function(){
     completion('fitl00p: no food rows found on this page.');
     return;
   }
-  var dateInput = document.querySelector('.date-picker input, input[name="date"]');
-  var dateVal = (dateInput && dateInput.value) || new Date().toISOString().slice(0, 10);
+  var dateVal = detectDiaryDate();
   fetch(ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

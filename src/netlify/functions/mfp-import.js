@@ -92,6 +92,21 @@ exports.handler = async function (event) {
     return { statusCode: 400, headers: HEADERS, body: JSON.stringify({ error: `Too many items (max ${MAX_ITEMS})` }) };
   }
 
+  // A bookmarklet click always posts here (never sets body.backfill) even
+  // when the MFP tab it ran in is showing a PAST day's diary — there's no
+  // way to distinguish "synced right after eating" from "importing
+  // yesterday's diary today" except by comparing the diary's own date to
+  // today. Route non-today dates through the same date-anchored strict
+  // matcher used for backfill instead of the code below, which always
+  // anchors both eaten_at and bolus-matching to nowMs — that can never
+  // find a bolus from a day that already ended, regardless of what date
+  // was sent, and a live "what should I dose right now" suggestion
+  // doesn't make sense for a meal that already happened either.
+  const todayStr = new Date().toISOString().slice(0, 10);
+  if (date && date !== todayStr) {
+    return handleBackfill(profile, settings, { days: [{ date, items }] }, userId);
+  }
+
   // Pull a day's worth of Nightscout history — enough to both match
   // against existing boluses (if the user already dosed before syncing)
   // and to compute a live dose suggestion (if they're syncing to decide

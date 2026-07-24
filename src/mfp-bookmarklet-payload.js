@@ -47,6 +47,29 @@
     return names[numStr] || 'snacks';
   }
 
+  // MFP diary pages don't have a '.date-picker input' — that selector was
+  // fitl00p's OWN CSS class name, mistaken for something that'd also
+  // exist on MFP's page, so it silently never matched and this always
+  // fell through to "today" — even when viewing a past day's diary. The
+  // reliable source is the URL itself: MFP diary pages are
+  // myfitnesspal.com/food/diary/<user>?date=YYYY-MM-DD. Text-parsing the
+  // "Food Diary For: <date>" heading is the fallback if the URL is ever
+  // missing the param, with "today" only as a last resort.
+  function detectDiaryDate() {
+    try {
+      var urlDate = new URL(location.href).searchParams.get('date');
+      if (urlDate && /^\d{4}-\d{2}-\d{2}$/.test(urlDate)) return urlDate;
+    } catch (e) {}
+    var headingMatch = (document.body.innerText || '').match(/Food Diary For:\s*([A-Za-z]+,?\s*[A-Za-z]+\s+\d{1,2},?\s+\d{4})/);
+    if (headingMatch) {
+      var parsed = new Date(headingMatch[1]);
+      if (!isNaN(parsed.getTime())) {
+        return parsed.getFullYear() + '-' + String(parsed.getMonth() + 1).padStart(2, '0') + '-' + String(parsed.getDate()).padStart(2, '0');
+      }
+    }
+    return new Date().toISOString().slice(0, 10);
+  }
+
   var items = [];
   var rows = document.querySelectorAll('#diary-table tr');
   var section = 'breakfast';
@@ -104,8 +127,7 @@
   }).join('\n') + (items.length > 8 ? '\n…and ' + (items.length - 8) + ' more' : '');
   if (!confirm('Send ' + items.length + ' item(s) to fitl00p?\n\n' + preview)) return;
 
-  var dateInput = document.querySelector('.date-picker input, input[name="date"]');
-  var dateVal = (dateInput && dateInput.value) || new Date().toISOString().slice(0, 10);
+  var dateVal = detectDiaryDate();
 
   fetch(ENDPOINT, {
     method: 'POST',
