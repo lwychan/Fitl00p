@@ -39,8 +39,8 @@ exports.handler = async function () {
 
     const toGo = STEP_GOAL - steps;
     const payload = {
-      title: 'Step goal check-in',
-      body: `You’re at ${steps.toLocaleString()} steps today — ${toGo.toLocaleString()} to go to hit your ${STEP_GOAL.toLocaleString()} goal 🚶`,
+      title: 'Get a move on suckaa!! 🚶🏻💨💨',
+      body: `${steps.toLocaleString()} steps so far today — ${toGo.toLocaleString()} to go to hit your ${STEP_GOAL.toLocaleString()} goal.`,
       url: '/', tag: 'steps-check',
     };
     for (const s of userSubs) {

@@ -147,13 +147,13 @@ function sendWebPush(subscription, payload) {
 // London-local hours (the winter and summer UTC equivalents), since
 // Netlify cron has no timezone support and DST would otherwise silently
 // shift the notification by an hour twice a year.
-function londonNow() {
+function londonParts(date) {
   const parts = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Europe/London',
     year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', weekday: 'short',
     hourCycle: 'h23',
-  }).formatToParts(new Date());
+  }).formatToParts(date);
   const get = t => parts.find(p => p.type === t).value;
   return {
     dateStr: `${get('year')}-${get('month')}-${get('day')}`,
@@ -163,4 +163,16 @@ function londonNow() {
   };
 }
 
-module.exports = { sendWebPush, londonNow };
+function londonNow() {
+  return londonParts(new Date());
+}
+
+// London calendar date (YYYY-MM-DD) of an arbitrary instant — used to
+// check "was this logged today" against a UTC timestamp column without
+// hand-rolling DST-aware day boundaries.
+function londonDateStrOf(isoOrDate) {
+  const d = isoOrDate instanceof Date ? isoOrDate : new Date(isoOrDate);
+  return londonParts(d).dateStr;
+}
+
+module.exports = { sendWebPush, londonNow, londonDateStrOf };
