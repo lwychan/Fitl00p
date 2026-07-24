@@ -4239,14 +4239,21 @@ $('btnSaveDiabetesSettings')?.addEventListener('click', async () => {
    own already-authenticated MFP tab instead — same-origin, so it can
    read the diary DOM directly with no CORS/Cloudflare problem — and
    POSTs the parsed items to mfp-import.js, which does the actual
-   bolus-matching against Nightscout. The __TOKEN__/__ENDPOINT__
-   placeholders get swapped for real values (as JSON string literals,
-   so they're safely quoted) when the bookmarklet is built.
+   bolus-matching against Nightscout.
 
-   Parsing builds one item per meal *section* (not per ingredient) —
-   dosing happens per meal, so the section's own totals row (already
-   summed by MFP) becomes the item's macros, with individual food
-   names joined into the label purely for display.
+   This used to inline the ENTIRE parser (~4.5KB) into the javascript:
+   URL itself. That's long enough that iOS Safari bookmarks — and
+   iCloud bookmark sync especially — can silently truncate or corrupt
+   it, producing exactly "nothing happens when I tap it": no error
+   anywhere, because the mangled URL never reaches any of this code.
+   The bookmarklet is now just a short loader that sets the token/
+   endpoint as globals and injects a <script src="…/mfp-bookmarklet-
+   payload.js"> tag — script tags aren't subject to CORS, so this works
+   cross-origin from MFP's page with no server config needed. The real
+   parsing logic lives in src/mfp-bookmarklet-payload.js, a plain
+   static file (NOT run through this __TOKEN__/__ENDPOINT__
+   substitution — it reads window.__FITL00P_TOKEN__/__ENDPOINT__ that
+   the loader below sets first) — keep the two in sync by hand.
 
    IMPORTANT — no `//` line comments inside MFP_BOOKMARKLET_SRC or
    MFP_SHORTCUT_SRC below, ever. When this string is actually clicked
@@ -4256,109 +4263,16 @@ $('btnSaveDiabetesSettings')?.addEventListener('click', async () => {
    eval. A `//` comment has no other terminator — with the newline
    after it gone, the comment silently swallows every line after it,
    including the closing `})();`, producing a bare "Unexpected end of
-   input" with no dialog, no network request, nothing. (Confirmed by
-   reproducing it with a one-line comment in a real click-triggered
-   javascript: URL — addScriptTag-based tests don't go through the
-   URL parser and won't catch this.) Slash-star block comments are
-   safe if ever needed (explicit terminator, not newline-dependent), but
-   simplest is just: keep this template comment-free and put any
-   explanation here instead. */
+   input" with no dialog, no network request, nothing. Slash-star block
+   comments are safe if ever needed (explicit terminator, not newline-
+   dependent), but simplest is just: keep this template comment-free
+   and put any explanation here instead. */
 const MFP_BOOKMARKLET_SRC = `(function(){
-  var TOKEN = __TOKEN__;
-  var ENDPOINT = __ENDPOINT__;
-  function num(text){
-    if (text == null) return null;
-    var m = String(text).replace(/,/g, '').match(/-?\\d+(\\.\\d+)?/);
-    return m ? parseFloat(m[0]) : null;
-  }
-  function numFromCell(cell){
-    if (!cell) return null;
-    var whole = cell.querySelector('.macro-value');
-    if (whole) {
-      var dec = cell.querySelector('.macro-percentage');
-      var s = (whole.textContent || '').trim() + (dec ? '.' + (dec.textContent || '').trim() : '');
-      var v = parseFloat(s);
-      return isNaN(v) ? null : v;
-    }
-    return num(cell.textContent);
-  }
-  function sectionName(numStr){
-    var names = {'1':'breakfast','2':'lunch','3':'dinner','4':'snacks','5':'snacks','6':'snacks'};
-    return names[numStr] || 'snacks';
-  }
-  var items = [];
-  var rows = document.querySelectorAll('#diary-table tr');
-  var section = 'breakfast';
-  var sectionLabel = 'Breakfast';
-  var sectionNames = [];
-  function flushSection(totalsRow){
-    if (!sectionNames.length) return;
-    var cells = totalsRow.querySelectorAll('td');
-    var calories = numFromCell(cells[1]);
-    var carbsG = numFromCell(cells[2]);
-    var fatG = numFromCell(cells[3]);
-    var proteinG = numFromCell(cells[4]);
-    if (carbsG != null || fatG != null || proteinG != null || calories != null) {
-      items.push({ mealSection: section, name: sectionLabel + ' \\u2014 ' + sectionNames.join(', '), carbsG: carbsG, fatG: fatG, proteinG: proteinG, calories: calories });
-    }
-    sectionNames = [];
-  }
-  for (var r = 0; r < rows.length; r++) {
-    var row = rows[r];
-    var cls = row.className || '';
-    if (/meal_header/i.test(cls)) {
-      var headCell = row.querySelector('td');
-      var rawSection = headCell ? (headCell.textContent || '').trim() : '';
-      section = sectionName(rawSection);
-      sectionLabel = rawSection && !/^\\d+$/.test(rawSection) ? rawSection : (section.charAt(0).toUpperCase() + section.slice(1));
-      sectionNames = [];
-      continue;
-    }
-    if (/bottom|total/i.test(cls)) {
-      flushSection(row);
-      continue;
-    }
-    var cells = row.querySelectorAll('td');
-    if (cells.length < 7) continue;
-    var rawName = (cells[0].textContent || '').trim();
-    if (!rawName) continue;
-    var name = rawName.replace(/\\s*\\/?,\\s*[\\d.]+\\s*[a-zA-Z%]*\\s*$/, '').trim() || rawName;
-    sectionNames.push(name);
-  }
-  if (!items.length) {
-    alert('fitl00p: no food rows found. Make sure you\\'re on your own MFP diary page (myfitnesspal.com/food/diary) with food logged today.');
-    return;
-  }
-  var preview = items.slice(0, 8).map(function(it){
-    return '- ' + it.name + (it.carbsG != null ? ' (' + it.carbsG + 'g carbs)' : ' (no carb figure — turn on Carbs/Fat/Protein columns in MFP Diary Settings for better matching)');
-  }).join('\\n') + (items.length > 8 ? '\\n…and ' + (items.length - 8) + ' more' : '');
-  if (!confirm('Send ' + items.length + ' item(s) to fitl00p?\\n\\n' + preview)) return;
-  var dateInput = document.querySelector('.date-picker input, input[name="date"]');
-  var dateVal = (dateInput && dateInput.value) || new Date().toISOString().slice(0, 10);
-  fetch(ENDPOINT, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token: TOKEN, date: dateVal, items: items }),
-  }).then(function(r){ return r.json(); }).then(function(res){
-    if (res.error) { alert('fitl00p import failed: ' + res.error); return; }
-    var lines = (res.suggestions || []).map(function(s){
-      if (s.suggestedUnits != null) {
-        var line = s.name + ': ' + s.suggestedUnits + 'u';
-        if (s.splitTier && s.splitTier !== 'single' && s.delayedUnits > 0) {
-          line += ' (' + s.upfrontUnits + 'u now, ' + s.delayedUnits + 'u delayed)';
-        }
-        if (s.lowGlucoseWarning) line += ' \\u26a0 glucose is low — double-check before dosing';
-        return line;
-      }
-      if (s.hypoTreatment) return s.name + ': hypo treatment — no bolus needed';
-      if (s.withheldReason) return s.name + ': no suggestion (' + s.withheldReason + ') — check the Diabetes tab';
-      return null;
-    }).filter(Boolean);
-    var summary = res.autoMatched + ' already matched to an existing bolus' + (res.skippedDuplicate ? ', ' + res.skippedDuplicate + ' already sent before' : '') + '.';
-    alert('fitl00p:\\n\\n' + (lines.length ? lines.join('\\n\\n') : 'Nothing new to suggest.') + '\\n\\n' + summary);
-  }).catch(function(err){
-    alert('fitl00p import failed: ' + err.message);
-  });
+  window.__FITL00P_TOKEN__ = __TOKEN__;
+  window.__FITL00P_ENDPOINT__ = __ENDPOINT__;
+  var s = document.createElement('script');
+  s.src = __PAYLOAD_URL__ + '?v=' + Date.now();
+  document.body.appendChild(s);
 })();`;
 
 // Shortcuts variant — for the "Run JavaScript on Web Page" action, not a
@@ -4466,9 +4380,11 @@ const MFP_SHORTCUT_SRC = `(function(){
 
 function buildMfpBookmarklet(token) {
   const endpoint = `${location.origin}/.netlify/functions/mfp-import`;
+  const payloadUrl = `${location.origin}/mfp-bookmarklet-payload.js`;
   const src = MFP_BOOKMARKLET_SRC
     .replace('__TOKEN__', JSON.stringify(token))
-    .replace('__ENDPOINT__', JSON.stringify(endpoint));
+    .replace('__ENDPOINT__', JSON.stringify(endpoint))
+    .replace('__PAYLOAD_URL__', JSON.stringify(payloadUrl));
   return 'javascript:' + src;
 }
 
