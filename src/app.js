@@ -167,6 +167,9 @@ const el = {
   tabBar:        $('tabBar'),
   btnSignout:    $('btnSignout'),
   btnSignoutHeader: $('btnSignoutHeader'),
+  sessionBrokenBanner:     $('sessionBrokenBanner'),
+  btnFixSession:           $('btnFixSession'),
+  btnDismissSessionBanner: $('btnDismissSessionBanner'),
   // views
   viewDashboard:    $('viewDashboard'),
   viewWorkout:      $('viewWorkout'),
@@ -512,6 +515,10 @@ function initApp() {
 
   el.btnSignout.addEventListener('click', handleSignOut);
   el.btnSignoutHeader?.addEventListener('click', handleSignOut);
+  el.btnFixSession?.addEventListener('click', handleSignOut);
+  el.btnDismissSessionBanner?.addEventListener('click', () => {
+    if (el.sessionBrokenBanner) el.sessionBrokenBanner.hidden = true;
+  });
 
   // Auth state — single source of truth (declared at module scope above)
 
@@ -917,6 +924,20 @@ async function _loadDashboardInner() {
   const logs          = logsRes.data || [];
   const lastSession   = lastSessionRes.data;
   const lastSync      = lastSyncRes.data;
+
+  // Broken-session detection: a stale/invalid local Supabase session can
+  // return HTTP 200 with silently-empty results — Postgres RLS just
+  // filters every row out when auth.uid() doesn't match, it doesn't
+  // error — which looks identical to "brand new user, no data yet" from
+  // here. The tell is a cached profile from a previous good session: if
+  // it shows an active weight plan (proof this user has used the app
+  // before) but the live 120-day logs AND 30-day health history both
+  // come back completely empty, that's not a new user, it's a broken
+  // session. Checked fresh on every load (not just once) so the banner
+  // clears itself as soon as a real reload brings real data back.
+  const cachedForSessionCheck = readCachedProfile(currentUser.id);
+  const looksLikeBrokenSession = !!cachedForSessionCheck?.activePlan && logs.length === 0 && healthHistory.length === 0;
+  if (el.sessionBrokenBanner) el.sessionBrokenBanner.hidden = !looksLikeBrokenSession;
 
   todayLog = log;
 

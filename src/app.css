@@ -291,6 +291,40 @@ body {
   background: rgba(220,38,38,.08);
 }
 
+/* ── SESSION-BROKEN BANNER ───────────────────────────────── */
+.session-broken-banner[hidden] { display: none; }
+.session-broken-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: var(--red-light);
+  border-bottom: 1.5px solid var(--red);
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--red);
+}
+.session-broken-banner__text { flex: 1; min-width: 200px; }
+.session-broken-banner__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.session-broken-banner__dismiss {
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: none;
+  color: var(--red);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: .7;
+}
+.session-broken-banner__dismiss:hover { opacity: 1; }
+
 /* ── BOTTOM TAB BAR ──────────────────────────────────────── */
 .tab-bar {
   position: fixed;
