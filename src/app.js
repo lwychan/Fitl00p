@@ -1599,10 +1599,14 @@ function renderHealthTiles(today, history) {
     fillTop: 'rgba(220,38,38,.2)', fillBottom: 'rgba(220,38,38,0)',
   });
 
-  // ── Blood Glucose — only show if health data exists ───────
+  // ── Blood Glucose — only show if health data exists AND diabetes
+  // tracking is actually turned on (an incidental glucose reading from
+  // some other source shouldn't surface a diabetes-specific tile for
+  // someone who's said they don't want that feature at all).
   const glucose     = today?.glucose_avg_mmol;
   const glucoseHist = hist('glucose_avg_mmol');
-  showTile('tileGlucose', glucose != null || glucoseHist.length > 0);
+  const diabetesOn  = profile?.diabetes_enabled !== false;
+  showTile('tileGlucose', diabetesOn && (glucose != null || glucoseHist.length > 0));
   $('tileGlucoseVal').textContent = glucose != null ? fmt1(glucose) : '—';
   setTileState('tileGlucose',
     glucose == null ? null :
