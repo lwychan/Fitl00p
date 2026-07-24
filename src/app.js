@@ -129,7 +129,12 @@
   renderPanel();
 })();
 
-const VAPID_PUBLIC = 'BKx2HxDg6gYAevOBtaqDvhNHrEQgV3a8a0ytfaUCeBab0TQGKUf_FFylMttDymOFF8c_0aVMxcdAh6Y1mxNOvIo';
+// Regenerated 2026-07-24 — the previous key here didn't match Netlify's
+// VAPID_PRIVATE, so every push got silently rejected by the push service
+// with VapidPkHashMismatch regardless of encryption being correct.
+// IMPORTANT: this MUST exactly match the VAPID_PUBLIC Netlify env var —
+// they're two views of the same keypair, not independent settings.
+const VAPID_PUBLIC = 'BOUj3c5wS_5htviclNYyinBVVxCkz0HfJOZVcVrEoxIwBFqPqxljCg7l5mQ1hGjQKWz_NvhGlvoEeRSMuDI7m98';
 
 const { createClient } = window.supabase;
 let db = null; // initialised after config loads
@@ -5286,6 +5291,27 @@ async function subscribeToPush() {
   try {
     const reg = await navigator.serviceWorker.ready;
     let sub = await reg.pushManager.getSubscription();
+
+    // A subscription is cryptographically bound to whatever
+    // applicationServerKey it was created with — if VAPID_PUBLIC above
+    // ever changes (e.g. after the key mismatch that made every push
+    // silently fail until fixed on 2026-07-24), an existing subscription
+    // doesn't just stop working, it becomes permanently invalid, and
+    // getSubscription() keeps handing back that same dead one forever
+    // since it doesn't know or care whether it still matches the current
+    // key. Compare byte-for-byte and force a fresh subscription on any
+    // mismatch instead of trusting "a subscription exists" to mean
+    // "the right subscription exists".
+    if (sub) {
+      const currentKey = vapidKeyToUint8Array(VAPID_PUBLIC);
+      const existingKey = new Uint8Array(sub.options?.applicationServerKey || []);
+      const matches = existingKey.length === currentKey.length &&
+        existingKey.every((b, i) => b === currentKey[i]);
+      if (!matches) {
+        await sub.unsubscribe().catch(() => {});
+        sub = null;
+      }
+    }
 
     if (!sub) {
       sub = await reg.pushManager.subscribe({
