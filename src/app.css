@@ -2339,76 +2339,38 @@ input[type="checkbox"].import-check {
   min-height: 100dvh;
 }
 
-/* Feature panel — always uses a rich branded look regardless of theme */
+/* Feature panel — now just the logo + slogan, centred as a proper hero
+   moment now that the sales tiles are gone. Always a rich branded look
+   regardless of theme (see the per-theme gradients below). */
 .auth-features {
-  /* Use a deep navy that works well on all themes as a contrast panel */
-  background: linear-gradient(160deg,
-    color-mix(in srgb, var(--blue-dark, #1a2d6e) 80%, #000 20%) 0%,
-    color-mix(in srgb, var(--blue) 30%, #000 70%) 100%
-  );
-  padding: 32px 24px 28px;
+  padding: 48px 24px;
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
 }
 
-/* Fallback for browsers without color-mix — explicit per-theme backgrounds */
-:root .auth-features,
-[data-theme=""] .auth-features,
-[data-theme="light"] .auth-features  { background: linear-gradient(160deg, #0f1f5c 0%, #1a2d6e 100%); }
-/* auth-features backgrounds now handled by new theme rules below */
-
-.auth-brand--hero { display: flex; flex-direction: column; gap: 8px; }
+.auth-brand--hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+}
+.auth-brand--hero .brand-wordmark { gap: 14px; }
+.auth-brand--hero .brand-mark img { width: 84px; height: 84px; border-radius: 22px; }
+.auth-brand--hero .brand-fit,
+.auth-brand--hero .brand-loop { font-size: 34px; }
 .auth-brand--hero .auth-tagline {
-  font-size: 14px;
-  color: rgba(255,255,255,.65);
+  font-size: 16px;
+  color: rgba(255,255,255,.75);
   margin: 0;
+  max-width: 320px;
+  text-wrap: balance;
 }
-.brand-logo--lg { height: 28px; }
 
 /* Hide mobile brand on mobile (shown in feature panel) */
 .auth-brand--mobile { display: none; }
-
-.feature-tiles {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-}
-
-.feature-tile {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  background: rgba(255,255,255,.07);
-  border: 1px solid rgba(255,255,255,.12);
-  border-radius: var(--r-md);
-  padding: 12px;
-  backdrop-filter: blur(8px);
-  transition: background .2s, border-color .2s;
-}
-.feature-tile:hover {
-  background: rgba(255,255,255,.12);
-  border-color: rgba(255,255,255,.2);
-}
-
-.feature-tile__icon {
-  font-size: 20px;
-  flex-shrink: 0;
-  line-height: 1;
-  margin-top: 1px;
-}
-.feature-tile__body { display: flex; flex-direction: column; gap: 3px; }
-.feature-tile__title {
-  font-size: 12px;
-  font-weight: 700;
-  color: rgba(255,255,255,.92);
-  letter-spacing: -.01em;
-}
-.feature-tile__sub {
-  font-size: 11px;
-  color: rgba(255,255,255,.55);
-  line-height: 1.4;
-}
 
 /* Form panel */
 .auth-shell {
@@ -2432,13 +2394,10 @@ input[type="checkbox"].import-check {
     padding: 48px 40px;
     justify-content: center;
   }
-  .auth-brand--hero .auth-tagline { font-size: 16px; }
-  .feature-tiles {
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
-  }
-  .feature-tile__title { font-size: 13px; }
-  .feature-tile__sub   { font-size: 12px; }
+  .auth-brand--hero .brand-mark img { width: 108px; height: 108px; border-radius: 26px; }
+  .auth-brand--hero .brand-fit,
+  .auth-brand--hero .brand-loop { font-size: 42px; }
+  .auth-brand--hero .auth-tagline { font-size: 18px; max-width: 360px; }
   .auth-shell {
     width: 45%;
     max-width: none;
@@ -2952,8 +2911,6 @@ body { font-size: 15px; }
    BRAND WORDMARK — fitl00p v1
 ═══════════════════════════════════════════════════════════ */
 
-/* Default logo accent colours per theme */
-:root,
 .brand-wordmark {
   display: flex;
   align-items: center;
@@ -2989,16 +2946,19 @@ body { font-size: 15px; }
   color: var(--blue);
 }
 
-/* Auth screen logo — larger version. The hero panel behind it is always
-   a dark navy/teal gradient regardless of theme (see .auth-features
-   below), so brand-fit is forced white here rather than following
-   --ink, which is navy in two of the three themes and would otherwise
-   go near-invisible against its own dark backdrop. */
+/* Auth screen logo — larger version */
 .auth-brand .brand-wordmark { gap: 10px; }
 .auth-brand .brand-mark img { width: 32px; height: 32px; }
 .auth-brand .brand-fit,
 .auth-brand .brand-loop { font-size: 22px; }
-.auth-brand .brand-fit { color: #FFFFFF; }
+
+/* The hero variant's panel is always a dark navy/teal gradient
+   regardless of theme (see .auth-features below), so brand-fit is
+   forced white there rather than following --ink, which is navy in
+   two of the three themes and would otherwise go near-invisible
+   against its own dark backdrop. The mobile/pending variants sit on
+   the light form surface and correctly keep following --ink. */
+.auth-brand--hero .brand-fit { color: #FFFFFF; }
 
 /* Onboarding logo */
 .onboard-brand .brand-wordmark { gap: 10px; }
