@@ -262,6 +262,18 @@ const el = {
   tzSite:              $('tzSite'),
   tzFormStatus:        $('tzFormStatus'),
   tzDoseList:          $('tzDoseList'),
+  tzPenStatus:         $('tzPenStatus'),
+  tzPenWarning:        $('tzPenWarning'),
+  tzPenForm:           $('tzPenForm'),
+  tzPenReceivedAt:     $('tzPenReceivedAt'),
+  tzPenVolumeMg:       $('tzPenVolumeMg'),
+  tzPenViableDays:     $('tzPenViableDays'),
+  btnTzPenSave:        $('btnTzPenSave'),
+  btnTzPenCancel:      $('btnTzPenCancel'),
+  btnTzPenAdd:         $('btnTzPenAdd'),
+  tzPenAddButtonWrap:  $('tzPenAddButtonWrap'),
+  tzPenFormStatus:     $('tzPenFormStatus'),
+  tzPenHistory:        $('tzPenHistory'),
   // settings
   setDisplayName:    $('setDisplayName'),
   setUnit:           $('setUnit'),
@@ -3604,11 +3616,120 @@ async function fetchTirzepatideDoses() {
   return (data || []).map(d => ({ id: d.id, doseMg: Number(d.dose_mg), injectedMs: new Date(d.injected_at).getTime(), site: d.site || null }));
 }
 
+async function fetchTirzepatidePens() {
+  if (!currentUser) return [];
+  const { data, error } = await db.from('tirzepatide_pens')
+    .select('id, received_at, volume_mg, viable_days')
+    .eq('user_id', currentUser.id)
+    .order('received_at', { ascending: true });
+  if (error) { console.error('fetchTirzepatidePens error:', error.message); return []; }
+  return (data || []).map(p => ({
+    id: p.id,
+    receivedMs: new Date(p.received_at + 'T00:00:00').getTime(),
+    volumeMg: Number(p.volume_mg),
+    viableDays: Number(p.viable_days),
+  }));
+}
+
+// FIFO allocation: fills each pen (oldest received first) from real doses
+// in chronological order, moving to the next pen once a dose no longer
+// fits what's left. Mirrors how someone actually uses pens in sequence —
+// finish (or discard) one before starting the next — rather than
+// requiring the user to pick a pen every time they log an injection.
+function tzAllocatePens(pens, doses) {
+  const sortedPens  = [...pens].sort((a, b) => a.receivedMs - b.receivedMs);
+  const sortedDoses = [...doses].sort((a, b) => a.injectedMs - b.injectedMs);
+  let doseIdx = 0;
+
+  return sortedPens.map((pen, penIdx) => {
+    const nextPen = sortedPens[penIdx + 1];
+    let remainingMg = pen.volumeMg;
+    const usedDoses = [];
+    while (doseIdx < sortedDoses.length) {
+      const d = sortedDoses[doseIdx];
+      if (d.injectedMs < pen.receivedMs) { doseIdx++; continue; } // logged before this pen existed
+      if (nextPen && d.injectedMs >= nextPen.receivedMs) break;   // belongs to the next pen instead
+      if (d.doseMg > remainingMg) break;                          // doesn't fit — rest goes to the next pen
+      remainingMg -= d.doseMg;
+      usedDoses.push(d);
+      doseIdx++;
+    }
+    return { ...pen, remainingMg, usedDoses };
+  });
+}
+
+function renderTzPenSection(pens, doses) {
+  if (!el.tzPenStatus) return;
+
+  if (!pens.length) {
+    el.tzPenStatus.hidden = true;
+    el.tzPenWarning.hidden = true;
+    el.tzPenHistory.innerHTML = '<p class="empty-state">No pens logged yet.</p>';
+    return;
+  }
+
+  const allocated = tzAllocatePens(pens, doses);
+  const activePen = allocated[allocated.length - 1];
+  const lastDose = [...doses].sort((a, b) => b.injectedMs - a.injectedMs)[0];
+  const currentDoseMg = lastDose?.doseMg ?? null;
+
+  const now = Date.now();
+  const expiresMs = activePen.receivedMs + activePen.viableDays * 86400000;
+  const expired = now > expiresMs;
+
+  if (currentDoseMg) {
+    const dosesLeft = Math.floor(activePen.remainingMg / currentDoseMg);
+    const countCls = dosesLeft <= 0 ? 'empty' : dosesLeft <= 2 ? 'low' : 'ok';
+    el.tzPenStatus.hidden = false;
+    el.tzPenStatus.innerHTML = `
+      <div>
+        <div class="tz-pen-status__meta">Pen received ${new Date(activePen.receivedMs).toLocaleDateString([], { month: 'short', day: 'numeric' })} — ${fmt1(activePen.volumeMg)}mg</div>
+        <div class="tz-pen-status__date">${fmt1(activePen.remainingMg)}mg left of ${fmt1(activePen.volumeMg)}mg</div>
+      </div>
+      <div style="text-align:right">
+        <div class="tz-pen-status__count tz-pen-status__count--${countCls}">${dosesLeft}</div>
+        <div class="tz-pen-status__count-label">dose${dosesLeft === 1 ? '' : 's'} left</div>
+      </div>`;
+  } else {
+    el.tzPenStatus.hidden = false;
+    el.tzPenStatus.innerHTML = `<div class="tz-pen-status__meta">Pen received ${new Date(activePen.receivedMs).toLocaleDateString([], { month: 'short', day: 'numeric' })} — ${fmt1(activePen.volumeMg)}mg. Log an injection to see doses remaining.</div>`;
+  }
+
+  // Warn ahead of time if the pen won't be finished before its viable
+  // window closes at the current weekly cadence, and after the fact if
+  // it's already past that window with peptide still left in it.
+  const weeksUntilExpiry = (expiresMs - now) / (7 * 24 * 3600000);
+  const dosesLeftAtExpiry = currentDoseMg ? Math.floor(activePen.remainingMg / currentDoseMg) : null;
+  const expiryDateLabel = new Date(expiresMs).toLocaleDateString([], { month: 'short', day: 'numeric' });
+
+  if (expired && activePen.remainingMg > 0) {
+    el.tzPenWarning.hidden = false;
+    el.tzPenWarning.innerHTML = `⚠️ This pen passed its ${activePen.viableDays}-day viable window on ${expiryDateLabel} — the peptide may have degraded. Consider replacing it rather than dosing from what's left.`;
+  } else if (!expired && dosesLeftAtExpiry != null && dosesLeftAtExpiry > 0 && weeksUntilExpiry < dosesLeftAtExpiry) {
+    el.tzPenWarning.hidden = false;
+    el.tzPenWarning.innerHTML = `⚠️ At your current weekly dose, this pen will still have doses left when it hits its ${activePen.viableDays}-day window on ${expiryDateLabel} — worth ordering the next one now so you're not dosing from expired peptide.`;
+  } else {
+    el.tzPenWarning.hidden = true;
+  }
+
+  const sortedDesc = [...allocated].sort((a, b) => b.receivedMs - a.receivedMs);
+  el.tzPenHistory.innerHTML = sortedDesc.map(p => `
+    <div class="tz-dose-item" data-id="${p.id}">
+      <div>
+        <div class="tz-dose-item__meta">${fmt1(p.volumeMg)}mg pen · ${fmt1(p.remainingMg)}mg left</div>
+        <div class="tz-dose-item__date">Received ${new Date(p.receivedMs).toLocaleDateString([], { dateStyle: 'medium' })} · viable ${p.viableDays}d</div>
+      </div>
+      <button type="button" class="btn btn--icon" data-action="tz-pen-delete" data-id="${p.id}" title="Delete">🗑</button>
+    </div>
+  `).join('');
+}
+
 async function loadTirzepatideSection() {
-  const doses = await fetchTirzepatideDoses();
+  const [doses, pens] = await Promise.all([fetchTirzepatideDoses(), fetchTirzepatidePens()]);
   tzDosesCache = doses;
   tzInspectMs = null; // clear any stale tap from before this reload
   renderTzSection(doses);
+  renderTzPenSection(pens, doses);
 }
 
 // Updates the tap-to-inspect readout for whatever day is currently
@@ -3881,6 +4002,52 @@ el.tzDoseList?.addEventListener('click', async (e) => {
   if (!btn || !currentUser) return;
   if (!confirm('Delete this injection entry?')) return;
   const { error } = await db.from('tirzepatide_doses').delete().eq('id', btn.dataset.id).eq('user_id', currentUser.id);
+  if (error) { showToast('Failed: ' + error.message, true); return; }
+  await loadTirzepatideSection();
+});
+
+el.btnTzPenAdd?.addEventListener('click', () => {
+  el.tzPenAddButtonWrap.hidden = true;
+  el.tzPenForm.hidden = false;
+  el.tzPenReceivedAt.value = todayISO();
+  el.tzPenVolumeMg.value = 40;
+  el.tzPenViableDays.value = 28;
+});
+
+el.btnTzPenCancel?.addEventListener('click', () => {
+  el.tzPenForm.hidden = true;
+  el.tzPenAddButtonWrap.hidden = false;
+  el.tzPenFormStatus.textContent = '';
+});
+
+el.btnTzPenSave?.addEventListener('click', async () => {
+  if (!currentUser) return;
+  const receivedAt = el.tzPenReceivedAt.value;
+  const volumeMg = parseFloat(el.tzPenVolumeMg.value);
+  const viableDays = parseInt(el.tzPenViableDays.value);
+  if (!receivedAt) { el.tzPenFormStatus.textContent = 'Pick a date.'; return; }
+  if (!Number.isFinite(volumeMg) || volumeMg <= 0) { el.tzPenFormStatus.textContent = 'Enter a valid pen volume.'; return; }
+  if (!Number.isFinite(viableDays) || viableDays <= 0) { el.tzPenFormStatus.textContent = 'Enter a valid number of days.'; return; }
+
+  setBtn(el.btnTzPenSave, true, 'Save pen', 'Saving…');
+  const { error } = await db.from('tirzepatide_pens').insert({
+    user_id: currentUser.id, received_at: receivedAt, volume_mg: volumeMg, viable_days: viableDays,
+  });
+  setBtn(el.btnTzPenSave, false, 'Save pen');
+
+  if (error) { el.tzPenFormStatus.textContent = 'Error: ' + error.message; return; }
+
+  el.tzPenForm.hidden = true;
+  el.tzPenAddButtonWrap.hidden = false;
+  el.tzPenFormStatus.textContent = '';
+  await loadTirzepatideSection();
+});
+
+el.tzPenHistory?.addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-action="tz-pen-delete"]');
+  if (!btn || !currentUser) return;
+  if (!confirm('Delete this pen entry?')) return;
+  const { error } = await db.from('tirzepatide_pens').delete().eq('id', btn.dataset.id).eq('user_id', currentUser.id);
   if (error) { showToast('Failed: ' + error.message, true); return; }
   await loadTirzepatideSection();
 });
@@ -5365,14 +5532,18 @@ function renderDxMfpImports(items, boluses) {
       // (4h) than that 90min auto-match window since this is a manual
       // fallback for whatever the auto-matcher missed — too narrow here
       // would just recreate the same "why isn't my dose showing" problem.
+      // A bolus Nightscout itself tagged with carbs is shown regardless
+      // of that window too — carbs on a bolus is itself strong evidence
+      // it was a meal dose, and a mistimed log entry shouldn't hide it.
       const NEARBY_BOLUS_WINDOW_MS = 4 * 3600000;
       const nearbyBoluses = boluses.filter(b =>
-        Number(b.units) > 0 && Math.abs(Number(b.time) - eatenMs) <= NEARBY_BOLUS_WINDOW_MS
+        Number(b.units) > 0 &&
+        (Math.abs(Number(b.time) - eatenMs) <= NEARBY_BOLUS_WINDOW_MS || Number(b.carbs) > 0)
       );
       actionHtml = `
         <select data-role="mfp-bolus-pick" data-id="${it.id}">
           <option value="">Link the actual dose…</option>
-          ${nearbyBoluses.map(b => `<option value="${b.time}|${b.units}">${new Date(Number(b.time)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} — ${fmt1(b.units)}u</option>`).join('')}
+          ${nearbyBoluses.map(b => `<option value="${b.time}|${b.units}">${new Date(Number(b.time)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} — ${fmt1(b.units)}u${Number(b.carbs) > 0 ? ` (${fmt1(b.carbs)}g carbs)` : ''}</option>`).join('')}
         </select>
         <button class="btn btn--ghost btn--small" data-action="link" data-id="${it.id}">Link</button>
         <button class="btn btn--ghost btn--small" data-action="hypo" data-id="${it.id}">Mark hypo</button>`;

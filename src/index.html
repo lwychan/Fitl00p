@@ -848,6 +848,41 @@
         </div>
 
         <div id="tzDoseList" class="tz-dose-list"></div>
+
+        <div class="tz-pen-divider">
+          <span class="card-eyebrow">Pen tracker</span>
+        </div>
+        <div id="tzPenStatus" class="tz-pen-status" hidden></div>
+        <div id="tzPenWarning" class="tz-pen-warning" hidden></div>
+
+        <div id="tzPenForm" class="tz-log-form" hidden>
+          <div class="field">
+            <label>Date received</label>
+            <input type="date" id="tzPenReceivedAt">
+          </div>
+          <div class="field">
+            <label>Pen volume <span class="field-hint">mg total</span></label>
+            <input type="number" id="tzPenVolumeMg" step="0.5" min="1" value="40">
+          </div>
+          <div class="field">
+            <label>Viable for <span class="field-hint">days once mixed, before potency drops — see the note below</span></label>
+            <input type="number" id="tzPenViableDays" step="1" min="1" value="28">
+          </div>
+          <div class="settings-actions">
+            <button class="btn btn--primary btn--small" id="btnTzPenSave">Save pen</button>
+            <button class="btn btn--ghost btn--small" id="btnTzPenCancel">Cancel</button>
+          </div>
+          <span class="save-status" id="tzPenFormStatus"></span>
+        </div>
+
+        <div class="settings-actions" id="tzPenAddButtonWrap">
+          <button class="btn btn--ghost btn--small" id="btnTzPenAdd">+ Add pen</button>
+        </div>
+
+        <div id="tzPenHistory" class="tz-dose-list"></div>
+        <p class="field-hint" style="margin-top:8px;line-height:1.5">
+          28-day default is general guidance for a pre-mixed research-peptide pen kept refrigerated (2–8°C) — potency is commonly cited as dropping below ~90% past that point. Room temperature is shorter, closer to 21 days. Adjust per pen if your supplier states otherwise.
+        </p>
       </div>
 
       <div class="card">
