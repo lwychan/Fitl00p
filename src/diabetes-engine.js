@@ -546,7 +546,7 @@ function patternCorrectionAccuracy(d) {
     return insight('correction-factor-accuracy', 'needs-attention',
       'Correction predictions have been running off',
       `Predicted vs actual glucose differed by ${mae.toFixed(1)} mmol/L on average over ${n} corrections — worth rechecking the factor.`,
-      n, { mae });
+      n, { mae, tryText: 'Recheck your correction factor in Settings — it may need to be stronger or weaker than what you\'re currently using.' });
   }
   if (mae <= 1.0) {
     return insight('correction-factor-accuracy', 'going-well',
@@ -586,10 +586,13 @@ function patternExerciseSensitivity(d) {
   }
   const category = pctDiff > 0 ? 'needs-attention' : 'worth-knowing';
   const direction = pctDiff > 0 ? 'more' : 'less';
+  const tryText = pctDiff > 0
+    ? 'Consider a smaller correction dose (or a slightly higher target) within a few hours of exercise to avoid overcorrecting.'
+    : 'You may need a slightly larger correction than usual soon after exercise to bring glucose down as expected.';
   return insight('exercise-sensitivity', category,
     `You run ${direction} insulin-sensitive after exercise`,
     `Correction strength was ${postExAvg.toFixed(2)} mmol/L/u within 8h of a workout (n=${postEx.length}) vs ${restAvg.toFixed(2)} at rest (n=${rest.length}) — ${Math.abs(pctDiff).toFixed(0)}% ${direction} effective.`,
-    clean.length, { postExAvg, restAvg, pctDiff });
+    clean.length, { postExAvg, restAvg, pctDiff, tryText });
 }
 
 // ── 3. Post-workout trajectory (before/during/after) ────────
@@ -623,10 +626,14 @@ function patternPostWorkoutTrajectory(d) {
   if (afterAvg != null) parts.push(`${fmtSigned(afterAvg)} mmol/L in the 4h after (n=${deltas.after.length})`);
 
   const category = (afterAvg != null && afterAvg < -1.5) ? 'needs-attention' : 'worth-knowing';
+  const extra = { beforeAvg, duringAvg, afterAvg };
+  if (category === 'needs-attention') {
+    extra.tryText = 'Consider a small carb top-up in the hours after this type of workout to blunt the delayed drop.';
+  }
   return insight('post-workout-trajectory', category,
     'Your typical workout glucose trajectory',
     `On average: ${parts.join(', then ')}.`,
-    n, { beforeAvg, duringAvg, afterAvg });
+    n, extra);
 }
 function fmtSigned(v) { return (v >= 0 ? '+' : '') + v.toFixed(1); }
 
@@ -665,7 +672,7 @@ function patternTimeOfDay(d) {
   return insight('time-of-day', 'needs-attention',
     'A specific time of day stands out',
     `More ${bits.join(' and ')} than the rest of the day.`,
-    d.readings.length, { worstLowHour, worstHighHour });
+    d.readings.length, { worstLowHour, worstHighHour, tryText: `Take a closer look at dosing, meals, or basal coverage around ${worstLowHour ? fmtHour(worstLowHour.hour) : fmtHour(worstHighHour.hour)} to see what's driving it.` });
 }
 function fmtHour(h) { return `${h % 12 === 0 ? 12 : h % 12}${h < 12 ? 'am' : 'pm'}`; }
 
@@ -700,7 +707,7 @@ function patternDawnPhenomenon(d) {
     return insight('dawn-phenomenon', category,
       'Dawn phenomenon — an unprompted early-morning rise',
       `Glucose rose ${avgRise.toFixed(1)} mmol/L on average between the overnight trough and ~7am, with no meal or dose in between, on ${positiveDays}/${rises.length} mornings.`,
-      rises.length, { avgRise, positiveDays });
+      rises.length, { avgRise, positiveDays, tryText: 'Ask your care team about a small pre-emptive dose or basal adjustment timed before the rise.' });
   }
   return insight('dawn-phenomenon', 'going-well',
     'No consistent dawn phenomenon',
@@ -742,7 +749,7 @@ function patternClusteringByWindow(d) {
   return insight('4h-clustering', worst.lowPct >= 15 ? 'needs-attention' : 'worth-knowing',
     `${worst.label} is your roughest 4-hour block`,
     `${worst.lowPct.toFixed(0)}% low, ${worst.highPct.toFixed(0)}% high in that window (n=${worst.n}).`,
-    d.readings.length, { worst, allBuckets: labeled });
+    d.readings.length, { worst, allBuckets: labeled, tryText: `Take a closer look at dosing and meals around ${worst.label} to see what's driving it.` });
 }
 
 // ── 7. Meal-size outcome tertiles ────────────────────────────
@@ -771,11 +778,15 @@ function patternMealSizeTertiles(d) {
 
   const largeVsSmall = stats.large.avgRise - stats.small.avgRise;
   const category = largeVsSmall > 3 ? 'needs-attention' : 'worth-knowing';
+  const extra = { stats, largeVsSmall };
+  if (largeVsSmall > 1.5) {
+    extra.tryText = 'Consider a slightly stronger dose (or a small pre-bolus) for your larger meals.';
+  }
   return insight('meal-size-tertiles', category,
     'Bigger meals spike disproportionately' ,
     `Small meals (~${stats.small.avgCarbs.toFixed(0)}g, n=${stats.small.n}) rise ${stats.small.avgRise.toFixed(1)} mmol/L on average; `
       + `large meals (~${stats.large.avgCarbs.toFixed(0)}g, n=${stats.large.n}) rise ${stats.large.avgRise.toFixed(1)} mmol/L.`,
-    withOutcome.length, { stats, largeVsSmall });
+    withOutcome.length, extra);
 }
 
 // ── 8. Time-in-range + CV ────────────────────────────────────
@@ -789,10 +800,14 @@ function patternTimeInRangeCV(d) {
   const goodCv = stats.cv <= CV_TARGET_MAX_PCT;
   const category = goodTir && goodCv ? 'going-well' : (!goodCv || tir.pctInRange < 50) ? 'needs-attention' : 'worth-knowing';
 
+  const extra = { tir, cv: stats.cv };
+  if (category === 'needs-attention') {
+    extra.tryText = 'Worth reviewing your basal and correction settings, or checking in with your care team.';
+  }
   return insight('tir-cv', category,
     `${tir.pctInRange.toFixed(0)}% time-in-range this week`,
     `${tir.pctBelow.toFixed(0)}% below, ${tir.pctAbove.toFixed(0)}% above target. Variability (CV) is ${stats.cv.toFixed(0)}% (goal ≤${CV_TARGET_MAX_PCT}%).`,
-    d.readings.length, { tir, cv: stats.cv });
+    d.readings.length, extra);
 }
 
 // ── 9. Sensitivity drift over time ───────────────────────────
@@ -818,7 +833,7 @@ function patternSensitivityDrift(d) {
   return insight('sensitivity-drift', Math.abs(pctChange) >= 30 ? 'needs-attention' : 'worth-knowing',
     `Insulin sensitivity is trending ${direction}`,
     `Correction strength moved from ${earlierAvg.toFixed(2)} to ${laterAvg.toFixed(2)} mmol/L/u across the week (${pctChange > 0 ? '+' : ''}${pctChange.toFixed(0)}%).`,
-    clean.length, { earlierAvg, laterAvg, pctChange });
+    clean.length, { earlierAvg, laterAvg, pctChange, tryText: `Consider updating your correction factor to closer to ${laterAvg.toFixed(2)} mmol/L/u.` });
 }
 
 // ── 10. Basal timing drift ───────────────────────────────────
@@ -851,7 +866,7 @@ function patternBasalTimingDrift(d) {
   return insight('basal-timing-drift', sd > 60 ? 'needs-attention' : 'worth-knowing',
     'Basal dose timing has been drifting',
     `Dose time varied by about ±${sd.toFixed(0)} minutes across ${doses.length} doses — inconsistent timing can affect overnight coverage.`,
-    doses.length, { sd });
+    doses.length, { sd, tryText: 'Try setting a fixed daily alarm for your basal dose to tighten up the timing.' });
 }
 
 // ── 11. Correction-stacking that caused lows ─────────────────
@@ -872,7 +887,7 @@ function patternStackingCausedLows(d) {
   return insight('stacking-caused-lows', 'needs-attention',
     'Stacked corrections have led to lows',
     `${events.length} correction${events.length === 1 ? '' : 's'} given while a previous dose was still active were followed by a low within 3h.`,
-    clean.length, { events });
+    clean.length, { events, tryText: 'Check IOB before correcting again, and consider waiting longer between corrections.' });
 }
 
 // ── 12. Evening-exercise → overnight-lows ────────────────────
@@ -911,7 +926,7 @@ function patternEveningExerciseOvernightLows(d) {
     'Evening exercise has been linked to overnight lows',
     `Overnight lows happened ${exerciseLowRate.toFixed(0)}% of the time after evening exercise (n=${exerciseNights.length})`
       + (restLowRate != null ? ` vs ${restLowRate.toFixed(0)}% on other nights.` : ', with too few other nights to compare.'),
-    exerciseNights.length, { exerciseLowRate, restLowRate });
+    exerciseNights.length, { exerciseLowRate, restLowRate, tryText: 'Consider a bedtime snack or a reduced evening basal dose after evening workouts.' });
 }
 
 // ── 13. Hypo recovery (time to safety + overshoot-past-10) ──
@@ -947,11 +962,18 @@ function patternHypoRecovery(d) {
   const category = (avgTimeToSafety > 45 || overshootPct > 40) ? 'needs-attention'
     : (avgTimeToSafety <= 25 && overshootPct <= 20) ? 'going-well' : 'worth-knowing';
 
+  const extra = { avgTimeToSafety, overshootPct };
+  if (category === 'needs-attention') {
+    const tryBits = [];
+    if (avgTimeToSafety > 45) tryBits.push('treating lows with faster-acting carbs (e.g. glucose tablets or juice) to bring recovery time down');
+    if (overshootPct > 40) tryBits.push('using a smaller hypo treatment to avoid rebounding high afterwards');
+    extra.tryText = tryBits.join(', and ') + '.';
+  }
   return insight('hypo-recovery', category,
     'How lows have been recovering',
     `Average ${avgTimeToSafety.toFixed(0)} min back to target range across ${withRecovery.length} episodes; `
       + `${overshootPct.toFixed(0)}% overshot past ${HYPER_FIXED_MMOL} within 2h of recovering.`,
-    withRecovery.length, { avgTimeToSafety, overshootPct });
+    withRecovery.length, extra);
 }
 
 // ── 14. Delayed-rise meals (fat/protein signature) ───────────
@@ -1020,7 +1042,7 @@ function patternDelayedRiseMeals(d) {
     'Some meals show a delayed second rise',
     `${flagged.length}/${checked} meals climbed again 2.5–6h out (the fat/protein signature)`
       + (names.length ? ` — recurring in: ${names.join(', ')}.` : '.'),
-    checked, { flagged });
+    checked, { flagged, tryText: 'For those meals, try an extended/dual-wave bolus (or splitting the dose) to cover the second rise.' });
 }
 
 // ── Orchestrator ──────────────────────────────────────────────

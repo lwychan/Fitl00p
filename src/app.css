@@ -3264,6 +3264,17 @@ body { font-size: 15px; }
   color: var(--ink-3);
   line-height: 1.5;
 }
+.dx-insight__try {
+  font-size: 12.5px;
+  color: var(--ink-2);
+  line-height: 1.5;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--accent-b-light);
+  border-left: 3px solid var(--accent-b);
+}
+.dx-insight__try b { color: var(--accent-b); }
 .dx-tir-bar {
   display: flex;
   width: 100%;

@@ -5530,6 +5530,7 @@ function renderDxPatterns(patterns) {
         </div>
         <div class="dx-insight__title">${escapeHtml(i.title)}</div>
         <div class="dx-insight__summary">${escapeHtml(i.summary)}</div>
+        ${i.tryText ? `<div class="dx-insight__try"><b>Try:</b> ${escapeHtml(i.tryText)}</div>` : ''}
       </div>`;
   }).join('');
 }
