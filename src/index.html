@@ -737,6 +737,26 @@
         <div id="routineList" class="routine-list">
           <p class="empty-state">Loading routines…</p>
         </div>
+
+        <div class="card" id="dxWorkoutImpactCard" hidden>
+          <div class="card-eyebrow">🩸 Glucose impact — what if I…</div>
+          <p class="field-hint" style="margin-bottom:10px;text-transform:none;letter-spacing:0;font-weight:400">
+            Uses your own history for this split once you've logged it 2+ times, otherwise a broad estimate by exercise type.
+          </p>
+          <div class="field">
+            <label for="dxWorkoutImpactType">Workout type</label>
+            <select id="dxWorkoutImpactType">
+              <option value="Push">Push</option>
+              <option value="Pull">Pull</option>
+              <option value="Legs">Legs</option>
+              <option value="Full Body">Full Body</option>
+              <option value="Cardio">Cardio</option>
+              <option value="Other">Other</option>
+            </select>
+          </div>
+          <button class="btn btn--ghost btn--small" id="btnDxWorkoutImpact">Check impact</button>
+          <div id="dxWorkoutImpactBody"></div>
+        </div>
       </div>
 
       <!-- Step 2: Active workout (after selecting a routine) -->
@@ -1396,6 +1416,11 @@
         <div class="card" id="dxHealthCard">
           <div class="card-eyebrow">Weekly insulin health check</div>
           <div id="dxHealthBody"></div>
+        </div>
+
+        <div class="card" id="dxForecastAccuracyCard">
+          <div class="card-eyebrow">Forecast accuracy <span class="card-eyebrow-sub">2h hypo forecast, last 14 days</span></div>
+          <div id="dxForecastAccuracyBody"></div>
         </div>
 
         <div class="card" id="dxMfpImportsCard" hidden>

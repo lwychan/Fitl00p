@@ -309,11 +309,16 @@ const el = {
   dxPatternsWindow:  $('dxPatternsWindow'),
   dxPatternsBody:    $('dxPatternsBody'),
   dxHealthBody:      $('dxHealthBody'),
+  dxForecastAccuracyBody: $('dxForecastAccuracyBody'),
   dxMealMemoryBody:  $('dxMealMemoryBody'),
   dxMfpImportsCard:  $('dxMfpImportsCard'),
   dxMfpImportsBody:  $('dxMfpImportsBody'),
   dxSensitivityBody: $('dxSensitivityBody'),
   dxRegimenBody:     $('dxRegimenBody'),
+  dxWorkoutImpactCard: $('dxWorkoutImpactCard'),
+  dxWorkoutImpactType: $('dxWorkoutImpactType'),
+  btnDxWorkoutImpact:  $('btnDxWorkoutImpact'),
+  dxWorkoutImpactBody: $('dxWorkoutImpactBody'),
   dxGlucoseChart:      $('dxGlucoseChart'),
   dxGlucoseChartEmpty: $('dxGlucoseChartEmpty'),
   dxLastSync:        $('dxLastSync'),
@@ -737,9 +742,14 @@ const viewLoaders = {
 // if somehow still on it) whenever profile.diabetes_enabled is explicitly
 // false — off by default only ever means "never asked" (NOT NULL column
 // defaulting true), so nobody currently using it loses access silently.
+// Hides everything gated on diabetes tracking being on — the tab button
+// itself, plus the Workout tab's glucose-impact card (the Diabetes tab's
+// own diabetes-specific cards don't need separate gating here since
+// they're simply unreachable once the tab button is hidden).
 function applyDiabetesTabVisibility() {
   const enabled = profile?.diabetes_enabled !== false;
   document.querySelectorAll('.tab-btn[data-view="diabetes"]').forEach(b => { b.hidden = !enabled; });
+  if (el.dxWorkoutImpactCard) el.dxWorkoutImpactCard.hidden = !enabled;
 }
 
 async function navigateTo(name) {
@@ -1873,6 +1883,11 @@ let activeRoutine   = null;
 let activeExercises = [];
 let supersetModeOn  = false;
 let mediaCache      = {};
+// Real wall-clock time the session began (set once, in selectRoutine) —
+// used as workout_sessions.started_at so the diabetes engine's post-
+// exercise window logic (sensitivityMap, preWorkoutAdvisor, etc.) has an
+// actual start time to work with instead of just the save-time instant.
+let workoutStartedAtMs = null;
 
 // Manual superset pairing — tap-to-link mode lets the person pick any two
 // exercises from today's list (not just adjacent ones) and pair them.
@@ -1887,6 +1902,7 @@ function saveWorkoutState() {
     localStorage.setItem(WORKOUT_STORAGE_KEY, JSON.stringify({
       routine:   activeRoutine,
       exercises: activeExercises,
+      startedAtMs: workoutStartedAtMs,
       savedAt:   Date.now(),
     }));
   } catch {}
@@ -1908,6 +1924,7 @@ function restoreWorkoutState() {
     }
     activeRoutine   = state.routine;
     activeExercises = state.exercises;
+    workoutStartedAtMs = state.startedAtMs || null;
     // Re-derive pairing mode — a workout that had superset pairs (predefined
     // or manually linked) before the reload needs them to keep applying.
     supersetModeOn  = activeExercises.some(e => e.superset_group);
@@ -2576,6 +2593,7 @@ async function selectRoutine(routineId) {
   const restSecs = profile?.[goalKey] ?? routine.rest_seconds;
 
   activeRoutine = routine;
+  workoutStartedAtMs = Date.now();
   activeExercises = exercises.map(ex => ({
     ...ex,
     media: mediaByName[ex.name] || null,
@@ -3239,6 +3257,7 @@ function wireGifRefreshButton(ei) {
 elW.backToPicker.addEventListener('click', () => {
   activeRoutine   = null;
   activeExercises = [];
+  workoutStartedAtMs = null;
   elW.active.hidden  = true;
   elW.picker.hidden  = false;
   loadRoutines();
@@ -3253,7 +3272,10 @@ elW.btnSaveWorkout.addEventListener('click', async () => {
   setBtn(elW.btnSaveWorkout, true, 'Save workout');
 
   const { data: session, error: se } = await db.from('workout_sessions')
-    .insert({ user_id: currentUser.id, session_date: date, split_type: activeRoutine.split_type })
+    .insert({
+      user_id: currentUser.id, session_date: date, split_type: activeRoutine.split_type,
+      started_at: workoutStartedAtMs ? new Date(workoutStartedAtMs).toISOString() : null,
+    })
     .select().single();
 
   if (se) { showToast('Error: ' + se.message, true); setBtn(elW.btnSaveWorkout, false, 'Save workout'); return; }
@@ -3279,7 +3301,7 @@ elW.btnSaveWorkout.addEventListener('click', async () => {
 
   setBtn(elW.btnSaveWorkout, false, 'Save workout');
   flash(elW.workoutStatus, `Workout saved — ${activeExercises.length} exercise${activeExercises.length===1?'':'s'}.`);
-  activeRoutine = null; activeExercises = [];
+  activeRoutine = null; activeExercises = []; workoutStartedAtMs = null;
   elW.active.hidden = true;
   elW.picker.hidden = false;
   loadRoutines();
@@ -4544,6 +4566,30 @@ async function saveNsProfileFields(updates) {
 // suggestMacroMealDose reads back to personalize the split-dose guide once
 // there's enough history. Nightscout stays the source of truth for
 // glucose/bolus/basal; only the macro-tagged meal entries live here.
+// Feeds diabetes-engine.js's activities.workouts — every pattern check
+// and live feature that reasons about "post-exercise" (sensitivityMap,
+// patternExerciseSensitivity, hypoForecast2h's workout-drop adjustment,
+// preWorkoutAdvisor) needs a real endTime, and ideally a real startTime,
+// per session. workout_sessions.started_at (added alongside the diabetes
+// build) is the true start for anything logged since; older rows never
+// captured it, so they fall back to created_at for both ends — a same-
+// instant window rather than a fabricated duration.
+async function fetchDxWorkouts() {
+  if (!currentUser) return [];
+  const { data, error } = await db
+    .from('workout_sessions')
+    .select('id, split_type, started_at, created_at')
+    .eq('user_id', currentUser.id)
+    .order('created_at', { ascending: false })
+    .limit(200);
+  if (error) { console.error('fetchDxWorkouts error:', error.message); return []; }
+  return (data || []).map(w => ({
+    startTime: w.started_at || w.created_at,
+    endTime: w.created_at,
+    workoutType: w.split_type || 'Other',
+  }));
+}
+
 async function fetchMacroMealLog() {
   if (!currentUser) return [];
   const { data, error } = await db
@@ -5259,8 +5305,8 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now) {
 
 async function renderDiabetesTab(data) {
   const settings = dxSettings();
-  const macroMealLog = await fetchMacroMealLog();
-  const input = { ...data, settings, activities: { workouts: [] }, macroMealLog };
+  const [macroMealLog, workouts] = await Promise.all([fetchMacroMealLog(), fetchDxWorkouts()]);
+  const input = { ...data, settings, activities: { workouts }, macroMealLog };
   const now = Date.now();
 
   drawDxGlucoseChart(el.dxGlucoseChart, el.dxGlucoseChartEmpty, data, settings, now);
@@ -5281,6 +5327,9 @@ async function renderDiabetesTab(data) {
 
   const health = DiabetesEngine.insulinHealthCheck(input, now);
   renderDxHealth(health);
+
+  const accuracy = DiabetesEngine.forecastAccuracy(input, now);
+  renderDxForecastAccuracy(accuracy);
 
   const meals = DiabetesEngine.mealMemory(input, now);
   renderDxMealMemory(meals);
@@ -5374,7 +5423,8 @@ $('btnDxMealDose')?.addEventListener('click', async () => {
     const data = await fetchDiabetesData();
     if (!data) return;
     const now = Date.now();
-    const input = { ...data, settings: dxSettings(), activities: { workouts: [] }, macroMealLog: await fetchMacroMealLog() };
+    const [macroMealLog, workouts] = await Promise.all([fetchMacroMealLog(), fetchDxWorkouts()]);
+    const input = { ...data, settings: dxSettings(), activities: { workouts }, macroMealLog };
 
     const r = DiabetesEngine.suggestMacroMealDose(input, { carbs, fat, protein, mealName: mealName || null }, now);
     if (r.suggestedUnits == null) {
@@ -5477,18 +5527,106 @@ function renderDxHealth(h) {
       time-in-range ${fmtSigned(h.trend.tirDelta, 0)}pp,
       CV ${fmtSigned(h.trend.cvDelta, 0)}pp
     </p>` : '<p class="dx-note">Not enough data from last week to compare yet.</p>';
+
+  // A proportional low/in-range/high bar reads at a glance far faster than
+  // three separate percentages — position + a legend carries identity, so
+  // it still works for someone who can't distinguish the colors.
+  const { pctBelow, pctInRange, pctAbove } = tw.tir;
+  const tirBar = `
+    <div class="dx-tir-bar">
+      ${pctBelow > 0.5 ? `<i class="dx-tir-bar__seg dx-tir-bar__seg--low" style="width:${pctBelow}%"></i>` : ''}
+      ${pctInRange > 0.5 ? `<i class="dx-tir-bar__seg dx-tir-bar__seg--in" style="width:${pctInRange}%"></i>` : ''}
+      ${pctAbove > 0.5 ? `<i class="dx-tir-bar__seg dx-tir-bar__seg--high" style="width:${pctAbove}%"></i>` : ''}
+    </div>
+    <div class="dx-tir-legend">
+      <span><i class="dx-tir-legend__chip dx-tir-legend__chip--low"></i>Below 3.9 <b>${fmt1(pctBelow)}%</b></span>
+      <span><i class="dx-tir-legend__chip dx-tir-legend__chip--in"></i>In range <b>${fmt1(pctInRange)}%</b></span>
+      <span><i class="dx-tir-legend__chip dx-tir-legend__chip--high"></i>Above 10 <b>${fmt1(pctAbove)}%</b></span>
+    </div>`;
+
   el.dxHealthBody.innerHTML = `
+    ${tirBar}
     <div class="dx-health-grid">
-      <div class="dx-health-stat"><span class="dx-health-stat__label">Time in range</span><span class="dx-health-stat__val">${fmt1(tw.tir.pctInRange)}%</span></div>
-      <div class="dx-health-stat"><span class="dx-health-stat__label">Below 3.9</span><span class="dx-health-stat__val">${fmt1(tw.tir.pctBelow)}%</span></div>
-      <div class="dx-health-stat"><span class="dx-health-stat__label">Above 10.0</span><span class="dx-health-stat__val">${fmt1(tw.tir.pctAbove)}%</span></div>
       <div class="dx-health-stat"><span class="dx-health-stat__label">CV</span><span class="dx-health-stat__val">${tw.cv != null ? fmt1(tw.cv) + '%' : '—'}</span></div>
       <div class="dx-health-stat"><span class="dx-health-stat__label">Total daily dose</span><span class="dx-health-stat__val">${fmt1(tw.tdd)}u</span></div>
+      <div class="dx-health-stat"><span class="dx-health-stat__label">Dose per kg</span><span class="dx-health-stat__val">${tw.tddPerKg != null ? fmt1(tw.tddPerKg) + 'u' : '—'}</span></div>
       <div class="dx-health-stat"><span class="dx-health-stat__label">Basal / bolus split</span><span class="dx-health-stat__val">${tw.basalPct != null ? Math.round(tw.basalPct) + '/' + Math.round(tw.bolusPct) : '—'}</span></div>
+      <div class="dx-health-stat"><span class="dx-health-stat__label">BMI</span><span class="dx-health-stat__val">${tw.bmi != null ? fmt1(tw.bmi) : '—'}</span></div>
     </div>
     ${trendRow}
   `;
 }
+
+function renderDxForecastAccuracy(a) {
+  if (!el.dxForecastAccuracyBody) return;
+  if (!a.sufficient) {
+    el.dxForecastAccuracyBody.innerHTML = `<p class="empty-state">Need at least ${a.minNeeded} scoreable forecasts from the last 14 days (have ${a.scored}) — this needs a resolved correction factor and glucose readings 2h after each check.</p>`;
+    return;
+  }
+  el.dxForecastAccuracyBody.innerHTML = `
+    <div class="dx-health-grid">
+      <div class="dx-health-stat"><span class="dx-health-stat__label">Bias</span><span class="dx-health-stat__val">${fmtSigned(a.bias, 1)} mmol/L</span></div>
+      <div class="dx-health-stat"><span class="dx-health-stat__label">Mean error</span><span class="dx-health-stat__val">${fmt1(a.mae)} mmol/L</span></div>
+      <div class="dx-health-stat"><span class="dx-health-stat__label">Within 1 mmol/L</span><span class="dx-health-stat__val">${Math.round(a.within1)}%</span></div>
+      <div class="dx-health-stat"><span class="dx-health-stat__label">Within 2 mmol/L</span><span class="dx-health-stat__val">${Math.round(a.within2)}%</span></div>
+      <div class="dx-health-stat"><span class="dx-health-stat__label">Warning precision</span><span class="dx-health-stat__val">${a.precision != null ? Math.round(a.precision) + '%' : '—'}</span></div>
+      <div class="dx-health-stat"><span class="dx-health-stat__label">Warning recall</span><span class="dx-health-stat__val">${a.recall != null ? Math.round(a.recall) + '%' : '—'}</span></div>
+    </div>
+    <p class="dx-note">
+      Scored ${a.scored} forecasts against what actually happened 2h later — ${a.warnings} flagged a low risk, ${a.lows} actually went low.
+      ${a.bias < -0.3 ? 'The forecast is running a bit low compared to reality — worth treating its warnings as slightly more cautious than the number suggests.'
+        : a.bias > 0.3 ? 'The forecast is running a bit high compared to reality — a warning here may be understating the real risk.'
+        : 'Bias is small — the forecast is tracking reality reasonably closely.'}
+    </p>
+  `;
+}
+
+// "What if I…" — Workout tab's glucose-impact card. Reuses
+// preWorkoutAdvisor as-is: personal per-split-type history once there
+// are 2+ logged sessions of that split, otherwise a labelled generic
+// intensity-class estimate (never presented as if it were personal data).
+function renderDxWorkoutImpact(result) {
+  if (!el.dxWorkoutImpactBody) return;
+  if (result.source === 'personal') {
+    el.dxWorkoutImpactBody.innerHTML = `
+      <div class="dx-health-grid">
+        <div class="dx-health-stat"><span class="dx-health-stat__label">Typical drop</span><span class="dx-health-stat__val">${fmt1(result.medianDrop)} mmol/L</span></div>
+        <div class="dx-health-stat"><span class="dx-health-stat__label">Time to lowest</span><span class="dx-health-stat__val">${Math.round(result.medianTimeToNadirMin)} min</span></div>
+        <div class="dx-health-stat"><span class="dx-health-stat__label">Based on</span><span class="dx-health-stat__val">${result.n} session${result.n === 1 ? '' : 's'}</span></div>
+      </div>
+      <p class="dx-note">${result.isReliableDrop
+        ? 'Consistent enough across past sessions to plan around — worth having carbs ready.'
+        : 'Not consistent enough yet across past sessions to call this a reliable pattern.'}</p>
+    `;
+  } else {
+    el.dxWorkoutImpactBody.innerHTML = `
+      <p class="dx-note">Not enough personal history for ${escapeHtml(result.workoutType)} yet — a broad estimate for ${escapeHtml(result.intensityClass.replace(/-/g, ' '))} exercise:</p>
+      <div class="dx-health-grid">
+        <div class="dx-health-stat"><span class="dx-health-stat__label">Expected drop</span><span class="dx-health-stat__val">${result.expectedDropRange}</span></div>
+      </div>
+      <p class="dx-note">${result.note}</p>
+    `;
+  }
+}
+
+el.btnDxWorkoutImpact?.addEventListener('click', async () => {
+  if (!el.dxWorkoutImpactBody) return;
+  const workoutType = el.dxWorkoutImpactType?.value || 'Other';
+  setBtn(el.btnDxWorkoutImpact, true, 'Check impact', 'Checking…');
+  try {
+    const data = await fetchDiabetesData();
+    if (!data) {
+      el.dxWorkoutImpactBody.innerHTML = '<p class="empty-state">Connect Nightscout in Settings to see this.</p>';
+      return;
+    }
+    const workouts = await fetchDxWorkouts();
+    const input = { ...data, settings: dxSettings(), activities: { workouts } };
+    const result = DiabetesEngine.preWorkoutAdvisor(input, workoutType, Date.now());
+    renderDxWorkoutImpact(result);
+  } finally {
+    setBtn(el.btnDxWorkoutImpact, false, 'Check impact');
+  }
+});
 
 function renderDxMfpImports(items, boluses) {
   if (!el.dxMfpImportsCard) return;

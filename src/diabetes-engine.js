@@ -1291,8 +1291,12 @@ function projectedGlucoseCurve(input, now = Date.now(), horizonMinutes = HYPO_FO
    person never mistakes a population guess for their own data. */
 const INTENSITY_CLASS_KEYWORDS = [
   { intensityClass: 'high-intensity',   keywords: ['hiit', 'sprint', 'crossfit', 'interval'] },
-  { intensityClass: 'cardio-endurance', keywords: ['run', 'cycle', 'bike', 'swim', 'row'] },
-  { intensityClass: 'strength',         keywords: ['weight', 'strength', 'lift', 'resistance'] },
+  { intensityClass: 'cardio-endurance', keywords: ['run', 'cycle', 'bike', 'swim', 'row', 'cardio'] },
+  // Includes fitl00p's own split_type vocabulary (Push/Pull/Legs/Full Body)
+  // alongside the generic strength-training keywords, so a workout logged
+  // that way (not free-text "Weightlifting" etc.) still gets a sensible
+  // generic default instead of "unclassified".
+  { intensityClass: 'strength',         keywords: ['weight', 'strength', 'lift', 'resistance', 'push', 'pull', 'legs', 'full body'] },
   { intensityClass: 'low-intensity',    keywords: ['walk', 'yoga', 'stretch'] },
 ];
 const GENERIC_INTENSITY_DEFAULTS = {
@@ -2059,6 +2063,76 @@ function regimenReview(input, now = Date.now()) {
   };
 }
 
+/* ═══════════════════════════════════════════════════════════
+   STAGE 7 — Forecast accuracy
+   Retrospective grading of hypoForecast2h itself: replay it at past
+   points where the actual 2h-later reading is now known, and see how
+   the forecast held up. No stored prediction log needed — hypoForecast2h
+   is a pure function of "data available as of `t`", so replaying it at
+   a past `t` naturally only sees what was actually known then (the same
+   <= nowMs filtering every Stage 1/2 function already does).
+   ═══════════════════════════════════════════════════════════ */
+const FORECAST_ACCURACY_LOOKBACK_DAYS = 14;
+const FORECAST_ACCURACY_STEP_MINUTES  = 60;  // one evaluation per hour
+const FORECAST_ACCURACY_MIN_SCORED    = 10;
+const FORECAST_ACCURACY_MATCH_TOLERANCE_MIN = 20; // how close an actual reading must be to t+120min
+
+function forecastAccuracy(input, now = Date.now()) {
+  const { glucoseHistory = [], settings = {} } = input || {};
+  const nowMs = toMs(now);
+  const windowStart = nowMs - FORECAST_ACCURACY_LOOKBACK_DAYS * DAY_MS;
+  // Evaluation has to stop far enough back that its own +2h "actual" reading
+  // has already happened — otherwise the most recent hours would silently
+  // score as "no actual to compare to" rather than genuinely unscoreable.
+  const evalEnd = nowMs - HYPO_FORECAST_HORIZON_MIN * 60000;
+
+  const readings = sortedReadings(glucoseHistory, -Infinity, nowMs);
+  const low = Number(settings.targetLow) || 4.5;
+
+  const scored = [];
+  for (let t = windowStart; t <= evalEnd; t += FORECAST_ACCURACY_STEP_MINUTES * 60000) {
+    const forecast = hypoForecast2h(input, t);
+    if (forecast.withheldReason || forecast.forecastGlucose == null) continue;
+    const actual = nearestReading(readings, t + HYPO_FORECAST_HORIZON_MIN * 60000, FORECAST_ACCURACY_MATCH_TOLERANCE_MIN);
+    if (!actual) continue;
+    scored.push({
+      t,
+      predicted: forecast.forecastGlucose,
+      actual: actual.value,
+      error: forecast.forecastGlucose - actual.value,
+      actualWentLow: actual.value < low,
+      predictedWarning: forecast.tier === 'high' || forecast.tier === 'moderate',
+    });
+  }
+
+  if (scored.length < FORECAST_ACCURACY_MIN_SCORED) {
+    return { sufficient: false, scored: scored.length, minNeeded: FORECAST_ACCURACY_MIN_SCORED };
+  }
+
+  const errors = scored.map(s => s.error);
+  const bias = mean(errors);       // signed — negative means the forecast runs low vs reality
+  const mae = mean(errors.map(e => Math.abs(e)));
+  const within1 = (scored.filter(s => Math.abs(s.error) <= 1).length / scored.length) * 100;
+  const within2 = (scored.filter(s => Math.abs(s.error) <= 2).length / scored.length) * 100;
+
+  // Precision/recall on the forecast's own "moderate"/"high" tier as a
+  // binary low-warning: did a warning actually precede a low, and did
+  // every real low get a warning first.
+  const truePositives  = scored.filter(s => s.predictedWarning && s.actualWentLow).length;
+  const falsePositives = scored.filter(s => s.predictedWarning && !s.actualWentLow).length;
+  const falseNegatives = scored.filter(s => !s.predictedWarning && s.actualWentLow).length;
+  const precision = (truePositives + falsePositives) ? (truePositives / (truePositives + falsePositives)) * 100 : null;
+  const recall    = (truePositives + falseNegatives) ? (truePositives / (truePositives + falseNegatives)) * 100 : null;
+
+  return {
+    sufficient: true,
+    scored: scored.length,
+    bias, mae, within1, within2, precision, recall,
+    warnings: scored.filter(s => s.predictedWarning).length,
+    lows: scored.filter(s => s.actualWentLow).length,
+  };
+}
+
 const DiabetesEngine = {
   // constants
   IOB_PEAK_MINUTES,
@@ -2119,6 +2193,8 @@ const DiabetesEngine = {
   carbRatioReview,
   regimenReview,
   REGIMEN_MAX_PCT_CHANGE,
+  // Stage 7 API
+  forecastAccuracy,
 };
 
 // Dual environment: CommonJS (Node/Netlify functions) or a plain <script>
