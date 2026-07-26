@@ -5080,6 +5080,35 @@ async function fetchDiabetesData(force = false) {
   return body;
 }
 
+// Separately-cached wider-window fetch (diabetes-sync caps at 31 days
+// server-side) — used only by the workout simulator/history so it can
+// actually match a month of workouts against glucose+basal data, without
+// slowing down or changing the 14-day window every other diabetes-tab
+// feature (patterns, health check, meal-dose suggestions) is built around.
+let diabetesDataWide = null;
+let diabetesDataWideFetchedAt = null;
+const DIABETES_WIDE_DAYS = 31;
+
+async function fetchDiabetesDataWide(force = false) {
+  if (!profile?.diabetes_ns_url) return null;
+
+  if (!force && diabetesDataWide && diabetesDataWideFetchedAt && (Date.now() - diabetesDataWideFetchedAt) < DIABETES_CACHE_MS) {
+    return diabetesDataWide;
+  }
+
+  const qs = new URLSearchParams({ url: profile.diabetes_ns_url, days: String(DIABETES_WIDE_DAYS) });
+  if (profile.diabetes_ns_token)  qs.set('token', profile.diabetes_ns_token);
+  if (profile.diabetes_ns_secret) qs.set('secret', profile.diabetes_ns_secret);
+
+  const res = await fetch(`/.netlify/functions/diabetes-sync?${qs.toString()}`);
+  const body = await res.json();
+  if (!res.ok) throw new Error(body?.error || `Sync failed (${res.status})`);
+
+  diabetesDataWide = body;
+  diabetesDataWideFetchedAt = Date.now();
+  return body;
+}
+
 function dxSettings() {
   return {
     targetLow:              profile?.diabetes_target_low ?? 4.5,
@@ -5780,7 +5809,7 @@ el.btnDxWorkoutImpact?.addEventListener('click', async () => {
   const intensity = el.dxWorkoutImpactIntensity?.value || 'light';
   setBtn(el.btnDxWorkoutImpact, true, 'Simulate', 'Simulating…');
   try {
-    const data = await fetchDiabetesData();
+    const data = await fetchDiabetesDataWide();
     if (!data) {
       el.dxWorkoutImpactBody.innerHTML = '<p class="empty-state">Connect Nightscout in Settings to see this.</p>';
       if (el.dxWorkoutHistoryList) el.dxWorkoutHistoryList.innerHTML = '';
