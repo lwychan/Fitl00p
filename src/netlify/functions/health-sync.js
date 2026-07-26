@@ -216,9 +216,18 @@ exports.handler = async function (event) {
       // Health Auto Export sends one sample per logged meal/entry (e.g. one
       // per MyFitnessPal food log), not a daily total. Sum across all
       // entries for the date to get the true daily intake.
+      //
+      // TEMP DIAGNOSTIC (investigating fitl00p > MFP mismatch): capture the
+      // raw sample list into the otherwise-unused raw_payload column so we
+      // can inspect exact qty/timestamps per sample and check for
+      // duplicate/overlapping HealthKit writes. Remove once diagnosed.
       if (metricName.includes('dietary_energy')) {
         const val = item.qty ?? item.Avg ?? item.avg;
-        if (val != null) d.dietary_energy_kcal = (d.dietary_energy_kcal || 0) + toKcal(val, metricUnits);
+        if (val != null) {
+          d.dietary_energy_kcal = (d.dietary_energy_kcal || 0) + toKcal(val, metricUnits);
+          if (!d._dietarySamples) d._dietarySamples = [];
+          d._dietarySamples.push({ date: item.date, qty: val, units: metricUnits, kcal: toKcal(val, metricUnits) });
+        }
       }
 
       // ── Body Weight ─────────────────────────────────────
@@ -344,12 +353,20 @@ exports.handler = async function (event) {
       delete d._hrSamples;
     }
 
+    // TEMP DIAGNOSTIC — see comment above, in the Dietary Energy block.
+    let dietarySamples = null;
+    if (d._dietarySamples) {
+      dietarySamples = d._dietarySamples;
+      delete d._dietarySamples;
+    }
+
     const row = {
       user_id,
       log_date: logDate,
       ...d,
       readiness_score: computeReadiness(d),
       synced_at: new Date().toISOString(), // always update so dashboard shows correct last-sync time
+      ...(dietarySamples ? { raw_payload: { dietary_energy_samples: dietarySamples } } : {}),
     };
 
     const res = await sbFetch(
