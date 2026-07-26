@@ -320,6 +320,7 @@ const el = {
   dxWorkoutImpactType: $('dxWorkoutImpactType'),
   btnDxWorkoutImpact:  $('btnDxWorkoutImpact'),
   dxWorkoutImpactBody: $('dxWorkoutImpactBody'),
+  dxWorkoutHistoryList: $('dxWorkoutHistoryList'),
   dxGlucoseChart:      $('dxGlucoseChart'),
   dxGlucoseChartEmpty: $('dxGlucoseChartEmpty'),
   dxLastSync:        $('dxLastSync'),
@@ -2089,6 +2090,7 @@ async function loadWorkout() {
   elW.active.hidden  = true;
   elW.historyPanel.hidden = true;
   renderWorkoutReadinessBanner();
+  populateDxWorkoutImpactTypes();
   await loadRoutines();
 }
 
@@ -5053,6 +5055,7 @@ $('btnMfpCopyShortcutScript')?.addEventListener('click', async () => {
 /* ── Data fetch (via the diabetes-sync Netlify function) ──── */
 let diabetesData = null;       // adapted {glucoseHistory, boluses, corrections, basalDoses}
 let diabetesFetchedAt = null;
+let dxWorkoutTypesPopulated = false; // first populate always defaults to most-recently-done type
 const DIABETES_CACHE_MS = 4 * 60000; // avoid re-hitting Nightscout on every tab switch
 
 async function fetchDiabetesData(force = false) {
@@ -5661,6 +5664,65 @@ function renderDxWorkoutImpact(result) {
   }
 }
 
+// Per-session drill-down under the summary stats above — every past
+// session of the selected type, with its own before/after glucose and
+// basal delivered during the window (see workoutHistoryDetail).
+function renderDxWorkoutHistory(rows, workoutType) {
+  if (!el.dxWorkoutHistoryList) return;
+  if (!rows.length) {
+    el.dxWorkoutHistoryList.innerHTML = `<p class="empty-state">No past ${escapeHtml(workoutType)} sessions synced yet.</p>`;
+    return;
+  }
+  el.dxWorkoutHistoryList.innerHTML = `
+    <div class="dx-workout-history__title">Previous ${escapeHtml(workoutType)} sessions</div>
+    ${rows.map(r => {
+      const start = new Date(r.startTime);
+      const dateStr = start.toLocaleDateString([], { day: 'numeric', month: 'short' });
+      const timeStr = start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return `
+        <div class="dx-workout-history__row">
+          <div class="dx-workout-history__when">
+            <span>${dateStr} · ${timeStr}</span>
+            <span class="dx-workout-history__dur">${r.durationMin}min</span>
+          </div>
+          <div class="dx-workout-history__stats">
+            <div><span class="dx-workout-history__label">Before</span><span class="dx-workout-history__val">${r.bgBefore != null ? fmt1(r.bgBefore) : '—'}</span></div>
+            <div><span class="dx-workout-history__label">After</span><span class="dx-workout-history__val">${r.bgAfter != null ? fmt1(r.bgAfter) : '—'}</span></div>
+            <div><span class="dx-workout-history__label">Lowest (4h)</span><span class="dx-workout-history__val">${r.lowestPost4h != null ? fmt1(r.lowestPost4h) : '—'}</span></div>
+            <div><span class="dx-workout-history__label">Basal</span><span class="dx-workout-history__val">${r.basalUnits != null ? fmt1(r.basalUnits) + 'u' : '—'}</span></div>
+          </div>
+        </div>`;
+    }).join('')}
+  `;
+}
+
+// Replaces the static Push/Pull/Legs/... options with the actual distinct
+// workout types found across both data sources fetchDxWorkouts() merges
+// (own logged strength sessions + real Apple Watch-detected workouts),
+// most-recently-done first — so "Walking" shows up once it's been
+// synced, without losing the original strength split types. Falls back
+// to the static list (left as-is in the HTML) until anything is synced.
+async function populateDxWorkoutImpactTypes() {
+  if (!el.dxWorkoutImpactType || !currentUser) return;
+  if (profile?.diabetes_enabled === false) return;
+  const workouts = await fetchDxWorkouts();
+  const lastSeenMs = new Map();
+  for (const w of workouts) {
+    const type = w.workoutType || 'Other';
+    const ms = new Date(w.startTime).getTime();
+    if (!Number.isFinite(ms)) continue;
+    if (!lastSeenMs.has(type) || ms > lastSeenMs.get(type)) lastSeenMs.set(type, ms);
+  }
+  if (!lastSeenMs.size) return;
+
+  const types = [...lastSeenMs.keys()].sort((a, b) => lastSeenMs.get(b) - lastSeenMs.get(a));
+  const prevValue = el.dxWorkoutImpactType.value;
+  const keepPrevValue = dxWorkoutTypesPopulated && types.includes(prevValue);
+  el.dxWorkoutImpactType.innerHTML = types.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
+  el.dxWorkoutImpactType.value = keepPrevValue ? prevValue : types[0];
+  dxWorkoutTypesPopulated = true;
+}
+
 el.btnDxWorkoutImpact?.addEventListener('click', async () => {
   if (!el.dxWorkoutImpactBody) return;
   const workoutType = el.dxWorkoutImpactType?.value || 'Other';
@@ -5669,12 +5731,15 @@ el.btnDxWorkoutImpact?.addEventListener('click', async () => {
     const data = await fetchDiabetesData();
     if (!data) {
       el.dxWorkoutImpactBody.innerHTML = '<p class="empty-state">Connect Nightscout in Settings to see this.</p>';
+      if (el.dxWorkoutHistoryList) el.dxWorkoutHistoryList.innerHTML = '';
       return;
     }
     const workouts = await fetchDxWorkouts();
     const input = { ...data, settings: dxSettings(), activities: { workouts } };
     const result = DiabetesEngine.preWorkoutAdvisor(input, workoutType, Date.now());
     renderDxWorkoutImpact(result);
+    const history = DiabetesEngine.workoutHistoryDetail(input, workoutType, Date.now());
+    renderDxWorkoutHistory(history, workoutType);
   } finally {
     setBtn(el.btnDxWorkoutImpact, false, 'Check impact');
   }

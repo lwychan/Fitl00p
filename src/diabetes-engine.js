@@ -1361,6 +1361,48 @@ function preWorkoutAdvisor(input, workoutType, now = Date.now()) {
   };
 }
 
+/* ── Per-session workout history ──────────────────────────────
+   The drill-down behind preWorkoutAdvisor's summary stats — every past
+   session of the given exact workoutType, each with its own before/after
+   glucose and basal delivered during the window, so a real session can
+   be inspected rather than just the pooled median. */
+const WORKOUT_HISTORY_LIMIT = 12;
+const WORKOUT_HISTORY_BASELINE_OFFSET_MIN = 45; // how far before start to anchor the "before" reading
+const WORKOUT_HISTORY_BASELINE_TOLERANCE_MIN = 30;
+const WORKOUT_HISTORY_END_TOLERANCE_MIN = 20;
+const WORKOUT_HISTORY_POST_WINDOW_HOURS = 4;
+
+function workoutHistoryDetail(input, workoutType, now = Date.now()) {
+  const { glucoseHistory = [], basalDoses = [], activities = {} } = input || {};
+  const nowMs = toMs(now);
+  const readings = sortedReadings(glucoseHistory, -Infinity, nowMs);
+
+  const matches = (activities.workouts || [])
+    .filter(w => (w.workoutType || '') === workoutType && toMs(w.startTime) != null && toMs(w.startTime) <= nowMs)
+    .sort((a, b) => toMs(b.startTime) - toMs(a.startTime))
+    .slice(0, WORKOUT_HISTORY_LIMIT);
+
+  return matches.map(w => {
+    const startMs = toMs(w.startTime);
+    const endMs = toMs(w.endTime) ?? startMs;
+    const beforeR = nearestReading(readings, startMs - WORKOUT_HISTORY_BASELINE_OFFSET_MIN * 60000, WORKOUT_HISTORY_BASELINE_TOLERANCE_MIN);
+    const afterR  = nearestReading(readings, endMs, WORKOUT_HISTORY_END_TOLERANCE_MIN);
+    const postWindow = readings.filter(r => r.ms >= endMs && r.ms <= endMs + WORKOUT_HISTORY_POST_WINDOW_HOURS * 3600000);
+    const lowestPost4h = postWindow.length ? Math.min(...postWindow.map(r => r.value)) : null;
+    const basalUnits = windowFilter(basalDoses, 'time', startMs, endMs).reduce((s, d) => s + (Number(d.units) || 0), 0);
+
+    return {
+      startTime: w.startTime,
+      endTime: w.endTime,
+      durationMin: Math.round((endMs - startMs) / 60000),
+      bgBefore: beforeR ? beforeR.value : null,
+      bgAfter: afterR ? afterR.value : null,
+      lowestPost4h,
+      basalUnits: basalUnits > 0 ? basalUnits : null,
+    };
+  });
+}
+
 /* ── "What if I…" simulator ───────────────────────────────────
    Re-runs the 2h hypo forecast against a hypothetical change — extra
    carbs eaten now, and/or a hypothetical correction dose — scoped to
@@ -2197,6 +2239,7 @@ const DiabetesEngine = {
   hypoForecast2h,
   projectedGlucoseCurve,
   preWorkoutAdvisor,
+  workoutHistoryDetail,
   whatIfSimulator,
   preventativeCarbAdvice,
   // Stage 5 API
