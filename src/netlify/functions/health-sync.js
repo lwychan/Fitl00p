@@ -217,17 +217,15 @@ exports.handler = async function (event) {
       // per MyFitnessPal food log), not a daily total. Sum across all
       // entries for the date to get the true daily intake.
       //
-      // TEMP DIAGNOSTIC (investigating fitl00p > MFP mismatch): capture the
-      // raw sample list into the otherwise-unused raw_payload column so we
-      // can inspect exact qty/timestamps per sample and check for
-      // duplicate/overlapping HealthKit writes. Remove once diagnosed.
+      // Known to run high vs MFP's own diary total when MFP leaves a stale
+      // duplicate HealthKit sample behind after an edited entry — nothing
+      // dedupes those here. The dashboard now prefers daily_logs.cal_mfp
+      // (scraped directly from MFP's diary, see mfp-import.js) over this
+      // field for that reason; this stays as the fallback for days with no
+      // MFP sync.
       if (metricName.includes('dietary_energy')) {
         const val = item.qty ?? item.Avg ?? item.avg;
-        if (val != null) {
-          d.dietary_energy_kcal = (d.dietary_energy_kcal || 0) + toKcal(val, metricUnits);
-          if (!d._dietarySamples) d._dietarySamples = [];
-          d._dietarySamples.push({ date: item.date, qty: val, units: metricUnits, kcal: toKcal(val, metricUnits) });
-        }
+        if (val != null) d.dietary_energy_kcal = (d.dietary_energy_kcal || 0) + toKcal(val, metricUnits);
       }
 
       // ── Body Weight ─────────────────────────────────────
@@ -353,20 +351,12 @@ exports.handler = async function (event) {
       delete d._hrSamples;
     }
 
-    // TEMP DIAGNOSTIC — see comment above, in the Dietary Energy block.
-    let dietarySamples = null;
-    if (d._dietarySamples) {
-      dietarySamples = d._dietarySamples;
-      delete d._dietarySamples;
-    }
-
     const row = {
       user_id,
       log_date: logDate,
       ...d,
       readiness_score: computeReadiness(d),
       synced_at: new Date().toISOString(), // always update so dashboard shows correct last-sync time
-      ...(dietarySamples ? { raw_payload: { dietary_energy_samples: dietarySamples } } : {}),
     };
 
     const res = await sbFetch(

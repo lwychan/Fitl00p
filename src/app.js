@@ -376,6 +376,21 @@ const fmtSigned = (n, dp) => (n >= 0 ? '+' : '') + Number(n).toFixed(dp);
 const clamp01 = (v, g) => Math.min(100, Math.max(0, (v / (g || 1)) * 100));
 const escapeHtml = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
 
+// Consumed-calories precedence, shared by every place that displays
+// "Eaten" for a given day. cal_mfp (scraped straight from MFP's own
+// diary totals row each sync) wins over dietary_energy_kcal (summed
+// from individual HealthKit samples via Health Auto Export — vulnerable
+// to running high if MFP ever leaves a stale duplicate sample behind
+// after an edited entry, since nothing dedupes those). Manual-entry
+// fields are the last resort for anyone not using either sync.
+function pickConsumedCalories(log, health) {
+  if (log?.cal_mfp != null) return Number(log.cal_mfp);
+  if (health?.dietary_energy_kcal != null) return Number(health.dietary_energy_kcal);
+  if (log?.cal_apple != null) return Number(log.cal_apple);
+  if (log?.cal_total > 0) return Number(log.cal_total);
+  return null;
+}
+
 // Shared BMR calculation (Mifflin-St Jeor), same formula already used
 // and verified in the eat-target calculation. Used as a default proxy
 // for resting_energy_kcal when someone hasn't connected Apple Health
@@ -917,7 +932,7 @@ async function _loadDashboardInner() {
   const unit = profile?.weight_unit || 'kg';
 
   // ── Fetch all data in parallel ────────────────────────────
-  const [logRes, healthRes, healthHistRes, logsRes, lastSessionRes, lastSyncRes] = await Promise.all([
+  const [logRes, healthRes, healthHistRes, logsRes, lastSessionRes, lastSyncRes, mfpCalRes] = await Promise.all([
     db.from('daily_logs')
       .select('*, cal_apple')
       .eq('user_id', currentUser.id)
@@ -962,6 +977,14 @@ async function _loadDashboardInner() {
       .order('synced_at', { ascending: false })
       .limit(1)
       .maybeSingle(),
+
+    // MFP diary totals for the same 30-day window as healthHistRes, merged
+    // in below so the weekly deficit trend prefers them the same way
+    // pickConsumedCalories does for "today".
+    db.from('daily_logs')
+      .select('log_date, cal_mfp')
+      .eq('user_id', currentUser.id)
+      .gte('log_date', new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10)),
   ]);
 
   const log           = logRes.data;
@@ -998,7 +1021,10 @@ async function _loadDashboardInner() {
     return null;
   };
 
-  const healthHistory = healthHistRes.data || [];
+  const mfpCalByDate = Object.fromEntries(
+    (mfpCalRes.data || []).filter(r => r.cal_mfp != null).map(r => [r.log_date, Number(r.cal_mfp)])
+  );
+  const healthHistory = (healthHistRes.data || []).map(h => ({ ...h, cal_mfp: mfpCalByDate[h.log_date] ?? null }));
   const logs          = logsRes.data || [];
   const lastSession   = lastSessionRes.data;
   const lastSync      = lastSyncRes.data;
@@ -1040,11 +1066,8 @@ async function _loadDashboardInner() {
   const weightForBmr = todayWeight ? Number(todayWeight) : Number(activePlan?.start_weight) || null;
   const estimatedBmr = calcBmr(weightForBmr, profile?.height_cm, profile?.age_years, profile?.sex);
 
-  // Consumed — prefer health_daily dietary energy (most recent sync), fall back to daily_logs
-  const displayCals = health?.dietary_energy_kcal != null ? health.dietary_energy_kcal
-                    : log?.cal_apple != null             ? log.cal_apple
-                    : log?.cal_total > 0                 ? log.cal_total
-                    : null;
+  // Consumed — see pickConsumedCalories for the full precedence order
+  const displayCals = pickConsumedCalories(log, health);
   el.dTodayCals.textContent = displayCals != null ? fmtInt(displayCals) : '—';
 
   // Burned — total energy expenditure (active + resting)
@@ -1384,7 +1407,7 @@ function computeStrainScore(health, healthHistory, log) {
 // exists for diabetes-tab meals, not general daily logging, so this
 // deliberately doesn't pretend to score macro balance it can't see).
 function computeNutritionScore(health, log, smartTarget) {
-  const consumed = health?.dietary_energy_kcal ?? (log?.cal_apple ?? (log?.cal_total > 0 ? log.cal_total : null));
+  const consumed = pickConsumedCalories(log, health);
   const target = smartTarget?.eatTarget ?? profile?.eat_target_kcal ?? (profile?.tdee ? profile.tdee - 500 : null);
   if (consumed == null || !target) return { score: null, label: '', factors: [] };
 
@@ -1677,7 +1700,7 @@ function renderNetCalories(today, history, log, bmrFallback) {
   const burned  = (active == null && resting == null) ? null
                 : Math.round((active || 0) + (resting || 0));
   // If burn data is flowing but nothing eaten is logged yet, eaten = 0 (not yesterday's total)
-  const consumed = today?.dietary_energy_kcal ?? (burned != null ? 0 : null);
+  const consumed = pickConsumedCalories(log, today) ?? (burned != null ? 0 : null);
 
   // ── Burn breakdown ───────────────────────────────────────
   const burnActiveEl   = $('dBurnActive');
@@ -1736,8 +1759,9 @@ function renderNetCalories(today, history, log, bmrFallback) {
     const hBurned   = (hActive != null && hResting != null) ? hActive + hResting
                     : (hActive != null)                     ? hActive
                     : null;
-    if (h.dietary_energy_kcal != null && hBurned != null) {
-      weeklyNet += (h.dietary_energy_kcal - hBurned);
+    const hConsumed = h.cal_mfp ?? h.dietary_energy_kcal;
+    if (hConsumed != null && hBurned != null) {
+      weeklyNet += (hConsumed - hBurned);
       weekDays++;
     }
   });
@@ -3452,7 +3476,7 @@ async function loadHistory() {
   // Fetch daily logs
   const { data } = await db
     .from('daily_logs')
-    .select('log_date, weight, steps, cal_total, cal_apple')
+    .select('log_date, weight, steps, cal_total, cal_apple, cal_mfp')
     .eq('user_id', currentUser.id)
     .order('log_date', { ascending: false })
     .limit(120);
@@ -3484,7 +3508,7 @@ async function loadHistory() {
   });
 
   el.historyTableBody.innerHTML = rows.map(r => {
-    const cals    = r.cal_apple != null ? r.cal_apple : (r.cal_total > 0 ? r.cal_total : null);
+    const cals    = pickConsumedCalories(r, null);
     const burned  = burnByDate[r.log_date] ?? null;
     return `
     <tr>
@@ -6386,11 +6410,17 @@ async function computeSmartEatTarget() {
     : (10 * currentWeight) + (6.25 * height) - (5 * age) + 5;
 
   // ── Last 7 days Apple Health data ─────────────────────────
-  const { data: recentHealth } = await db
-    .from('health_daily')
-    .select('active_energy_kcal, dietary_energy_kcal, log_date')
-    .eq('user_id', currentUser.id)
-    .gte('log_date', new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10));
+  const sevenDaysAgoStr = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+  const [{ data: recentHealth }, { data: recentMfpCals }] = await Promise.all([
+    db.from('health_daily')
+      .select('active_energy_kcal, dietary_energy_kcal, log_date')
+      .eq('user_id', currentUser.id)
+      .gte('log_date', sevenDaysAgoStr),
+    db.from('daily_logs')
+      .select('log_date, cal_mfp')
+      .eq('user_id', currentUser.id)
+      .gte('log_date', sevenDaysAgoStr),
+  ]);
 
   const activeVals = (recentHealth || [])
     .map(r => r.active_energy_kcal != null ? Number(r.active_energy_kcal) : null)
@@ -6399,8 +6429,13 @@ async function computeSmartEatTarget() {
     ? Math.round(activeVals.reduce((a, b) => a + b, 0) / activeVals.length)
     : 800;
 
+  // cal_mfp (scraped from MFP's own diary total) wins over dietary_energy_kcal
+  // per day — same precedence as pickConsumedCalories elsewhere.
+  const mfpByDate = Object.fromEntries(
+    (recentMfpCals || []).filter(r => r.cal_mfp != null).map(r => [r.log_date, Number(r.cal_mfp)])
+  );
   const dietVals = (recentHealth || [])
-    .map(r => r.dietary_energy_kcal != null ? Number(r.dietary_energy_kcal) : null)
+    .map(r => mfpByDate[r.log_date] ?? (r.dietary_energy_kcal != null ? Number(r.dietary_energy_kcal) : null))
     .filter(v => v != null && v > 800); // only days with realistic complete totals
   const avgIntake = dietVals.length
     ? Math.round(dietVals.reduce((a, b) => a + b, 0) / dietVals.length)

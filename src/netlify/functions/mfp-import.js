@@ -124,6 +124,23 @@ exports.handler = async function (event) {
   const nowMs = Date.now();
   const importDate = date || new Date(nowMs).toISOString().slice(0, 10);
 
+  // Each item here is one meal-SECTION total (breakfast/lunch/dinner/
+  // snacks), scraped straight from MFP's own totals row for that section —
+  // summing them reproduces MFP's own "Your Daily Total" exactly, and since
+  // the bookmarklet always scrapes the whole visible diary page, this is
+  // the CURRENT full-day total as of this sync, not an incremental delta.
+  // Stored separately from the HealthKit-derived dietary_energy_kcal
+  // (health-sync.js), which sums individual samples and can run high if
+  // MFP ever leaves a stale duplicate sample behind after an edited entry.
+  const dayTotalCalories = items.reduce((s, it) => s + (Number(it.calories) || 0), 0);
+  if (dayTotalCalories > 0) {
+    await sbFetch(
+      '/rest/v1/daily_logs?on_conflict=user_id,log_date', 'POST',
+      { user_id: userId, log_date: importDate, cal_mfp: Math.round(dayTotalCalories * 10) / 10 },
+      { 'Prefer': 'resolution=merge-duplicates,return=minimal' }
+    );
+  }
+
   const results = { imported: 0, skippedDuplicate: 0, skippedInvalid: 0, autoMatched: 0, hypoTagged: 0, suggested: 0, unmatched: 0, suggestions: [] };
   const rows = [];
 
@@ -384,11 +401,15 @@ async function handleBackfill(profile, settings, body, userId) {
 
   const results = { imported: 0, skippedDuplicate: 0, skippedInvalid: 0, autoMatched: 0, hypoTagged: 0, unmatched: 0, daysProcessed: days.length };
   const rows = [];
+  const dailyCalTotals = {}; // log_date -> summed MFP diary calories (see live-sync path above)
 
   for (const day of days) {
     const dateStr = String(day?.date || '').slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) continue;
     const items = Array.isArray(day.items) ? day.items : [];
+
+    const dayTotalCalories = items.reduce((s, it) => s + (Number(it.calories) || 0), 0);
+    if (dayTotalCalories > 0) dailyCalTotals[dateStr] = Math.round(dayTotalCalories * 10) / 10;
 
     for (const raw of items) {
       const name = String(raw?.name || '').trim();
@@ -465,6 +486,15 @@ async function handleBackfill(profile, settings, body, userId) {
     }
     results.imported = insertRes.data?.length || 0;
     results.skippedDuplicate = rows.length - results.imported;
+  }
+
+  const calDates = Object.keys(dailyCalTotals);
+  if (calDates.length) {
+    await sbFetch(
+      '/rest/v1/daily_logs?on_conflict=user_id,log_date', 'POST',
+      calDates.map(log_date => ({ user_id: userId, log_date, cal_mfp: dailyCalTotals[log_date] })),
+      { 'Prefer': 'resolution=merge-duplicates,return=minimal' }
+    );
   }
 
   return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ success: true, ...results }) };
