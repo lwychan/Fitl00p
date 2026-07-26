@@ -1441,7 +1441,7 @@ function workoutSimulate(input, opts = {}, now = Date.now()) {
    session of the given exact workoutType, each with its own before/after
    glucose and basal delivered during the window, so a real session can
    be inspected rather than just the pooled median. */
-const WORKOUT_HISTORY_LIMIT = 12;
+const WORKOUT_HISTORY_LIMIT = 40; // comfortably covers a month of even daily activity
 const WORKOUT_HISTORY_BASELINE_OFFSET_MIN = 45; // how far before start to anchor the "before" reading
 const WORKOUT_HISTORY_BASELINE_TOLERANCE_MIN = 30;
 const WORKOUT_HISTORY_END_TOLERANCE_MIN = 20;
