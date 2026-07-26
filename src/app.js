@@ -173,6 +173,7 @@ const el = {
   btnSignout:    $('btnSignout'),
   btnSignoutHeader: $('btnSignoutHeader'),
   btnOpenSettingsHeader: $('btnOpenSettingsHeader'),
+  btnReloadHeader: $('btnReloadHeader'),
   sessionBrokenBanner:     $('sessionBrokenBanner'),
   btnFixSession:           $('btnFixSession'),
   btnDismissSessionBanner: $('btnDismissSessionBanner'),
@@ -563,6 +564,13 @@ function initApp() {
   el.btnSignout.addEventListener('click', handleSignOut);
   el.btnSignoutHeader?.addEventListener('click', handleSignOut);
   el.btnOpenSettingsHeader?.addEventListener('click', () => navigateTo('settings'));
+  // Plain page reload — the session token lives in localStorage, untouched
+  // by this, so it fixes the same "everything's blank" state handleSignOut
+  // does without forcing a re-login.
+  el.btnReloadHeader?.addEventListener('click', () => {
+    el.btnReloadHeader.classList.add('is-loading');
+    window.location.reload();
+  });
   el.btnFixSession?.addEventListener('click', handleSignOut);
   el.btnDismissSessionBanner?.addEventListener('click', () => {
     if (el.sessionBrokenBanner) el.sessionBrokenBanner.hidden = true;

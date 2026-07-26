@@ -280,6 +280,8 @@ body {
 [data-theme="slate"] .appbar__settings:active { color: #fff; background: rgba(255,255,255,.14); }
 [data-theme="slate"] .appbar__signout:hover,
 [data-theme="slate"] .appbar__signout:active { color: #fff; background: rgba(255,255,255,.14); }
+[data-theme="slate"] .appbar__reload:hover,
+[data-theme="slate"] .appbar__reload:active { color: #fff; background: rgba(255,255,255,.14); }
 .appbar__nav { display: none; } /* hidden — we use bottom tabs */
 .appbar__right { display: flex; align-items: center; gap: 4px; }
 .appbar__user {
@@ -314,6 +316,16 @@ body {
 .appbar__signout:active {
   color: var(--red, #DC2626);
   background: rgba(220,38,38,.08);
+}
+.appbar__reload:hover,
+.appbar__reload:active {
+  color: var(--blue);
+  background: var(--blue-light);
+}
+.appbar__reload.is-loading svg { animation: appbar-reload-spin .7s linear infinite; }
+@keyframes appbar-reload-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .appbar__reload.is-loading svg { animation: none; }
 }
 
 /* ── SESSION-BROKEN BANNER ───────────────────────────────── */
