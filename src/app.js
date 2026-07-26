@@ -4576,18 +4576,37 @@ async function saveNsProfileFields(updates) {
 // instant window rather than a fabricated duration.
 async function fetchDxWorkouts() {
   if (!currentUser) return [];
-  const { data, error } = await db
-    .from('workout_sessions')
-    .select('id, split_type, started_at, created_at')
-    .eq('user_id', currentUser.id)
-    .order('created_at', { ascending: false })
-    .limit(200);
-  if (error) { console.error('fetchDxWorkouts error:', error.message); return []; }
-  return (data || []).map(w => ({
+  const [sessionsRes, appleRes] = await Promise.all([
+    db.from('workout_sessions')
+      .select('id, split_type, started_at, created_at')
+      .eq('user_id', currentUser.id)
+      .order('created_at', { ascending: false })
+      .limit(200),
+    // Real Apple Watch-detected workouts, synced via Health Auto Export's
+    // "Workouts" export type — carries genuine start/end times rather than
+    // the started_at-at-best-effort/created_at fallback above, and covers
+    // anyone whose actual training happens outside fitl00p's own routine
+    // logger entirely (e.g. cardio, or a watch that auto-detects sessions).
+    db.from('apple_health_workouts')
+      .select('workout_type, started_at, ended_at')
+      .eq('user_id', currentUser.id)
+      .order('started_at', { ascending: false })
+      .limit(200),
+  ]);
+  if (sessionsRes.error) console.error('fetchDxWorkouts (workout_sessions) error:', sessionsRes.error.message);
+  if (appleRes.error) console.error('fetchDxWorkouts (apple_health_workouts) error:', appleRes.error.message);
+
+  const fromSessions = (sessionsRes.data || []).map(w => ({
     startTime: w.started_at || w.created_at,
     endTime: w.created_at,
     workoutType: w.split_type || 'Other',
   }));
+  const fromApple = (appleRes.data || []).map(w => ({
+    startTime: w.started_at,
+    endTime: w.ended_at,
+    workoutType: w.workout_type,
+  }));
+  return [...fromSessions, ...fromApple];
 }
 
 async function fetchMacroMealLog() {

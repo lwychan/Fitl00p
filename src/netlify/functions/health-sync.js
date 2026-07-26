@@ -63,10 +63,51 @@ exports.handler = async function (event) {
   }
 
   // Health Auto Export format: { data: { metrics: [...], workouts: [...] } }
-  const metrics = body?.data?.metrics || [];
+  const metrics  = body?.data?.metrics  || [];
+  const workouts = body?.data?.workouts || [];
+
+  if (!metrics.length && !workouts.length) {
+    return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ received: 0, processed: 0, message: 'No metrics or workouts in payload' }) };
+  }
+
+  // ── Discrete workout events ────────────────────────────────
+  // Separate from the daily-aggregate loop below — these carry their own
+  // real start/end times (the daily metrics above never do), which is
+  // exactly what the diabetes engine's post-exercise window logic needs
+  // and previously never had, despite this array always being present
+  // in the payload whenever Health Auto Export's "Workouts" export type
+  // is turned on. Dedup on (user_id, external_id): Health Auto Export
+  // re-sends a rolling window of past workouts on every automated sync,
+  // not just new ones since last time.
+  let workoutsProcessed = 0;
+  for (const w of workouts) {
+    const start = w.start, end = w.end;
+    if (!start || !end) continue;
+    const externalId = w.id ? String(w.id) : `${w.name || 'workout'}_${start}`;
+    const row = {
+      user_id,
+      external_id: externalId,
+      workout_type: w.name || 'Workout',
+      started_at: new Date(start).toISOString(),
+      ended_at: new Date(end).toISOString(),
+      duration_min: w.duration != null ? round1(Number(w.duration) / 60) : null,
+      active_energy_kcal: qtyToKcal(w.activeEnergyBurned),
+      total_energy_kcal: qtyToKcal(w.totalEnergy),
+      distance_km: qtyToKm(w.distance),
+      avg_heart_rate: w.avgHeartRate?.qty != null ? round1(Number(w.avgHeartRate.qty)) : null,
+      max_heart_rate: w.maxHeartRate?.qty != null ? round1(Number(w.maxHeartRate.qty)) : null,
+      synced_at: new Date().toISOString(),
+    };
+    const res = await sbFetch(
+      '/rest/v1/apple_health_workouts?on_conflict=user_id,external_id',
+      'POST', row,
+      { 'Prefer': 'resolution=merge-duplicates,return=minimal' }
+    );
+    if (res.ok) workoutsProcessed++;
+  }
 
   if (!metrics.length) {
-    return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ received: 0, processed: 0, message: 'No metrics in payload' }) };
+    return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ received: 0, processed: 0, workoutsProcessed, message: 'No metrics in payload' }) };
   }
 
   // ── 3. Group all metric data points by date ───────────────
@@ -369,6 +410,8 @@ exports.handler = async function (event) {
     body: JSON.stringify({
       received:  Object.keys(byDate).length,
       processed: processed.length,
+      workoutsReceived: workouts.length,
+      workoutsProcessed,
       errors:    errors.length,
       dates:     processed,
       unitsSeen, // shows what unit strings Health Auto Export sent
@@ -401,6 +444,25 @@ function computeReadiness(d) {
 // ── Helpers ───────────────────────────────────────────────
 const round1 = n => n == null ? null : Math.round(Number(n) * 10)   / 10;
 const round2 = n => n == null ? null : Math.round(Number(n) * 100)  / 100;
+
+// Workout fields arrive as { qty, units } rather than the metrics loop's
+// separate qty/units pair — same conversions, different shape, so kept as
+// their own small helpers rather than reshaping data to fit the other one.
+function qtyToKcal(field) {
+  if (field?.qty == null) return null;
+  const val = Number(field.qty);
+  const units = (field.units || '').toLowerCase();
+  if (units.includes('mj')) return round1(val * 238.846);
+  if (units.includes('kj')) return round1(val / 4.184);
+  if (units.includes('cal') && !units.includes('kcal')) return round1(val / 1000);
+  return round1(val);
+}
+function qtyToKm(field) {
+  if (field?.qty == null) return null;
+  const val = Number(field.qty);
+  const units = (field.units || '').toLowerCase();
+  return round2(units.includes('mi') ? val * 1.60934 : val);
+}
 
 async function sbFetch(path, method = 'GET', body = null, extra = {}) {
   try {
