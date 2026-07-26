@@ -1165,7 +1165,7 @@ function buildWorkoutTypeProfiles(workouts, glucoseHistory) {
 
     profiles[type] = {
       workoutType: type, n, medianDrop, pctSessionsDropOver1_5: pctOverThreshold,
-      medianTimeToNadirMin, enoughSample, isReliableDrop,
+      medianTimeToNadirMin, enoughSample, isReliableDrop, drops,
     };
   }
   return profiles;
@@ -1358,6 +1358,81 @@ function preWorkoutAdvisor(input, workoutType, now = Date.now()) {
     workoutType,
     intensityClass,
     ...GENERIC_INTENSITY_DEFAULTS[intensityClass],
+  };
+}
+
+/* ── "What if I…" live simulator ───────────────────────────────
+   Unlike preWorkoutAdvisor's pooled stats, this anchors the projection
+   to the CURRENT reading and active IOB, then applies the expected drop
+   for the chosen activity — personal per-session range when there's
+   enough history for that exact type, else a duration/intensity-scaled
+   generic estimate. Surfaces a delayed-low-risk read and, when the
+   projected range dips into hypo territory, a preventative carb
+   suggestion via the same math preventativeCarbAdvice already uses. */
+const SIMULATE_DROP_PER_30MIN = { light: 0.5, moderate: 1.0, vigorous: 1.8 };
+const SIMULATE_DURATION_SOFT_CAP_MIN = 90;   // beyond this, extra duration adds less (diminishing returns)
+const SIMULATE_DURATION_OVERAGE_FACTOR = 0.3;
+const SIMULATE_RANGE_SPREAD_PCT = 0.35;      // generic-estimate uncertainty band, +/- around the midpoint
+const SIMULATE_WATCH_WINDOW_GENERIC = '1–4h after finishing';
+const SIMULATE_CARB_TROUGH_ETA_DEFAULT_MIN = 60; // used for the fast-rescue-vs-slow-buffer call when no personal timeToNadir exists
+const SIMULATE_PROJECTION_FLOOR_MMOL = 1.5; // display floor — a raw drop-estimate arithmetic can push well below what's physiologically real for long/vigorous inputs
+
+function workoutSimulate(input, opts = {}, now = Date.now()) {
+  const { workoutType, durationMin = 30, intensity = 'light' } = opts;
+  const { glucoseHistory = [], boluses = [], corrections = [], activities = {}, settings = {} } = input || {};
+
+  const ctx = dosingContext(input, now);
+  if (ctx.stale || ctx.currentGlucose == null) {
+    return { withheldReason: 'stale-reading', staleMessage: ctx.staleMessage };
+  }
+
+  const profiles = buildWorkoutTypeProfiles(activities.workouts, glucoseHistory);
+  const profile = profiles[workoutType];
+
+  let dropLow, dropHigh, source, sampleSize, timeToNadirMin;
+  if (profile && profile.n >= WORKOUT_MIN_SESSIONS_PERSONAL && profile.drops?.length) {
+    dropLow = Math.min(...profile.drops);
+    dropHigh = Math.max(...profile.drops);
+    source = 'personal';
+    sampleSize = profile.n;
+    timeToNadirMin = profile.medianTimeToNadirMin;
+  } else {
+    const perMin = (SIMULATE_DROP_PER_30MIN[intensity] || SIMULATE_DROP_PER_30MIN.light) / 30;
+    const effectiveDurationMin = Math.min(durationMin, SIMULATE_DURATION_SOFT_CAP_MIN)
+      + Math.max(0, durationMin - SIMULATE_DURATION_SOFT_CAP_MIN) * SIMULATE_DURATION_OVERAGE_FACTOR;
+    const dropMid = perMin * effectiveDurationMin;
+    dropLow = dropMid * (1 - SIMULATE_RANGE_SPREAD_PCT);
+    dropHigh = dropMid * (1 + SIMULATE_RANGE_SPREAD_PCT);
+    source = 'generic';
+    sampleSize = 0;
+    timeToNadirMin = null; // unknown — generic watch window used instead
+  }
+
+  const projectedLow = Math.max(SIMULATE_PROJECTION_FLOOR_MMOL, ctx.currentGlucose - dropHigh);
+  const projectedHigh = Math.max(projectedLow, ctx.currentGlucose - dropLow);
+
+  const low = Number(settings.targetLow) || HYPO_FIXED_MMOL;
+  const risk = projectedLow < low ? 'high' : projectedLow < low + 1.0 ? 'medium' : 'low';
+  const watchPeriod = timeToNadirMin != null
+    ? `around ${Math.round(timeToNadirMin)} min after finishing`
+    : SIMULATE_WATCH_WINDOW_GENERIC;
+
+  let carbAdvice = null;
+  if (projectedLow < low) {
+    const resolvedCorrections = resolveCorrections(corrections, glucoseHistory, boluses, now);
+    const factorResult = resolveCorrectionFactor(resolvedCorrections, settings);
+    carbAdvice = preventativeCarbAdvice(projectedLow, timeToNadirMin ?? SIMULATE_CARB_TROUGH_ETA_DEFAULT_MIN, factorResult.factor, settings);
+  }
+
+  return {
+    withheldReason: null,
+    workoutType, durationMin, intensity,
+    currentGlucose: ctx.currentGlucose,
+    iob: ctx.iob,
+    source, sampleSize,
+    projectedLow, projectedHigh,
+    risk, watchPeriod,
+    carbAdvice,
   };
 }
 
@@ -2239,6 +2314,8 @@ const DiabetesEngine = {
   hypoForecast2h,
   projectedGlucoseCurve,
   preWorkoutAdvisor,
+  classifyIntensity,
+  workoutSimulate,
   workoutHistoryDetail,
   whatIfSimulator,
   preventativeCarbAdvice,

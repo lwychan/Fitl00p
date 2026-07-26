@@ -746,22 +746,26 @@
         </div>
 
         <div class="card" id="dxWorkoutImpactCard" hidden>
-          <div class="card-eyebrow">🩸 Glucose impact — what if I…</div>
+          <div class="card-eyebrow">🔮 What if I…</div>
           <p class="field-hint" style="margin-bottom:10px;text-transform:none;letter-spacing:0;font-weight:400">
             Uses your own history for this workout type once you've done it 2+ times, otherwise a broad estimate by exercise type.
           </p>
-          <div class="field">
-            <label for="dxWorkoutImpactType">Workout type</label>
-            <select id="dxWorkoutImpactType">
-              <option value="Push">Push</option>
-              <option value="Pull">Pull</option>
-              <option value="Legs">Legs</option>
-              <option value="Full Body">Full Body</option>
-              <option value="Cardio">Cardio</option>
-              <option value="Other">Other</option>
-            </select>
+          <div class="onboard-pills" id="dxWorkoutImpactPills"></div>
+          <div style="display:flex;gap:10px;margin-top:14px">
+            <div class="field" style="flex:1;margin-bottom:0">
+              <label for="dxWorkoutImpactDuration">Duration (min)</label>
+              <input type="number" id="dxWorkoutImpactDuration" min="1" value="30" inputmode="numeric">
+            </div>
+            <div class="field" style="flex:1;margin-bottom:0">
+              <label for="dxWorkoutImpactIntensity">Intensity</label>
+              <select id="dxWorkoutImpactIntensity">
+                <option value="light">Light</option>
+                <option value="moderate">Moderate</option>
+                <option value="vigorous">Vigorous</option>
+              </select>
+            </div>
           </div>
-          <button class="btn btn--ghost btn--small" id="btnDxWorkoutImpact">Check impact</button>
+          <button class="btn btn--primary btn--full" id="btnDxWorkoutImpact" style="margin-top:14px">Simulate</button>
           <div id="dxWorkoutImpactBody"></div>
           <div id="dxWorkoutHistoryList"></div>
         </div>

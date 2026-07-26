@@ -317,7 +317,9 @@ const el = {
   dxSensitivityBody: $('dxSensitivityBody'),
   dxRegimenBody:     $('dxRegimenBody'),
   dxWorkoutImpactCard: $('dxWorkoutImpactCard'),
-  dxWorkoutImpactType: $('dxWorkoutImpactType'),
+  dxWorkoutImpactPills: $('dxWorkoutImpactPills'),
+  dxWorkoutImpactDuration: $('dxWorkoutImpactDuration'),
+  dxWorkoutImpactIntensity: $('dxWorkoutImpactIntensity'),
   btnDxWorkoutImpact:  $('btnDxWorkoutImpact'),
   dxWorkoutImpactBody: $('dxWorkoutImpactBody'),
   dxWorkoutHistoryList: $('dxWorkoutHistoryList'),
@@ -5636,32 +5638,56 @@ function renderDxForecastAccuracy(a) {
   `;
 }
 
-// "What if I…" — Workout tab's glucose-impact card. Reuses
-// preWorkoutAdvisor as-is: personal per-split-type history once there
-// are 2+ logged sessions of that split, otherwise a labelled generic
-// intensity-class estimate (never presented as if it were personal data).
-function renderDxWorkoutImpact(result) {
+// "What if I…" — Workout tab's glucose-impact simulator. Selectable pill
+// presets (real synced workout types + a handful of everyday activities
+// Apple Health wouldn't log as a "workout") each fill in a sensible
+// Duration/Intensity default, both still freely editable before hitting
+// Simulate. workoutSimulate() anchors the projection to the CURRENT
+// glucose + active IOB rather than just a historical average.
+const DX_SIMULATE_GENERIC_PRESETS = [
+  { type: 'Golf', durationMin: 180, intensity: 'light' },
+  { type: 'Driving range', durationMin: 45, intensity: 'light' },
+  { type: 'Housework/garden', durationMin: 30, intensity: 'light' },
+  { type: 'Play with kids', durationMin: 30, intensity: 'moderate' },
+];
+const DX_SIMULATE_INTENSITY_CLASS_MAP = {
+  'high-intensity': 'vigorous',
+  'cardio-endurance': 'moderate',
+  'strength': 'moderate',
+  'low-intensity': 'light',
+  'unclassified': 'light',
+};
+let dxSimulateSelectedType = null;
+
+function renderDxWorkoutSimulateResult(result) {
   if (!el.dxWorkoutImpactBody) return;
-  if (result.source === 'personal') {
-    el.dxWorkoutImpactBody.innerHTML = `
-      <div class="dx-health-grid">
-        <div class="dx-health-stat"><span class="dx-health-stat__label">Typical drop</span><span class="dx-health-stat__val">${fmt1(result.medianDrop)} mmol/L</span></div>
-        <div class="dx-health-stat"><span class="dx-health-stat__label">Time to lowest</span><span class="dx-health-stat__val">${Math.round(result.medianTimeToNadirMin)} min</span></div>
-        <div class="dx-health-stat"><span class="dx-health-stat__label">Based on</span><span class="dx-health-stat__val">${result.n} session${result.n === 1 ? '' : 's'}</span></div>
-      </div>
-      <p class="dx-note">${result.isReliableDrop
-        ? 'Consistent enough across past sessions to plan around — worth having carbs ready.'
-        : 'Not consistent enough yet across past sessions to call this a reliable pattern.'}</p>
-    `;
-  } else {
-    el.dxWorkoutImpactBody.innerHTML = `
-      <p class="dx-note">Not enough personal history for ${escapeHtml(result.workoutType)} yet — a broad estimate for ${escapeHtml(result.intensityClass.replace(/-/g, ' '))} exercise:</p>
-      <div class="dx-health-grid">
-        <div class="dx-health-stat"><span class="dx-health-stat__label">Expected drop</span><span class="dx-health-stat__val">${result.expectedDropRange}</span></div>
-      </div>
-      <p class="dx-note">${result.note}</p>
-    `;
+  if (result.withheldReason === 'stale-reading') {
+    el.dxWorkoutImpactBody.innerHTML = `<p class="empty-state">${escapeHtml(result.staleMessage || 'No recent reading to simulate from.')}</p>`;
+    return;
   }
+
+  const riskClass = result.risk === 'high' ? 'dx-simulate-result--high' : result.risk === 'medium' ? 'dx-simulate-result--medium' : '';
+  const riskBadge = result.risk === 'high' ? 'badge--red' : result.risk === 'medium' ? 'badge--orange' : 'badge--green';
+  const sourceNote = result.source === 'personal'
+    ? `Based on ${result.sampleSize} past ${escapeHtml(result.workoutType)} session${result.sampleSize === 1 ? '' : 's'}.`
+    : `Based on a generic estimate for ${result.intensity} activity over ${result.durationMin} min — no personal history for ${escapeHtml(result.workoutType)} yet.`;
+  const carbLine = result.carbAdvice?.gramsNeeded > 0
+    ? `<div class="dx-simulate-result__line">🍬 ${escapeHtml(result.carbAdvice.message)}</div>`
+    : '';
+  // Both bounds can hit the display floor for a big enough drop estimate —
+  // "1.5–1.5" reads oddly, "≤1.5" reads as intended (a severe-low warning).
+  const rangeText = result.projectedLow === result.projectedHigh
+    ? `≤${fmt1(result.projectedLow)}`
+    : `${fmt1(result.projectedLow)}–${fmt1(result.projectedHigh)}`;
+
+  el.dxWorkoutImpactBody.innerHTML = `
+    <div class="dx-simulate-result ${riskClass}">
+      <div class="dx-simulate-result__line"><b>Likely range after:</b> ${rangeText} mmol/L (from ${fmt1(result.currentGlucose)}, ${fmt1(result.iob)}u on board)</div>
+      <div class="dx-simulate-result__line"><b>Delayed low risk:</b> <span class="badge ${riskBadge}">${result.risk}</span> · watch period: ${escapeHtml(result.watchPeriod)}</div>
+      ${carbLine}
+      <div class="dx-simulate-result__line">${sourceNote}</div>
+    </div>
+  `;
 }
 
 // Per-session drill-down under the summary stats above — every past
@@ -5696,14 +5722,22 @@ function renderDxWorkoutHistory(rows, workoutType) {
   `;
 }
 
-// Replaces the static Push/Pull/Legs/... options with the actual distinct
-// workout types found across both data sources fetchDxWorkouts() merges
-// (own logged strength sessions + real Apple Watch-detected workouts),
-// most-recently-done first — so "Walking" shows up once it's been
-// synced, without losing the original strength split types. Falls back
-// to the static list (left as-is in the HTML) until anything is synced.
+function selectDxSimulatePill(type, durationMin, intensity) {
+  dxSimulateSelectedType = type;
+  if (el.dxWorkoutImpactDuration) el.dxWorkoutImpactDuration.value = durationMin;
+  if (el.dxWorkoutImpactIntensity) el.dxWorkoutImpactIntensity.value = intensity;
+  el.dxWorkoutImpactPills?.querySelectorAll('.pill').forEach(p => {
+    p.classList.toggle('active', p.dataset.type === type);
+  });
+}
+
+// Builds the pill row from the actual distinct workout types found across
+// both data sources fetchDxWorkouts() merges (own logged strength splits +
+// real Apple Watch-detected workouts), most-recently-done first, plus a
+// handful of everyday activities Apple Health wouldn't log as a workout
+// at all. Falls back to just the generic presets until anything syncs.
 async function populateDxWorkoutImpactTypes() {
-  if (!el.dxWorkoutImpactType || !currentUser) return;
+  if (!el.dxWorkoutImpactPills || !currentUser) return;
   if (profile?.diabetes_enabled === false) return;
   const workouts = await fetchDxWorkouts();
   const lastSeenMs = new Map();
@@ -5713,20 +5747,38 @@ async function populateDxWorkoutImpactTypes() {
     if (!Number.isFinite(ms)) continue;
     if (!lastSeenMs.has(type) || ms > lastSeenMs.get(type)) lastSeenMs.set(type, ms);
   }
-  if (!lastSeenMs.size) return;
+  const syncedTypes = [...lastSeenMs.keys()].sort((a, b) => lastSeenMs.get(b) - lastSeenMs.get(a));
 
-  const types = [...lastSeenMs.keys()].sort((a, b) => lastSeenMs.get(b) - lastSeenMs.get(a));
-  const prevValue = el.dxWorkoutImpactType.value;
-  const keepPrevValue = dxWorkoutTypesPopulated && types.includes(prevValue);
-  el.dxWorkoutImpactType.innerHTML = types.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
-  el.dxWorkoutImpactType.value = keepPrevValue ? prevValue : types[0];
+  const presets = [
+    ...syncedTypes.map(type => ({
+      type, durationMin: 30,
+      intensity: DX_SIMULATE_INTENSITY_CLASS_MAP[DiabetesEngine.classifyIntensity(type)] || 'light',
+    })),
+    ...DX_SIMULATE_GENERIC_PRESETS,
+  ];
+
+  el.dxWorkoutImpactPills.innerHTML = presets.map(p =>
+    `<button type="button" class="pill" data-type="${escapeHtml(p.type)}" data-duration="${p.durationMin}" data-intensity="${p.intensity}">${escapeHtml(p.type)}</button>`
+  ).join('');
+
+  const keepPrevious = dxWorkoutTypesPopulated && presets.some(p => p.type === dxSimulateSelectedType);
+  const chosen = keepPrevious ? presets.find(p => p.type === dxSimulateSelectedType) : presets[0];
+  if (chosen) selectDxSimulatePill(chosen.type, chosen.durationMin, chosen.intensity);
   dxWorkoutTypesPopulated = true;
 }
 
+el.dxWorkoutImpactPills?.addEventListener('click', e => {
+  const btn = e.target.closest('.pill');
+  if (!btn) return;
+  selectDxSimulatePill(btn.dataset.type, Number(btn.dataset.duration), btn.dataset.intensity);
+});
+
 el.btnDxWorkoutImpact?.addEventListener('click', async () => {
   if (!el.dxWorkoutImpactBody) return;
-  const workoutType = el.dxWorkoutImpactType?.value || 'Other';
-  setBtn(el.btnDxWorkoutImpact, true, 'Check impact', 'Checking…');
+  const workoutType = dxSimulateSelectedType || 'Other';
+  const durationMin = Number(el.dxWorkoutImpactDuration?.value) || 30;
+  const intensity = el.dxWorkoutImpactIntensity?.value || 'light';
+  setBtn(el.btnDxWorkoutImpact, true, 'Simulate', 'Simulating…');
   try {
     const data = await fetchDiabetesData();
     if (!data) {
@@ -5736,12 +5788,12 @@ el.btnDxWorkoutImpact?.addEventListener('click', async () => {
     }
     const workouts = await fetchDxWorkouts();
     const input = { ...data, settings: dxSettings(), activities: { workouts } };
-    const result = DiabetesEngine.preWorkoutAdvisor(input, workoutType, Date.now());
-    renderDxWorkoutImpact(result);
+    const result = DiabetesEngine.workoutSimulate(input, { workoutType, durationMin, intensity }, Date.now());
+    renderDxWorkoutSimulateResult(result);
     const history = DiabetesEngine.workoutHistoryDetail(input, workoutType, Date.now());
     renderDxWorkoutHistory(history, workoutType);
   } finally {
-    setBtn(el.btnDxWorkoutImpact, false, 'Check impact');
+    setBtn(el.btnDxWorkoutImpact, false, 'Simulate');
   }
 });
 

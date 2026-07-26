@@ -583,6 +583,7 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
 .badge--orange { background: var(--orange-light); color: #C2410C; }
 .badge--purple { background: var(--purple-light); color: #6D28D9; }
 .badge--gray   { background: var(--bg);           color: var(--ink-3); border: 1px solid var(--border); }
+.badge--red    { background: var(--red-light);     color: var(--red); }
 
 .split-tag { display: inline-flex; align-items: center; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 20px; }
 .split-tag--Push      { background: var(--orange-light); color: #C2410C; }
@@ -3397,6 +3398,26 @@ body { font-size: 15px; }
   font-weight: 700;
   color: var(--ink);
 }
+
+.dx-simulate-result {
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: var(--r-lg);
+  background: var(--surface-2);
+}
+.dx-simulate-result--high { background: var(--red-light); }
+.dx-simulate-result--medium { background: var(--orange-light); }
+.dx-simulate-result__line {
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--ink-2);
+  margin-bottom: 6px;
+}
+.dx-simulate-result__line:last-child { margin-bottom: 0; }
+.dx-simulate-result__line b { color: var(--ink); font-weight: 700; }
+.dx-simulate-result--high .dx-simulate-result__line,
+.dx-simulate-result--medium .dx-simulate-result__line { color: var(--ink); }
+
 .dx-chart-wrap {
   position: relative;
   background: var(--surface-2);
