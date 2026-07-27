@@ -3101,6 +3101,151 @@ body { font-size: 15px; }
   .screen-boot__spinner { animation-duration: 1.6s; }
 }
 
+/* Diabetes "Simple view" — a glanceable, always-on overlay meant to be
+   left showing while the phone charges: one big number, two stats, one
+   action, nothing else. Sits above the tab bar but below the boot
+   screen (which only ever appears at launch, never at the same time as
+   this). Color state (in-range / low / high) is toggled via a class on
+   the root element so every piece — number, ring, action panel — reads
+   consistently at a glance without hunting for a badge. */
+.dx-simple {
+  position: fixed;
+  inset: 0;
+  z-index: 999980;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  background: var(--bg);
+  padding: 24px;
+  text-align: center;
+}
+.dx-simple[hidden] { display: none; }
+
+.dx-simple__exit {
+  position: absolute;
+  top: max(16px, env(safe-area-inset-top));
+  right: 16px;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border);
+  background: var(--surface);
+  color: var(--ink-3);
+  font-size: 18px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.dx-simple__exit:active { background: var(--surface-2); color: var(--ink); }
+
+.dx-simple__glucose-wrap {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.dx-simple__glucose {
+  font-family: var(--ui);
+  font-weight: 800;
+  font-size: clamp(84px, 26vw, 160px);
+  line-height: 1;
+  letter-spacing: -.02em;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  transition: color .3s ease;
+}
+.dx-simple__trend {
+  font-size: clamp(32px, 9vw, 52px);
+  color: var(--ink-2);
+}
+.dx-simple__unit {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  margin-top: -12px;
+}
+
+/* Range-state colors — applied to the wrapping .dx-simple element */
+.dx-simple--low    .dx-simple__glucose,
+.dx-simple--low    .dx-simple__trend { color: var(--red); }
+.dx-simple--high   .dx-simple__glucose,
+.dx-simple--high   .dx-simple__trend { color: var(--orange); }
+.dx-simple--inrange .dx-simple__glucose,
+.dx-simple--inrange .dx-simple__trend { color: var(--green); }
+
+.dx-simple__grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  width: 100%;
+  max-width: 360px;
+  margin-top: 8px;
+}
+.dx-simple__stat {
+  background: var(--surface);
+  border: 1.5px solid var(--border-2);
+  border-radius: var(--r-lg);
+  padding: 14px 10px;
+}
+.dx-simple__stat-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--ink-3);
+  margin-bottom: 4px;
+}
+.dx-simple__stat-val {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.dx-simple__action {
+  width: 100%;
+  max-width: 360px;
+  border-radius: var(--r-lg);
+  padding: 16px;
+  background: var(--surface);
+  border: 1.5px solid var(--border-2);
+}
+.dx-simple__action-text {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.dx-simple--action-ok     .dx-simple__action { background: var(--green-light);  border-color: transparent; }
+.dx-simple--action-ok     .dx-simple__action-text { color: var(--green); }
+.dx-simple--action-correct .dx-simple__action { background: var(--orange-light); border-color: transparent; }
+.dx-simple--action-correct .dx-simple__action-text { color: #C2410C; }
+.dx-simple--action-carbs  .dx-simple__action { background: var(--red-light);    border-color: transparent; }
+.dx-simple--action-carbs  .dx-simple__action-text { color: var(--red); }
+
+.dx-simple__footer {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink-3);
+  font-size: 12px;
+  margin-top: 4px;
+}
+.dx-simple__live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+  animation: dx-simple-pulse 2s ease-in-out infinite;
+}
+@keyframes dx-simple-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) {
+  .dx-simple__live-dot { animation: none; }
+}
+
 /* Feature tiles on auth screen — always a dark hero panel so the white
    tile text reads well, but tinted toward each theme's own brand hue */
 [data-theme="slate"]    .auth-features { background: linear-gradient(160deg, #004080 0%, #001830 100%); }

@@ -1363,7 +1363,10 @@
         <p class="dx-disclaimer">Heuristic pattern-spotting only, built on population-average insulin curves — not medical advice or a dosing calculator. Always use your own judgement.</p>
 
         <div class="card card--dx-now">
-          <div class="card-eyebrow">Now <span class="card-eyebrow-sub" id="dxReadingAge"></span></div>
+          <div class="card-eyebrow">
+            <span>Now <span class="card-eyebrow-sub" id="dxReadingAge"></span></span>
+            <button class="btn btn--ghost btn--small" id="btnDxSimpleMode" type="button">Simple view ⤢</button>
+          </div>
           <div class="dx-now-row">
             <div class="dx-now-glucose">
               <span class="dx-now-glucose__val" id="dxCurrentGlucose">—</span>
@@ -1483,6 +1486,41 @@
         <button class="btn btn--ghost btn--small" id="btnDxRefresh" style="width:100%;margin-top:4px">Refresh</button>
         <p class="dx-last-sync" id="dxLastSync"></p>
       </div>
+    </div>
+  </div>
+
+  <!-- ═══ DIABETES SIMPLE MODE ══════════════════════════════════
+       Glanceable always-on overlay: current glucose, IOB, live basal
+       rate and one recommended action, in large type — meant to be
+       flicked on and left showing while the phone charges. Sits above
+       the tab bar and everything else; only reachable from the
+       diabetes tab and only exits via its own close button. Kept
+       live by the same auto-refresh loop that feeds the diabetes tab
+       (see startDxAutoRefresh in app.js), and requests a wake lock
+       while open so the screen doesn't sleep. -->
+  <div id="screenDxSimple" class="dx-simple" hidden>
+    <button class="dx-simple__exit" id="btnDxSimpleExit" type="button" aria-label="Exit simple view">✕</button>
+    <div class="dx-simple__glucose-wrap">
+      <span class="dx-simple__glucose" id="dxSimpleGlucose">—</span>
+      <span class="dx-simple__trend" id="dxSimpleTrend"></span>
+    </div>
+    <div class="dx-simple__unit">mmol/L</div>
+    <div class="dx-simple__grid">
+      <div class="dx-simple__stat">
+        <div class="dx-simple__stat-label">IOB</div>
+        <div class="dx-simple__stat-val" id="dxSimpleIob">—</div>
+      </div>
+      <div class="dx-simple__stat">
+        <div class="dx-simple__stat-label">Basal now</div>
+        <div class="dx-simple__stat-val" id="dxSimpleBasal">—</div>
+      </div>
+    </div>
+    <div class="dx-simple__action" id="dxSimpleAction">
+      <div class="dx-simple__action-text" id="dxSimpleActionText">—</div>
+    </div>
+    <div class="dx-simple__footer">
+      <span class="dx-simple__live-dot" id="dxSimpleLiveDot" aria-hidden="true"></span>
+      <span id="dxSimpleUpdated">—</span>
     </div>
   </div>
 

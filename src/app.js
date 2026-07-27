@@ -328,6 +328,16 @@ const el = {
   dxGlucoseChart:      $('dxGlucoseChart'),
   dxGlucoseChartEmpty: $('dxGlucoseChartEmpty'),
   dxLastSync:        $('dxLastSync'),
+  btnDxSimpleMode:   $('btnDxSimpleMode'),
+  screenDxSimple:    $('screenDxSimple'),
+  btnDxSimpleExit:   $('btnDxSimpleExit'),
+  dxSimpleGlucose:   $('dxSimpleGlucose'),
+  dxSimpleTrend:     $('dxSimpleTrend'),
+  dxSimpleIob:       $('dxSimpleIob'),
+  dxSimpleBasal:     $('dxSimpleBasal'),
+  dxSimpleAction:      $('dxSimpleAction'),
+  dxSimpleActionText:  $('dxSimpleActionText'),
+  dxSimpleUpdated:   $('dxSimpleUpdated'),
   mfpNoToken:        $('mfpNoToken'),
   mfpHasToken:       $('mfpHasToken'),
   mfpBookmarklet:    $('mfpBookmarklet'),
@@ -762,6 +772,8 @@ function initApp() {
       activePlan    = null;
       todayLog      = null;
       clearWorkoutState(); // clear any saved workout on explicit sign out
+      stopDxAutoRefresh();
+      closeDxSimpleMode();
       resetAuthForms();
       showScreen('auth');
       hideBootScreen();
@@ -821,6 +833,14 @@ function applyDiabetesTabVisibility() {
 
 async function navigateTo(name) {
   if (name === 'diabetes' && profile?.diabetes_enabled === false) name = 'dashboard';
+  // Live auto-refresh and Simple view only make sense while the
+  // diabetes tab is actually the one on screen — leaving it stops the
+  // poll and force-closes the overlay so it can never linger on top
+  // of whichever tab is opened next.
+  if (name !== 'diabetes') {
+    stopDxAutoRefresh();
+    closeDxSimpleMode();
+  }
   // Re-checked on every navigation, not just at login — profile can change
   // underneath an already-open session (e.g. the background refresh below
   // for a returning device with a stale cached profile, or a settings save).
@@ -5197,6 +5217,7 @@ async function loadDiabetes() {
   try {
     const data = await fetchDiabetesData();
     await renderDiabetesTab(data);
+    startDxAutoRefresh();
   } catch (err) {
     console.error('Diabetes sync error:', err);
     el.dxCorrectionBody.innerHTML = `<p class="empty-state" style="color:var(--red)">Couldn't reach Nightscout: ${escapeHtml(err.message)}</p>`;
@@ -5549,6 +5570,174 @@ function renderDxCorrection(s) {
     ${s.cappedAt10 ? '<p class="dx-note">Capped at 10u — the raw math suggested more.</p>' : ''}
   `;
 }
+
+/* ── Live auto-refresh (Diabetes tab + Simple view) ──────────
+   Dexcom feeds Nightscout roughly every 5 minutes; polling at 60s
+   keeps the "Now" strip, correction suggestion, forecast and Simple
+   view within a minute of that without hammering the user's own
+   Nightscout instance. Deliberately lighter than a full
+   renderDiabetesTab(): meal memory, patterns, sensitivity/regimen
+   reviews and MFP imports don't change minute-to-minute and each
+   pulls extra Supabase tables, so only the live-glucose-derived
+   pieces are recomputed on every tick. Runs only while the diabetes
+   tab is the active view (started at the end of loadDiabetes(),
+   stopped by navigateTo() the moment another tab is opened) and
+   pauses while the page itself isn't visible, resuming — with an
+   immediate catch-up tick — the moment it is again. */
+const DX_AUTO_REFRESH_MS = 60000;
+let dxAutoRefreshTimer = null;
+
+function startDxAutoRefresh() {
+  if (dxAutoRefreshTimer) return;
+  dxAutoRefreshTimer = setInterval(refreshDxLive, DX_AUTO_REFRESH_MS);
+}
+
+function stopDxAutoRefresh() {
+  if (dxAutoRefreshTimer) { clearInterval(dxAutoRefreshTimer); dxAutoRefreshTimer = null; }
+}
+
+async function refreshDxLive() {
+  if (!profile?.diabetes_ns_url) return;
+  try {
+    const data = await fetchDiabetesData(true);
+    const settings = dxSettings();
+    const now = Date.now();
+    const input = { ...data, settings };
+
+    const ctx = DiabetesEngine.dosingContext(input, now);
+    renderDxNow(ctx);
+    drawDxGlucoseChart(el.dxGlucoseChart, el.dxGlucoseChartEmpty, data, settings, now);
+
+    const resolved = DiabetesEngine.resolveCorrections(data.corrections, data.glucoseHistory, data.boluses, now);
+    const factor = DiabetesEngine.personalCorrectionFactor(resolved);
+    const suggestion = DiabetesEngine.suggestCorrectionDose(ctx, factor, data.boluses, data.corrections, now);
+    renderDxCorrection(suggestion);
+
+    const forecast = DiabetesEngine.hypoForecast2h(input, now);
+    renderDxForecast(forecast);
+
+    if (el.screenDxSimple && !el.screenDxSimple.hidden) {
+      renderDxSimple(data, ctx, suggestion, forecast, settings, factor.factor);
+    }
+
+    el.dxLastSync.textContent = `Last synced ${new Date(diabetesFetchedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+  } catch (err) {
+    // Silent — this is a background tick, not a user-initiated action.
+    // The last-good render stays on screen; dxLastSync's timestamp is
+    // the visible signal of when data last actually changed, same as
+    // it would be if the user just hadn't tapped Refresh yet.
+    console.error('Diabetes auto-refresh failed:', err?.message || err);
+  }
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') {
+    stopDxAutoRefresh();
+  } else if (views.diabetes && !views.diabetes.hidden) {
+    startDxAutoRefresh();
+    refreshDxLive();
+  }
+});
+
+/* ── Simple view — glanceable always-on overlay ──────────────
+   One number, two stats, one action. Opened from a button on the
+   diabetes tab's "Now" card, kept live by the same refreshDxLive()
+   tick that feeds that card, and requests a wake lock while open so
+   a phone left charging on the counter doesn't lock its screen. */
+function currentBasalRate(basalDoses, now = Date.now()) {
+  const sorted = (basalDoses || [])
+    .map(b => ({ ...b, ms: toMs(b.time) }))
+    .filter(b => Number.isFinite(b.ms))
+    .sort((a, b) => a.ms - b.ms);
+  if (!sorted.length) return null;
+
+  // Prefer a segment whose own logged duration actually covers "now".
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    const seg = sorted[i];
+    const endMs = seg.ms + (Number(seg.durationMin) || 0) * 60000;
+    if (seg.ms <= now && endMs >= now) return seg.rate;
+  }
+  // Control-IQ logs a fresh segment roughly every 5 minutes when
+  // active — fall back to the most recent one as long as it's still
+  // that fresh, rather than showing a rate that may be long stale.
+  const latest = sorted[sorted.length - 1];
+  if (latest && (now - latest.ms) <= 20 * 60000) return latest.rate;
+  return null;
+}
+function toMs(t) {
+  const ms = t instanceof Date ? t.getTime() : new Date(t).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function renderDxSimple(data, ctx, correctionSuggestion, forecast, settings, factorValue) {
+  if (!el.screenDxSimple) return;
+
+  el.dxSimpleGlucose.textContent = ctx.currentGlucose != null ? fmt1(ctx.currentGlucose) : '—';
+  el.dxSimpleTrend.textContent = trendArrow(ctx.trendPerMinute);
+  el.dxSimpleIob.textContent = ctx.iob != null ? `${fmt1(ctx.iob)}u` : '—';
+
+  const basal = currentBasalRate(data?.basalDoses, ctx.now);
+  el.dxSimpleBasal.textContent = basal != null ? `${fmt1(basal)}u/hr` : '—';
+
+  el.screenDxSimple.classList.remove('dx-simple--low', 'dx-simple--high', 'dx-simple--inrange');
+  if (ctx.currentGlucose != null && !ctx.stale) {
+    if (ctx.currentGlucose < settings.targetLow) el.screenDxSimple.classList.add('dx-simple--low');
+    else if (ctx.currentGlucose > settings.targetHigh) el.screenDxSimple.classList.add('dx-simple--high');
+    else el.screenDxSimple.classList.add('dx-simple--inrange');
+  }
+
+  el.screenDxSimple.classList.remove('dx-simple--action-ok', 'dx-simple--action-correct', 'dx-simple--action-carbs');
+  let actionText, actionClass;
+  if (ctx.stale) {
+    actionText = 'No recent reading — check your sensor.';
+    actionClass = null;
+  } else if (ctx.currentGlucose != null && ctx.currentGlucose < settings.targetLow) {
+    // A genuinely low reading right now always says something — this
+    // can't wait on the 2h forecast engine's own data requirements
+    // (>=3 resolved corrections), which a low-history account may not
+    // have yet even though the current number is plainly low.
+    const advice = factorValue ? DiabetesEngine.preventativeCarbAdvice(ctx.currentGlucose, 0, factorValue, settings) : null;
+    actionText = advice?.gramsNeeded
+      ? `Eat ~${advice.gramsNeeded}g fast carbs — low now (${fmt1(ctx.currentGlucose)})`
+      : `Low now (${fmt1(ctx.currentGlucose)}) — treat with fast-acting carbs`;
+    actionClass = 'dx-simple--action-carbs';
+  } else if (forecast?.tier === 'high' || forecast?.tier === 'moderate') {
+    const advice = DiabetesEngine.preventativeCarbAdvice(forecast.forecastGlucose, 120, forecast.factor, settings);
+    actionText = advice.gramsNeeded ? `Eat ~${advice.gramsNeeded}g carbs — trending low` : 'Trending low — keep an eye on it';
+    actionClass = 'dx-simple--action-carbs';
+  } else if (correctionSuggestion && !correctionSuggestion.withheldReason && correctionSuggestion.suggestedUnits > 0) {
+    actionText = `Correct: ${fmt1(correctionSuggestion.suggestedUnits)}u insulin`;
+    actionClass = 'dx-simple--action-correct';
+  } else if (ctx.currentGlucose != null && ctx.currentGlucose > settings.targetHigh) {
+    actionText = `High now (${fmt1(ctx.currentGlucose)}) — not enough dose history yet for a suggestion`;
+    actionClass = 'dx-simple--action-correct';
+  } else {
+    actionText = 'In range — no action needed';
+    actionClass = 'dx-simple--action-ok';
+  }
+  el.dxSimpleActionText.textContent = actionText;
+  if (actionClass) el.screenDxSimple.classList.add(actionClass);
+
+  el.dxSimpleUpdated.textContent = `Updated ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+}
+
+function openDxSimpleMode() {
+  if (!el.screenDxSimple) return;
+  el.screenDxSimple.hidden = false;
+  requestWakeLock();
+  refreshDxLive();
+}
+
+function closeDxSimpleMode() {
+  if (!el.screenDxSimple || el.screenDxSimple.hidden) return;
+  el.screenDxSimple.hidden = true;
+  // Respect the separate "keep screen awake" Settings preference —
+  // only release the lock Simple view itself is responsible for.
+  if (localStorage.getItem(KEEP_AWAKE_KEY) !== '1') releaseWakeLock();
+}
+
+el.btnDxSimpleMode?.addEventListener('click', openDxSimpleMode);
+el.btnDxSimpleExit?.addEventListener('click', closeDxSimpleMode);
 
 const DX_MEAL_WITHHELD_MESSAGES = {
   'stale-reading': 'No recent glucose reading — check your sensor app.',
