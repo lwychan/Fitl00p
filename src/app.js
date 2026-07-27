@@ -151,6 +151,7 @@ const noOpAuthLock = async (name, acquireTimeout, fn) => fn();
 const $ = id => document.getElementById(id);
 const el = {
   // screens
+  screenBoot: $('screenBoot'),
   screenAuth: $('screenAuth'),
   screenApp:  $('screenApp'),
   // auth
@@ -478,6 +479,17 @@ function showScreen(screen) {
   if (target) { target.removeAttribute('hidden'); }
 }
 
+// Dismisses the boot overlay (see index.html) — separate from showScreen()
+// above on purpose: for the main app case this is called only once the
+// target view's own data has actually finished loading (navigateTo awaits
+// its loader), not merely once the shell is visible, so the overlay
+// bridges the whole gap instead of uncovering an empty dashboard. For the
+// auth/onboard/pending screens, which don't need to wait on data, it's
+// called right alongside showScreen().
+function hideBootScreen() {
+  if (el.screenBoot) el.screenBoot.hidden = true;
+}
+
 // Auth state — module-scoped so it survives across the auth callback lifecycle
 let authHandling  = false;
 let authCompleted = false;
@@ -626,6 +638,17 @@ function initApp() {
 
       currentUser = session.user;
 
+      // Outer safety net: whatever happens below — a thrown error in
+      // applyTheme, an unhandled rejection anywhere in the role-branch
+      // logic — hideBootScreen() must still fire at the end, or the new
+      // full-screen boot overlay would stay stuck covering the app
+      // forever. Every branch below already calls it at its own precise
+      // moment (right when it's actually safe to reveal what's
+      // underneath); this is purely a redundant last-resort call for
+      // whatever those miss. hideBootScreen() is idempotent, so calling
+      // it twice is harmless.
+      try {
+
       try {
         // Returning device: render from the last-known-good profile
         // instantly and refresh it quietly in the background — never
@@ -654,6 +677,7 @@ function initApp() {
       if (!profile) {
         console.error('Profile failed to load — session valid, showing retry');
         showScreen('auth');
+        hideBootScreen();
         setBtn(el.btnSignin, false, 'Sign in');
         if (el.msgSignin) {
           el.msgSignin.textContent = 'Could not connect. Check your connection and tap "Sign in" to try again.';
@@ -670,8 +694,14 @@ function initApp() {
         if (role === 'admin' || role === 'approved') {
           if (!profile.onboarding_complete) {
             showScreen('onboard');
+            hideBootScreen();
             initOnboarding();
           } else {
+            // Deliberately NOT hiding the boot overlay here — showScreen
+            // reveals the (still data-less) shell underneath it, and the
+            // overlay stays up on top until the awaited navigateTo below
+            // has actually populated the target view, so nothing empty is
+            // ever visible even for a moment.
             showScreen('app');
             const adminSec = $('adminSection');
             if (adminSec) adminSec.hidden = role !== 'admin';
@@ -688,16 +718,19 @@ function initApp() {
             } else {
               await navigateTo(targetTab);
             }
+            hideBootScreen();
 
             requestNotificationPermission();
           }
         } else if (role === 'rejected') {
           showScreen('pending');
+          hideBootScreen();
           $('pendingState').hidden  = true;
           $('rejectedState').hidden = false;
         } else {
           await createApprovalRequest();
           showScreen('pending');
+          hideBootScreen();
           $('pendingState').hidden  = false;
           $('rejectedState').hidden = true;
         }
@@ -708,11 +741,17 @@ function initApp() {
           const adminSec = $('adminSection');
           if (adminSec) adminSec.hidden = (profile?.role || '') !== 'admin';
           await navigateTo('dashboard');
+          hideBootScreen();
         } catch (fallbackErr) {
           console.error('Fallback also failed:', fallbackErr?.message || fallbackErr);
           // Last resort — just show the app screen
           showScreen('app');
+          hideBootScreen();
         }
+      }
+
+      } finally {
+        hideBootScreen();
       }
 
     } else if (event === 'SIGNED_OUT' || (event === 'INITIAL_SESSION' && !session)) {
@@ -725,6 +764,7 @@ function initApp() {
       clearWorkoutState(); // clear any saved workout on explicit sign out
       resetAuthForms();
       showScreen('auth');
+      hideBootScreen();
     }
   });
 }
@@ -7612,26 +7652,13 @@ if (keepAwakeCheckbox) {
 // It will be replaced by the app screen if a valid session is found
 showScreen('auth');
 
-// Fetch Supabase credentials from Netlify Function, then start the app
+// Fetch Supabase credentials from Netlify Function, then start the app.
+// No separate loading indicator needed here — screenBoot (index.html) is
+// already visible from the very first paint and stays up on top of
+// whatever showScreen('auth') reveals underneath, all the way through
+// config load, auth resolution, and (for the main app case) the initial
+// view's own data fetch. See hideBootScreen()'s call sites in initApp().
 (async () => {
-  // Show a minimal loading indicator while config loads
-  const loadingEl = document.createElement('div');
-  loadingEl.id = 'bootLoader';
-  loadingEl.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#111318;z-index:9999;flex-direction:column;gap:16px;';
-  loadingEl.innerHTML = `
-    <div style="font-family:-apple-system,sans-serif;font-size:22px;font-weight:900;letter-spacing:-.03em;color:#F0F2F7;">You<span style="color:#C8F000">F1t</span></div>
-    <div style="width:32px;height:3px;background:rgba(255,255,255,.1);border-radius:3px;overflow:hidden;">
-      <div style="height:100%;background:#C8F000;border-radius:3px;animation:bootPulse 1s ease-in-out infinite;"></div>
-    </div>
-    <style>@keyframes bootPulse{0%,100%{width:0%}50%{width:100%}}</style>`;
-  document.body.appendChild(loadingEl);
-
-  const removeLoader = () => {
-    try { loadingEl.remove(); } catch {}
-    const el2 = document.getElementById('bootLoader');
-    if (el2) el2.remove();
-  };
-
   try {
     const cfgRes = await fetch('/.netlify/functions/config');
     if (!cfgRes.ok) throw new Error(`Config HTTP ${cfgRes.status}`);
@@ -7695,7 +7722,8 @@ showScreen('auth');
       }
     });
   } catch (err) {
-    removeLoader();
+    // No hideBootScreen() call needed — this replaces all of document.body,
+    // screenBoot included, so the error message beneath is what appears.
     document.body.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:center;min-height:100dvh;
                   font-family:sans-serif;padding:24px;text-align:center;background:#111318;color:#F0F2F7">
@@ -7711,9 +7739,6 @@ showScreen('auth');
       </div>`;
     return;
   }
-
-  // Config loaded — remove loader before starting app
-  removeLoader();
 
   // Wire all db-dependent listeners now that db is initialised
   initApp();

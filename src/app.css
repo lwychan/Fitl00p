@@ -3067,6 +3067,40 @@ body { font-size: 15px; }
 .onboard-brand .brand-fit,
 .onboard-brand .brand-loop { font-size: 26px; }
 
+/* Boot screen — full-viewport overlay shown before any screen has
+   resolved, and again during the initial app load so the shell never
+   appears with no data behind it. Sits above everything (very high
+   z-index) rather than being one of showScreen()'s mutually-exclusive
+   screens, since it can stay up while the real screen underneath is
+   already rendering (data fetches don't require visibility). */
+.screen-boot {
+  position: fixed;
+  inset: 0;
+  z-index: 999990;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 28px;
+  background: var(--bg);
+}
+.screen-boot[hidden] { display: none; }
+.screen-boot__brand .brand-mark img { width: 36px; height: 36px; }
+.screen-boot__brand .brand-fit,
+.screen-boot__brand .brand-loop { font-size: 26px; }
+.screen-boot__spinner {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 3px solid var(--border);
+  border-top-color: var(--blue);
+  animation: screen-boot-spin .8s linear infinite;
+}
+@keyframes screen-boot-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .screen-boot__spinner { animation-duration: 1.6s; }
+}
+
 /* Feature tiles on auth screen — always a dark hero panel so the white
    tile text reads well, but tinted toward each theme's own brand hue */
 [data-theme="slate"]    .auth-features { background: linear-gradient(160deg, #004080 0%, #001830 100%); }
