@@ -675,7 +675,20 @@ function initApp() {
           loadProfileWithTimeout().then(() => applyDiabetesTabVisibility()).catch(() => {});
         } else {
           if (el.msgSignin) el.msgSignin.textContent = 'Connecting…';
-          await loadProfileWithTimeout();
+          // A brand-new device has nothing cached to fall back on, so this
+          // one has to actually wait — but a single stalled attempt (same
+          // cold-launch/service-worker conditions as the config fetch
+          // above) shouldn't immediately dump the user onto a manual-retry
+          // screen. One extra attempt, still entirely behind the boot
+          // spinner, catches the common case where the network was simply
+          // slow to wake up rather than genuinely unreachable.
+          const PROFILE_LOAD_ATTEMPTS = 2; // each attempt already self-bounds to 15s
+          for (let i = 0; i < PROFILE_LOAD_ATTEMPTS && !profile; i++) {
+            await loadProfileWithTimeout();
+            if (!profile && i < PROFILE_LOAD_ATTEMPTS - 1) {
+              await new Promise(r => setTimeout(r, 1500));
+            }
+          }
         }
       } finally {
         authHandling = false;
@@ -7841,6 +7854,33 @@ if (keepAwakeCheckbox) {
 // It will be replaced by the app screen if a valid session is found
 showScreen('auth');
 
+// Fetches url with its own bounded timeout per attempt, retrying a
+// couple of times with a short backoff before finally giving up —
+// nothing else on the boot path can proceed without this one succeeding
+// (see the config fetch below), and a single stalled attempt right
+// after a cold PWA launch (service worker waking from iOS suspension,
+// see sw.js) very often recovers within a few seconds on its own. The
+// boot spinner stays up for the entire retry sequence; only exhausting
+// every attempt falls through to the error screen.
+async function fetchWithRetries(url, { attempts = 3, attemptTimeoutMs = 7000, backoffMs = 1500 } = {}) {
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), attemptTimeoutMs);
+    try {
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(timer);
+      return res;
+    } catch (err) {
+      clearTimeout(timer);
+      lastErr = err;
+      if (i < attempts - 1) await new Promise(r => setTimeout(r, backoffMs * (i + 1)));
+    }
+  }
+  lastErr.isConnectivity = true; // distinguishes "never got a response" from a real config/HTTP error below
+  throw lastErr;
+}
+
 // Fetch Supabase credentials from Netlify Function, then start the app.
 // No separate loading indicator needed here — screenBoot (index.html) is
 // already visible from the very first paint and stays up on top of
@@ -7849,24 +7889,10 @@ showScreen('auth');
 // view's own data fetch. See hideBootScreen()'s call sites in initApp().
 (async () => {
   try {
-    // Bounded, same reasoning as loadProfileWithTimeout below: an
-    // installed PWA's service worker can wake from iOS suspension mid-
-    // stall on the very first request after a cold launch (this fetch
-    // is what it intercepts network-first, per sw.js), and this is the
-    // ONE call nothing else on the page can proceed without — db never
-    // gets created, initApp() never runs, and hideBootScreen() lives
-    // entirely inside initApp()'s auth callback. Without a bound here,
-    // a stalled first request leaves the boot spinner (visible by
-    // default, no dismiss timer of its own) spinning forever with no
-    // way out short of force-quitting.
-    const cfgController = new AbortController();
-    const cfgTimer = setTimeout(() => cfgController.abort(), 10000);
-    let cfgRes;
-    try {
-      cfgRes = await fetch('/.netlify/functions/config', { signal: cfgController.signal });
-    } finally {
-      clearTimeout(cfgTimer);
-    }
+    // Worst case ~3 attempts × 7s + backoff ≈ 25s, still entirely behind
+    // the spinner — see fetchWithRetries above for why this retries
+    // instead of just bounding a single attempt like before.
+    const cfgRes = await fetchWithRetries('/.netlify/functions/config', { attempts: 3, attemptTimeoutMs: 7000, backoffMs: 1500 });
     if (!cfgRes.ok) throw new Error(`Config HTTP ${cfgRes.status}`);
     const cfg = await cfgRes.json();
     if (!cfg.url || !cfg.key) throw new Error('Missing url or key in config response');
@@ -7935,7 +7961,7 @@ showScreen('auth');
     // "config missing" implies a deployment problem, which would be a
     // misleading (and unactionable, for the user) thing to show for
     // what's usually just a stalled first request on cold PWA launch.
-    const timedOut = err?.name === 'AbortError';
+    const timedOut = err?.isConnectivity === true;
     document.body.innerHTML = timedOut ? `
       <div style="display:flex;align-items:center;justify-content:center;min-height:100dvh;
                   font-family:sans-serif;padding:24px;text-align:center;background:#111318;color:#F0F2F7">
@@ -7943,7 +7969,7 @@ showScreen('auth');
           <div style="font-size:32px;margin-bottom:12px">📡</div>
           <p style="font-size:17px;font-weight:600;margin-bottom:8px">fitl00p couldn't connect</p>
           <p style="font-size:14px;color:#888;max-width:320px;line-height:1.5">
-            Taking too long to reach the server — this can happen right after opening the app from the home screen. Check your connection and try again.
+            Still couldn't reach the server after a few tries — this can happen right after opening the app from the home screen. Check your connection and try again.
           </p>
           <button onclick="window.location.reload()" style="margin-top:16px;padding:10px 22px;border:none;border-radius:10px;background:#C6FF00;color:#111318;font-weight:700;font-size:15px">Retry</button>
         </div>
