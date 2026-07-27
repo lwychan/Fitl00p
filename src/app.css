@@ -3107,8 +3107,28 @@ body { font-size: 15px; }
    screen (which only ever appears at launch, never at the same time as
    this). Color state (in-range / low / high) is toggled via a class on
    the root element so every piece — number, ring, action panel — reads
-   consistently at a glance without hunting for a badge. */
+   consistently at a glance without hunting for a badge.
+
+   Deliberately always dark, regardless of the app's own theme setting
+   (light/dark/aurora) — this is the screen most likely to be left on
+   for hours at a stretch on a charging phone, so it gets its own fixed
+   near-black palette (true black background, not just a dark theme's
+   dark grey) rather than inheriting --bg/--ink from :root[data-theme],
+   for the OLED battery saving that only pure black actually gives you. */
 .dx-simple {
+  --sb-bg:      #000000;
+  --sb-surface: #161616;
+  --sb-border:  rgba(255,255,255,.10);
+  --sb-ink:     #FFFFFF;
+  --sb-ink-2:   rgba(255,255,255,.55);
+  --sb-ink-3:   rgba(255,255,255,.35);
+  --sb-green:       #34D399;
+  --sb-green-light: rgba(52,211,153,.16);
+  --sb-orange:       #FB923C;
+  --sb-orange-light: rgba(251,146,60,.16);
+  --sb-red:       #F87171;
+  --sb-red-light: rgba(248,113,113,.16);
+
   position: fixed;
   inset: 0;
   z-index: 999980;
@@ -3117,7 +3137,7 @@ body { font-size: 15px; }
   align-items: center;
   justify-content: center;
   gap: 18px;
-  background: var(--bg);
+  background: var(--sb-bg);
   padding: 24px;
   text-align: center;
 }
@@ -3130,16 +3150,16 @@ body { font-size: 15px; }
   width: 44px;
   height: 44px;
   border-radius: 50%;
-  border: 1.5px solid var(--border);
-  background: var(--surface);
-  color: var(--ink-3);
+  border: 1.5px solid var(--sb-border);
+  background: var(--sb-surface);
+  color: var(--sb-ink-3);
   font-size: 18px;
   line-height: 1;
   display: flex;
   align-items: center;
   justify-content: center;
 }
-.dx-simple__exit:active { background: var(--surface-2); color: var(--ink); }
+.dx-simple__exit:active { background: #232323; color: var(--sb-ink); }
 
 .dx-simple__glucose-wrap {
   display: flex;
@@ -3152,18 +3172,18 @@ body { font-size: 15px; }
   font-size: clamp(84px, 26vw, 160px);
   line-height: 1;
   letter-spacing: -.02em;
-  color: var(--ink);
+  color: var(--sb-ink);
   font-variant-numeric: tabular-nums;
   transition: color .3s ease;
 }
 .dx-simple__trend {
   font-size: clamp(32px, 9vw, 52px);
-  color: var(--ink-2);
+  color: var(--sb-ink-2);
 }
 .dx-simple__unit {
   font-size: 15px;
   font-weight: 600;
-  color: var(--ink-3);
+  color: var(--sb-ink-3);
   text-transform: uppercase;
   letter-spacing: .08em;
   margin-top: -12px;
@@ -3171,11 +3191,11 @@ body { font-size: 15px; }
 
 /* Range-state colors — applied to the wrapping .dx-simple element */
 .dx-simple--low    .dx-simple__glucose,
-.dx-simple--low    .dx-simple__trend { color: var(--red); }
+.dx-simple--low    .dx-simple__trend { color: var(--sb-red); }
 .dx-simple--high   .dx-simple__glucose,
-.dx-simple--high   .dx-simple__trend { color: var(--orange); }
+.dx-simple--high   .dx-simple__trend { color: var(--sb-orange); }
 .dx-simple--inrange .dx-simple__glucose,
-.dx-simple--inrange .dx-simple__trend { color: var(--green); }
+.dx-simple--inrange .dx-simple__trend { color: var(--sb-green); }
 
 .dx-simple__grid {
   display: grid;
@@ -3186,8 +3206,8 @@ body { font-size: 15px; }
   margin-top: 8px;
 }
 .dx-simple__stat {
-  background: var(--surface);
-  border: 1.5px solid var(--border-2);
+  background: var(--sb-surface);
+  border: 1.5px solid var(--sb-border);
   border-radius: var(--r-lg);
   padding: 14px 10px;
 }
@@ -3196,13 +3216,13 @@ body { font-size: 15px; }
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: .08em;
-  color: var(--ink-3);
+  color: var(--sb-ink-3);
   margin-bottom: 4px;
 }
 .dx-simple__stat-val {
   font-size: 24px;
   font-weight: 700;
-  color: var(--ink);
+  color: var(--sb-ink);
   font-variant-numeric: tabular-nums;
 }
 
@@ -3211,26 +3231,26 @@ body { font-size: 15px; }
   max-width: 360px;
   border-radius: var(--r-lg);
   padding: 16px;
-  background: var(--surface);
-  border: 1.5px solid var(--border-2);
+  background: var(--sb-surface);
+  border: 1.5px solid var(--sb-border);
 }
 .dx-simple__action-text {
   font-size: 17px;
   font-weight: 700;
-  color: var(--ink);
+  color: var(--sb-ink);
 }
-.dx-simple--action-ok     .dx-simple__action { background: var(--green-light);  border-color: transparent; }
-.dx-simple--action-ok     .dx-simple__action-text { color: var(--green); }
-.dx-simple--action-correct .dx-simple__action { background: var(--orange-light); border-color: transparent; }
-.dx-simple--action-correct .dx-simple__action-text { color: #C2410C; }
-.dx-simple--action-carbs  .dx-simple__action { background: var(--red-light);    border-color: transparent; }
-.dx-simple--action-carbs  .dx-simple__action-text { color: var(--red); }
+.dx-simple--action-ok     .dx-simple__action { background: var(--sb-green-light);  border-color: transparent; }
+.dx-simple--action-ok     .dx-simple__action-text { color: var(--sb-green); }
+.dx-simple--action-correct .dx-simple__action { background: var(--sb-orange-light); border-color: transparent; }
+.dx-simple--action-correct .dx-simple__action-text { color: var(--sb-orange); }
+.dx-simple--action-carbs  .dx-simple__action { background: var(--sb-red-light);    border-color: transparent; }
+.dx-simple--action-carbs  .dx-simple__action-text { color: var(--sb-red); }
 
 .dx-simple__footer {
   display: flex;
   align-items: center;
   gap: 7px;
-  color: var(--ink-3);
+  color: var(--sb-ink-3);
   font-size: 12px;
   margin-top: 4px;
 }
@@ -3238,7 +3258,7 @@ body { font-size: 15px; }
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--green);
+  background: var(--sb-green);
   animation: dx-simple-pulse 2s ease-in-out infinite;
 }
 @keyframes dx-simple-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
