@@ -302,6 +302,7 @@ const el = {
   dxStaleNote:       $('dxStaleNote'),
   dxForecastBody:    $('dxForecastBody'),
   dxCorrectionBody:  $('dxCorrectionBody'),
+  dxMealPreset:      $('dxMealPreset'),
   dxMealName:        $('dxMealName'),
   dxMealCarbs:       $('dxMealCarbs'),
   dxMealFat:         $('dxMealFat'),
@@ -4694,32 +4695,40 @@ async function fetchMfpImports() {
   return data || [];
 }
 
-// Distinct past meal names, most-recently-used first, for the meal-dose
-// helper's picker — lets a recurring meal be selected instead of retyped,
-// and is exactly what suggestMacroMealDose matches on to personalize.
-async function fetchMealNames() {
+// Distinct past meals, most-recently-used first, for the meal-dose
+// helper's "Previous meals" picker — carries each meal's last-logged
+// macros too, so selecting one repopulates Carbs/Fat/Protein instead of
+// just filling in the name. Same rows suggestMacroMealDose matches on to
+// personalize, so "what actually worked last time" for the macros lines
+// up with what the dose suggestion is itself drawing on.
+async function fetchMealPresets() {
   if (!currentUser) return [];
   const { data, error } = await db
     .from('diabetes_meals')
-    .select('meal_name, eaten_at')
+    .select('meal_name, carbs_g, fat_g, protein_g, eaten_at')
     .eq('user_id', currentUser.id)
     .not('meal_name', 'is', null)
     .order('eaten_at', { ascending: false })
     .limit(200);
   if (error) {
-    console.error('fetchMealNames error:', error.message);
+    console.error('fetchMealPresets error:', error.message);
     return [];
   }
   const seen = new Set();
-  const names = [];
+  const presets = [];
   for (const r of data || []) {
     const name = (r.meal_name || '').trim();
     if (name && !seen.has(name.toLowerCase())) {
       seen.add(name.toLowerCase());
-      names.push(name);
+      presets.push({
+        name,
+        carbs: Number(r.carbs_g) || 0,
+        fat: Number(r.fat_g) || 0,
+        protein: Number(r.protein_g) || 0,
+      });
     }
   }
-  return names;
+  return presets;
 }
 
 async function recordMacroMeal(entry, doseResult) {
@@ -5058,6 +5067,7 @@ $('btnMfpCopyShortcutScript')?.addEventListener('click', async () => {
 let diabetesData = null;       // adapted {glucoseHistory, boluses, corrections, basalDoses}
 let diabetesFetchedAt = null;
 let dxWorkoutTypesPopulated = false; // first populate always defaults to most-recently-done type
+let dxMealPresets = []; // populated by loadDiabetes(); looked up by name when the "Previous meals" dropdown changes
 const DIABETES_CACHE_MS = 4 * 60000; // avoid re-hitting Nightscout on every tab switch
 
 async function fetchDiabetesData(force = false) {
@@ -5131,9 +5141,17 @@ async function loadDiabetes() {
   el.dxNotConnected.hidden = true;
   el.dxConnected.hidden = false;
 
-  fetchMealNames().then(names => {
-    const list = $('dxMealNameOptions');
-    if (list) list.innerHTML = names.map(n => `<option value="${escapeHtml(n)}">`).join('');
+  fetchMealPresets().then(presets => {
+    dxMealPresets = presets;
+    if (el.dxMealPreset) {
+      el.dxMealPreset.innerHTML = '<option value="">— Select a previous meal —</option>'
+        + presets.map(p => {
+            const bits = [`${p.carbs}g carbs`];
+            if (p.fat) bits.push(`${p.fat}g fat`);
+            if (p.protein) bits.push(`${p.protein}g protein`);
+            return `<option value="${escapeHtml(p.name)}">${escapeHtml(p.name)} (${bits.join(', ')})</option>`;
+          }).join('');
+    }
   });
 
   try {
@@ -5493,6 +5511,15 @@ const DX_MEAL_WITHHELD_MESSAGES = {
   'stale-reading': 'No recent glucose reading — check your sensor app.',
   'missing-carb-ratio': 'Set a carb ratio in Settings first.',
 };
+
+el.dxMealPreset?.addEventListener('change', () => {
+  const preset = dxMealPresets.find(p => p.name === el.dxMealPreset.value);
+  if (!preset) return;
+  if (el.dxMealName)    el.dxMealName.value = preset.name;
+  if (el.dxMealCarbs)   el.dxMealCarbs.value = preset.carbs || '';
+  if (el.dxMealFat)     el.dxMealFat.value = preset.fat || '';
+  if (el.dxMealProtein) el.dxMealProtein.value = preset.protein || '';
+});
 
 $('btnDxMealDose')?.addEventListener('click', async () => {
   const mealName = el.dxMealName.value.trim();

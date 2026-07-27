@@ -1401,9 +1401,14 @@
             Factors in your current glucose and IOB alongside the carbs — running low reduces the suggestion, running high adds a correction on top. Add fat/protein for a split-dose suggestion, and a meal name to build up per-meal history (pick a past one to see what actually worked last time).
           </p>
           <div class="field">
-            <label for="dxMealName">Meal name <span class="field-hint">optional — pick a past one or type a new one</span></label>
-            <input type="text" id="dxMealName" list="dxMealNameOptions" placeholder="e.g. Pizza, Porridge…" autocomplete="off">
-            <datalist id="dxMealNameOptions"></datalist>
+            <label for="dxMealPreset">Previous meals <span class="field-hint">pick one to reuse its macros</span></label>
+            <select id="dxMealPreset">
+              <option value="">— Select a previous meal —</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="dxMealName">Meal name <span class="field-hint">optional — or type a new one</span></label>
+            <input type="text" id="dxMealName" placeholder="e.g. Pizza, Porridge…" autocomplete="off">
           </div>
           <div class="field-grid">
             <div class="field">
