@@ -7849,7 +7849,24 @@ showScreen('auth');
 // view's own data fetch. See hideBootScreen()'s call sites in initApp().
 (async () => {
   try {
-    const cfgRes = await fetch('/.netlify/functions/config');
+    // Bounded, same reasoning as loadProfileWithTimeout below: an
+    // installed PWA's service worker can wake from iOS suspension mid-
+    // stall on the very first request after a cold launch (this fetch
+    // is what it intercepts network-first, per sw.js), and this is the
+    // ONE call nothing else on the page can proceed without — db never
+    // gets created, initApp() never runs, and hideBootScreen() lives
+    // entirely inside initApp()'s auth callback. Without a bound here,
+    // a stalled first request leaves the boot spinner (visible by
+    // default, no dismiss timer of its own) spinning forever with no
+    // way out short of force-quitting.
+    const cfgController = new AbortController();
+    const cfgTimer = setTimeout(() => cfgController.abort(), 10000);
+    let cfgRes;
+    try {
+      cfgRes = await fetch('/.netlify/functions/config', { signal: cfgController.signal });
+    } finally {
+      clearTimeout(cfgTimer);
+    }
     if (!cfgRes.ok) throw new Error(`Config HTTP ${cfgRes.status}`);
     const cfg = await cfgRes.json();
     if (!cfg.url || !cfg.key) throw new Error('Missing url or key in config response');
@@ -7913,7 +7930,24 @@ showScreen('auth');
   } catch (err) {
     // No hideBootScreen() call needed — this replaces all of document.body,
     // screenBoot included, so the error message beneath is what appears.
-    document.body.innerHTML = `
+    //
+    // Timeouts/network failures get a distinct, retryable message —
+    // "config missing" implies a deployment problem, which would be a
+    // misleading (and unactionable, for the user) thing to show for
+    // what's usually just a stalled first request on cold PWA launch.
+    const timedOut = err?.name === 'AbortError';
+    document.body.innerHTML = timedOut ? `
+      <div style="display:flex;align-items:center;justify-content:center;min-height:100dvh;
+                  font-family:sans-serif;padding:24px;text-align:center;background:#111318;color:#F0F2F7">
+        <div>
+          <div style="font-size:32px;margin-bottom:12px">📡</div>
+          <p style="font-size:17px;font-weight:600;margin-bottom:8px">fitl00p couldn't connect</p>
+          <p style="font-size:14px;color:#888;max-width:320px;line-height:1.5">
+            Taking too long to reach the server — this can happen right after opening the app from the home screen. Check your connection and try again.
+          </p>
+          <button onclick="window.location.reload()" style="margin-top:16px;padding:10px 22px;border:none;border-radius:10px;background:#C6FF00;color:#111318;font-weight:700;font-size:15px">Retry</button>
+        </div>
+      </div>` : `
       <div style="display:flex;align-items:center;justify-content:center;min-height:100dvh;
                   font-family:sans-serif;padding:24px;text-align:center;background:#111318;color:#F0F2F7">
         <div>
