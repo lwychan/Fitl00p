@@ -7485,17 +7485,26 @@ document.querySelectorAll('.theme-btn').forEach(btn => {
 ═══════════════════════════════════════════════════════════ */
 const KEEP_AWAKE_KEY = 'fitl00p:keepAwake';
 let wakeLockSentinel = null;
+// A NotAllowedError reflects a persistent platform restriction (Low Power
+// Mode, or iOS often blocking Wake Lock entirely in standalone/home-screen
+// PWA mode) — not a transient blip that's worth retrying. Without this,
+// the visibilitychange listener below re-attempts (and re-logs) an
+// identical failure every single time the screen wakes, spamming both the
+// real console and the on-screen debug panel for the rest of the session.
+let wakeLockDeniedThisSession = false;
 
 async function requestWakeLock() {
   if (!('wakeLock' in navigator)) return false;
   try {
     wakeLockSentinel = await navigator.wakeLock.request('screen');
     wakeLockSentinel.addEventListener('release', () => { wakeLockSentinel = null; });
+    wakeLockDeniedThisSession = false;
     return true;
   } catch (err) {
     // Can legitimately fail (e.g. Low Power Mode) — not an error worth
     // surfacing to the user, the checkbox just won't have taken effect.
     console.warn('Wake lock request failed (non-fatal):', err?.message || err);
+    if (err?.name === 'NotAllowedError') wakeLockDeniedThisSession = true;
     wakeLockSentinel = null;
     return false;
   }
@@ -7509,7 +7518,7 @@ function releaseWakeLock() {
 }
 
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && localStorage.getItem(KEEP_AWAKE_KEY) === '1') {
+  if (document.visibilityState === 'visible' && !wakeLockDeniedThisSession && localStorage.getItem(KEEP_AWAKE_KEY) === '1') {
     requestWakeLock();
   }
 });
@@ -7525,7 +7534,15 @@ if (keepAwakeCheckbox) {
     if (keepAwakeCheckbox.checked) requestWakeLock();
     keepAwakeCheckbox.addEventListener('change', () => {
       localStorage.setItem(KEEP_AWAKE_KEY, keepAwakeCheckbox.checked ? '1' : '0');
-      if (keepAwakeCheckbox.checked) requestWakeLock(); else releaseWakeLock();
+      if (keepAwakeCheckbox.checked) {
+        // An explicit toggle is deliberate user intent — always worth one
+        // fresh attempt, in case whatever caused the denial has changed
+        // (e.g. Low Power Mode turned off) since the last passive retry.
+        wakeLockDeniedThisSession = false;
+        requestWakeLock();
+      } else {
+        releaseWakeLock();
+      }
     });
   }
 }
