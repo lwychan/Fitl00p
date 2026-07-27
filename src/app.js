@@ -5440,11 +5440,14 @@ async function renderDiabetesTab(data) {
   const mfpImports = await fetchMfpImports();
   renderDxMfpImports(mfpImports, data.boluses || []);
 
+  const prescribed = DiabetesEngine.prescribedRegimenTable(profile?.diabetes_pump_profile);
+  const hasThuProfile = !!profile?.diabetes_pump_profile?.thu;
+
   const sensitivity = DiabetesEngine.sensitivityMap(input, now);
-  renderDxSensitivity(sensitivity);
+  renderDxSensitivity(sensitivity, prescribed);
 
   const regimen = DiabetesEngine.regimenReview(input, now);
-  renderDxRegimen(regimen);
+  renderDxRegimen(regimen, prescribed, hasThuProfile);
 
   el.dxLastSync.textContent = `Last synced ${new Date(diabetesFetchedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
 }
@@ -5876,7 +5879,17 @@ function renderDxMfpImports(items, boluses) {
       actionHtml = `<span class="badge badge--green">✓ ${fmt1(it.matched_bolus_units)}u${it.match_status === 'manual' ? ' (linked)' : ''}</span>`;
     } else if (it.hypo_treatment) {
       actionHtml = `<span class="badge badge--blue">Hypo treatment — no bolus needed</span>
-        <button class="btn btn--ghost btn--small" data-action="unhypo" data-id="${it.id}" style="margin-left:6px">Not a hypo?</button>`;
+        <button class="btn btn--ghost btn--small" data-action="unclassify" data-id="${it.id}" style="margin-left:6px">Not a hypo?</button>`;
+    } else if (it.match_status === 'below-target') {
+      // Distinct from hypo_treatment: glucose was below target but not
+      // actually low enough to be a hypo — a deliberate no-dose call, not
+      // "no correction needed because this was basically treating a low."
+      // Excluded from dose-learning the same way (see fetchMacroMealLog's
+      // actualDose — null whenever match_status is set and there's no
+      // matched_bolus_units), so it won't skew "what this meal needs"
+      // any more than a hypo-treatment row would.
+      actionHtml = `<span class="badge badge--orange">Below target — no dose</span>
+        <button class="btn btn--ghost btn--small" data-action="unclassify" data-id="${it.id}" style="margin-left:6px">Not right?</button>`;
     } else {
       // Both a plain 'unmatched' row (couldn't compute a suggestion) and a
       // 'suggested' row (computed one, but the real bolus hasn't shown up
@@ -5909,7 +5922,8 @@ function renderDxMfpImports(items, boluses) {
           ${nearbyBoluses.map(b => `<option value="${b.time}|${b.units}">${new Date(Number(b.time)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} — ${fmt1(b.units)}u${Number(b.carbs) > 0 ? ` (${fmt1(b.carbs)}g carbs)` : ''}</option>`).join('')}
         </select>
         <button class="btn btn--ghost btn--small" data-action="link" data-id="${it.id}">Link</button>
-        <button class="btn btn--ghost btn--small" data-action="hypo" data-id="${it.id}">Mark hypo</button>`;
+        <button class="btn btn--ghost btn--small" data-action="hypo" data-id="${it.id}">Mark hypo</button>
+        <button class="btn btn--ghost btn--small" data-action="below-target" data-id="${it.id}">Below target, no dose</button>`;
     }
     // Meal-grouped imports encode "Section — ingredient, ingredient, …"
     // in meal_name (see MFP_BOOKMARKLET_SRC) — split that into a bold
@@ -5953,7 +5967,9 @@ el.dxMfpImportsBody?.addEventListener('click', async (e) => {
     };
   } else if (action === 'hypo') {
     updates = { match_status: 'hypo-manual', hypo_treatment: true };
-  } else if (action === 'unhypo') {
+  } else if (action === 'below-target') {
+    updates = { match_status: 'below-target', hypo_treatment: false };
+  } else if (action === 'unclassify') {
     updates = { match_status: 'unmatched', hypo_treatment: false };
   }
   if (!updates) return;
@@ -6008,48 +6024,66 @@ function renderDxMealMemory(meals) {
   }).join('');
 }
 
-function renderDxSensitivity(cells) {
+function renderDxSensitivity(cells, prescribed) {
   const withData = cells.filter(c => c.n > 0);
-  if (!withData.length) {
+  if (!withData.length && !prescribed) {
     el.dxSensitivityBody.innerHTML = '<p class="empty-state">Not enough clean corrections yet to map this out.</p>';
     return;
   }
   el.dxSensitivityBody.innerHTML = `
     <div class="table-wrap">
       <table class="data-table">
-        <thead><tr><th>Time of day</th><th>Rest</th><th>Post-exercise</th></tr></thead>
+        <thead><tr><th>Time of day</th>${prescribed ? '<th>Prescribed</th>' : ''}<th>Rest</th><th>Post-exercise</th></tr></thead>
         <tbody>
           ${['Night (00-06)', 'Morning (06-12)', 'Afternoon (12-18)', 'Evening (18-24)'].map(tod => {
             const rest = cells.find(c => c.timeOfDay === tod && c.context === 'rest');
             const ex   = cells.find(c => c.timeOfDay === tod && c.context === 'post-exercise');
+            const rx   = prescribed?.find(p => p.timeOfDay === tod);
             const fmtCell = c => c && c.n > 0 ? `${fmt1(c.avgDropPerUnit)} (n=${c.n})` : '—';
-            return `<tr><td>${tod}</td><td>${fmtCell(rest)}</td><td>${fmtCell(ex)}</td></tr>`;
+            const rxCell = rx?.correctionFactor != null ? `${fmt1(rx.correctionFactor)}` : '—';
+            return `<tr><td>${tod}</td>${prescribed ? `<td>${rxCell}</td>` : ''}<td>${fmtCell(rest)}</td><td>${fmtCell(ex)}</td></tr>`;
           }).join('')}
         </tbody>
       </table>
     </div>
+    ${prescribed ? '<p class="dx-note">Prescribed = your pump\'s programmed correction factor for that window (mmol/L per unit); Rest/Post-exercise are what\'s actually been observed.</p>' : ''}
   `;
 }
 
-function renderDxRegimen(regimen) {
+function renderDxRegimen(regimen, prescribed, hasThuProfile) {
   const activeBasal = (regimen.basalByWindow || []).filter(w => !w.withheldReason);
   const ratio = regimen.carbRatio;
   const hasRatio = ratio && !ratio.withheldReason;
 
-  if (!activeBasal.length && !hasRatio) {
+  if (!activeBasal.length && !hasRatio && !prescribed) {
     el.dxRegimenBody.innerHTML = '<p class="empty-state">Not enough clean data yet this week to review your basal or carb ratio.</p>';
     return;
   }
 
-  const basalRows = activeBasal.map(w => `
+  const prescribedTable = prescribed ? `
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead><tr><th>Time of day</th><th>Basal (u/hr)</th><th>Correction factor</th><th>Carb ratio (g/u)</th></tr></thead>
+        <tbody>
+          ${prescribed.map(p => `<tr><td>${p.timeOfDay}</td><td>${p.basalRate != null ? fmt1(p.basalRate) : '—'}</td><td>${p.correctionFactor != null ? fmt1(p.correctionFactor) : '—'}</td><td>${p.carbRatio != null ? fmt1(p.carbRatio) : '—'}</td></tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+    <p class="dx-note">Your prescribed pump profile${hasThuProfile ? ' (weekday default — Thursdays run a different profile)' : ''}, for reference against the data-driven suggestions below.</p>
+  ` : '';
+
+  const basalRows = activeBasal.map(w => {
+    const rx = prescribed?.find(p => p.timeOfDay === w.timeOfDay);
+    return `
     <div class="dx-insight">
       <div class="dx-insight__head">
         <span class="badge badge--orange">${w.direction === 'increase' ? 'Consider more basal' : 'Consider less basal'}</span>
         <span class="dx-insight__n">n=${w.n}</span>
       </div>
       <div class="dx-insight__title">${escapeHtml(w.timeOfDay)}: ${fmtSigned(w.suggestedPctChange, 0)}%${w.cappedAtLimit ? ' (capped)' : ''}</div>
-      <div class="dx-insight__summary">Drifted ${fmtSigned(w.avgDrift, 1)} mmol/L over ${w.n} clean ${w.n === 1 ? 'instance' : 'instances'} with no insulin or carbs active.</div>
-    </div>`).join('');
+      <div class="dx-insight__summary">Drifted ${fmtSigned(w.avgDrift, 1)} mmol/L over ${w.n} clean ${w.n === 1 ? 'instance' : 'instances'} with no insulin or carbs active.${rx?.basalRate != null ? ` Pump programmed: ${fmt1(rx.basalRate)}u/hr.` : ''}</div>
+    </div>`;
+  }).join('');
 
   const ratioRow = hasRatio ? `
     <div class="dx-insight">
@@ -6061,7 +6095,7 @@ function renderDxRegimen(regimen) {
       <div class="dx-insight__summary">Meals have ${ratio.direction === 'tighten' ? 'run high' : 'gone low'} ${ratio.n} time${ratio.n === 1 ? '' : 's'} this week at the current ratio.</div>
     </div>` : '';
 
-  el.dxRegimenBody.innerHTML = basalRows + ratioRow;
+  el.dxRegimenBody.innerHTML = prescribedTable + basalRows + ratioRow;
 }
 
 /* ═══════════════════════════════════════════════════════════

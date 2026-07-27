@@ -2037,6 +2037,52 @@ function sensitivityMap(input, now = Date.now()) {
   return cells;
 }
 
+/* ── Prescribed regimen reference ─────────────────────────────
+   Time-weighted average of a pump-programmed profile (segments shaped
+   { time: "HH:MM", basalRate, correctionFactor, carbRatio, targetBg })
+   across the same 4 time-of-day buckets sensitivityMap/basalWindowReview
+   already use — purely a REFERENCE for comparison against the observed,
+   data-driven numbers elsewhere in this file, never itself a suggestion.
+   A window can span more than one pump segment (e.g. Night 00-06 crosses
+   a 04:00 rate change), hence the weighting rather than a plain lookup.
+   Only ever reads the "default" profile — a day-of-week override (e.g.
+   a Thursday-only profile) is real but averaging it in would blur one
+   day's very different numbers into a week-wide reference that no
+   single day actually runs; simpler and more honest to keep this to the
+   profile that applies most of the week and let the caller footnote the
+   exception. */
+function toHourDecimal(hhmm) {
+  const [h, m] = String(hhmm).split(':').map(Number);
+  return h + (m || 0) / 60;
+}
+function timeWeightedAverage(segments, fromHour, toHour, field) {
+  if (!segments?.length) return null;
+  const sorted = [...segments].sort((a, b) => toHourDecimal(a.time) - toHourDecimal(b.time));
+  let totalWeight = 0, weightedSum = 0;
+  for (let i = 0; i < sorted.length; i++) {
+    const segStart = toHourDecimal(sorted[i].time);
+    const segEnd = i + 1 < sorted.length ? toHourDecimal(sorted[i + 1].time) : 24;
+    const overlapStart = Math.max(fromHour, segStart);
+    const overlapEnd = Math.min(toHour, segEnd);
+    if (overlapEnd > overlapStart && sorted[i][field] != null) {
+      const weight = overlapEnd - overlapStart;
+      weightedSum += Number(sorted[i][field]) * weight;
+      totalWeight += weight;
+    }
+  }
+  return totalWeight > 0 ? weightedSum / totalWeight : null;
+}
+function prescribedRegimenTable(pumpProfile) {
+  const segments = pumpProfile?.default;
+  if (!segments?.length) return null;
+  return SENSITIVITY_TOD_BUCKETS.map(bucket => ({
+    timeOfDay: bucket.label,
+    basalRate: timeWeightedAverage(segments, bucket.from, bucket.to, 'basalRate'),
+    correctionFactor: timeWeightedAverage(segments, bucket.from, bucket.to, 'correctionFactor'),
+    carbRatio: timeWeightedAverage(segments, bucket.from, bucket.to, 'carbRatio'),
+  }));
+}
+
 /* ═══════════════════════════════════════════════════════════
    STAGE 6 — Regimen review (basal-by-window / carb-ratio)
    Retrospective, standing-setting suggestions — a different animal
@@ -2324,6 +2370,7 @@ const DiabetesEngine = {
   suggestMealDose,
   insulinHealthCheck,
   sensitivityMap,
+  prescribedRegimenTable,
   splitDoseGuide,
   suggestMacroMealDose,
   SPLIT_DOSE_FAT_LOW_G,
