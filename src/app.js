@@ -5682,6 +5682,13 @@ function toMs(t) {
   return Number.isFinite(ms) ? ms : null;
 }
 
+// How far off the ideal target still counts as "at target" for Simple
+// View's coloring and for triggering a correction suggestion — set by
+// the user, not the wider targetLow/targetHigh safety band used
+// elsewhere (that band is "not dangerous," this is "close enough to
+// target that nothing needs doing").
+const DX_SIMPLE_TARGET_BAND_MMOL = 1.0;
+
 function renderDxSimple(data, ctx, correctionSuggestion, forecast, settings, factorValue) {
   if (!el.screenDxSimple) return;
 
@@ -5692,23 +5699,52 @@ function renderDxSimple(data, ctx, correctionSuggestion, forecast, settings, fac
   const basal = currentBasalRate(data?.basalDoses, ctx.now);
   el.dxSimpleBasal.textContent = basal != null ? `${fmt1(basal)}u/hr` : '—';
 
+  const g = ctx.currentGlucose;
+  // Only center coloring/corrections on the ideal target once the user
+  // has actually set one in Settings — without it, fall back to the
+  // wider targetLow/targetHigh safety band exactly as before.
+  const target = Number.isFinite(Number(settings.idealTarget)) ? Number(settings.idealTarget) : null;
+
   el.screenDxSimple.classList.remove('dx-simple--low', 'dx-simple--high', 'dx-simple--inrange');
-  if (ctx.currentGlucose != null && !ctx.stale) {
-    if (ctx.currentGlucose < settings.targetLow) el.screenDxSimple.classList.add('dx-simple--low');
-    else if (ctx.currentGlucose > settings.targetHigh) el.screenDxSimple.classList.add('dx-simple--high');
-    else el.screenDxSimple.classList.add('dx-simple--inrange');
+  if (g != null && !ctx.stale) {
+    if (target != null) {
+      if (g < target - DX_SIMPLE_TARGET_BAND_MMOL) el.screenDxSimple.classList.add('dx-simple--low');
+      else if (g > target + DX_SIMPLE_TARGET_BAND_MMOL) el.screenDxSimple.classList.add('dx-simple--high');
+      else el.screenDxSimple.classList.add('dx-simple--inrange');
+    } else {
+      if (g < settings.targetLow) el.screenDxSimple.classList.add('dx-simple--low');
+      else if (g > settings.targetHigh) el.screenDxSimple.classList.add('dx-simple--high');
+      else el.screenDxSimple.classList.add('dx-simple--inrange');
+    }
   }
+
+  // A personal, data-derived correction factor is more accurate, but a
+  // newer account may not have >=3 resolved corrections yet to compute
+  // one — the prescribed pump factor (Settings > correction factor) is
+  // always available once entered, so it's a reasonable fallback for a
+  // real number instead of "not enough history" on every high reading.
+  const prescribedFactor = Number(profile?.diabetes_correction_factor) || null;
+  const effFactor = factorValue || prescribedFactor;
+  const fromPrescribed = !factorValue && !!prescribedFactor;
 
   el.screenDxSimple.classList.remove('dx-simple--action-ok', 'dx-simple--action-correct', 'dx-simple--action-carbs');
   let actionText, actionClass;
   if (ctx.stale) {
     actionText = 'No recent reading — check your sensor.';
     actionClass = null;
-  } else if (ctx.currentGlucose != null && ctx.currentGlucose < settings.targetLow) {
-    // A genuinely low reading right now always says something — this
-    // can't wait on the 2h forecast engine's own data requirements
-    // (>=3 resolved corrections), which a low-history account may not
-    // have yet even though the current number is plainly low.
+  } else if (target != null && g != null && g < target - DX_SIMPLE_TARGET_BAND_MMOL) {
+    // More than the band below target — always says something, current
+    // state takes priority over the forecast below, and can't wait on
+    // the forecast engine's own data requirements (>=3 resolved
+    // corrections) which a low-history account may not have yet.
+    const carbRatio = Number(settings.carbRatio) || null;
+    const grams = (effFactor && carbRatio) ? Math.round(((target - g) / effFactor) * carbRatio) : null;
+    const urgent = g < settings.targetLow; // below the hard safety floor, not just off personal target
+    actionText = grams != null
+      ? (urgent ? `Eat ~${grams}g carbs now — low (${fmt1(g)})` : `Eat ~${grams}g carbs${fromPrescribed ? ' (from pump settings)' : ''} — ${fmt1(g)} → target ${fmt1(target)}`)
+      : (urgent ? `Low now (${fmt1(g)}) — treat with fast-acting carbs` : `${fmt1(g)} is below target (${fmt1(target)}) — consider some carbs`);
+    actionClass = 'dx-simple--action-carbs';
+  } else if (target == null && ctx.currentGlucose != null && ctx.currentGlucose < settings.targetLow) {
     const advice = factorValue ? DiabetesEngine.preventativeCarbAdvice(ctx.currentGlucose, 0, factorValue, settings) : null;
     actionText = advice?.gramsNeeded
       ? `Eat ~${advice.gramsNeeded}g fast carbs — low now (${fmt1(ctx.currentGlucose)})`
@@ -5718,14 +5754,32 @@ function renderDxSimple(data, ctx, correctionSuggestion, forecast, settings, fac
     const advice = DiabetesEngine.preventativeCarbAdvice(forecast.forecastGlucose, 120, forecast.factor, settings);
     actionText = advice.gramsNeeded ? `Eat ~${advice.gramsNeeded}g carbs — trending low` : 'Trending low — keep an eye on it';
     actionClass = 'dx-simple--action-carbs';
+  } else if (target != null && g != null && g > target + DX_SIMPLE_TARGET_BAND_MMOL) {
+    // More than the band above target — prefer the engine's own
+    // suggestion (already targets idealTarget and nets out IOB) when a
+    // personal factor is trustworthy; otherwise estimate from the
+    // prescribed pump factor so a real number still shows up.
+    let units = null, usedPrescribed = false;
+    if (correctionSuggestion && !correctionSuggestion.withheldReason && correctionSuggestion.suggestedUnits != null) {
+      units = correctionSuggestion.suggestedUnits;
+    } else if (prescribedFactor) {
+      const raw = (g - target) / prescribedFactor - (ctx.iob || 0);
+      units = Math.min(10, Math.max(0, Math.round(raw * 2) / 2));
+      usedPrescribed = true;
+    }
+    const urgentHigh = g > settings.targetHigh; // above the hard safety ceiling, not just off personal target
+    actionText = units != null
+      ? (urgentHigh ? `Correct: ${fmt1(units)}u insulin now — high (${fmt1(g)})` : `Correct: ${fmt1(units)}u insulin${usedPrescribed ? ' (from pump settings)' : ''} — ${fmt1(g)} → target ${fmt1(target)}`)
+      : `${fmt1(g)} is above target (${fmt1(target)}) — not enough dose history yet for a suggestion`;
+    actionClass = 'dx-simple--action-correct';
   } else if (correctionSuggestion && !correctionSuggestion.withheldReason && correctionSuggestion.suggestedUnits > 0) {
     actionText = `Correct: ${fmt1(correctionSuggestion.suggestedUnits)}u insulin`;
     actionClass = 'dx-simple--action-correct';
-  } else if (ctx.currentGlucose != null && ctx.currentGlucose > settings.targetHigh) {
+  } else if (target == null && ctx.currentGlucose != null && ctx.currentGlucose > settings.targetHigh) {
     actionText = `High now (${fmt1(ctx.currentGlucose)}) — not enough dose history yet for a suggestion`;
     actionClass = 'dx-simple--action-correct';
   } else {
-    actionText = 'In range — no action needed';
+    actionText = target != null ? `At target (${fmt1(target)}) — no action needed` : 'In range — no action needed';
     actionClass = 'dx-simple--action-ok';
   }
   el.dxSimpleActionText.textContent = actionText;
