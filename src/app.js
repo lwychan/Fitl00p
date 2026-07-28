@@ -3588,6 +3588,13 @@ async function loadHistory() {
   if (!currentUser) return;
   const unit = profile?.weight_unit || 'kg';
 
+  // Manual weight logging — button only shown for an account with the
+  // Settings toggle on; card itself starts closed on every tab visit.
+  const weightLogToggle = $('btnWeightLogToggle');
+  if (weightLogToggle) weightLogToggle.hidden = !profile?.manual_weight_logging;
+  const weightLogCard = $('weightLogCard');
+  if (weightLogCard) weightLogCard.hidden = true;
+
   // Fetch daily logs
   const { data } = await db
     .from('daily_logs')
@@ -4543,23 +4550,17 @@ async function loadSettings() {
   const mhDate = $('mhDate');
   if (mhDate && !mhDate.value) mhDate.value = todayISO();
 
-  const mwDate = $('mwDate');
-  if (mwDate && !mwDate.value) mwDate.value = todayISO();
-
   if (!profile) return;
 
-  // Manual weight logging — same show/hide-on-toggle pattern as the
-  // Apple Health and diabetes-tracking sections above. The checkbox
-  // itself saves immediately (see its own change listener below), same
-  // as "Keep screen awake" — it's a single on/off switch, not part of
-  // the bigger "Save settings" form.
+  // Manual weight logging toggle — just the switch lives here; the
+  // actual logging UI is the ⚖️ button/card on the History tab (see
+  // loadHistory()), so someone using this doesn't have to leave
+  // wherever they're checking their weight history to go log a new
+  // one. The checkbox itself saves immediately, same as "Keep screen
+  // awake" — it's a single on/off switch, not part of the bigger
+  // "Save settings" form.
   const manualWeightToggle = $('setManualWeightLogging');
-  const manualWeightControls = $('manualWeightControls');
-  if (manualWeightToggle) {
-    manualWeightToggle.checked = !!profile.manual_weight_logging;
-    if (manualWeightControls) manualWeightControls.hidden = !manualWeightToggle.checked;
-    if (manualWeightToggle.checked) renderManualWeightRecent();
-  }
+  if (manualWeightToggle) manualWeightToggle.checked = !!profile.manual_weight_logging;
 
   // Diabetes tracking (Nightscout) config — stored on the profile row,
   // same as every other per-user setting, so it survives across devices.
@@ -6875,17 +6876,17 @@ document.addEventListener('click', async e => {
 
 /* ═══════════════════════════════════════════════════════════
    MANUAL WEIGHT LOGGING
-   Reuses daily_logs.weight — the same field the History tab's own
-   date-based log entry writes to and the dashboard/weight-plan cards
-   already read from — rather than a new table, so a manually-logged
-   weight shows up everywhere weight already does. health-sync.js skips
-   writing this field entirely for a user with the toggle on (see there),
-   so this is the only path that can ever set it for them.
+   Toggle lives in Settings; the actual logging UI is the ⚖️ button/card
+   on the History tab (see loadHistory() and the handlers below) so it's
+   available right where weight history is already being looked at.
+   Reuses daily_logs.weight — the same field the dashboard/weight-plan
+   cards already read from — rather than a new table, so a manually-
+   logged weight shows up everywhere weight already does. health-sync.js
+   skips writing this field entirely for a user with the toggle on (see
+   there), so this is the only path that can ever set it for them.
 ═══════════════════════════════════════════════════════════ */
 $('setManualWeightLogging')?.addEventListener('change', async (e) => {
   const checked = e.target.checked;
-  const controls = $('manualWeightControls');
-  if (controls) controls.hidden = !checked;
   if (!currentUser) return;
   // Turning it on also switches the account to lb — logging in lb but
   // displaying in kg everywhere else would be confusing, and lb is the
@@ -6896,11 +6897,33 @@ $('setManualWeightLogging')?.addEventListener('change', async (e) => {
   if (error) {
     showToast("Couldn't save: " + error.message, true);
     e.target.checked = !checked; // revert the visible toggle on failure
-    if (controls) controls.hidden = checked;
     return;
   }
   if (checked && el.setUnit) el.setUnit.value = 'lb';
-  if (checked) renderManualWeightRecent();
+  // Reflect immediately on the History tab's button too, in case it's
+  // already been visited this session (its own loadHistory() call would
+  // otherwise be the only thing to pick this up, on the next visit).
+  const toggleBtn = $('btnWeightLogToggle');
+  if (toggleBtn) toggleBtn.hidden = !checked;
+  if (!checked) {
+    const card = $('weightLogCard');
+    if (card) card.hidden = true;
+  }
+});
+
+$('btnWeightLogToggle')?.addEventListener('click', () => {
+  const card = $('weightLogCard');
+  if (!card) return;
+  card.hidden = !card.hidden;
+  if (!card.hidden) {
+    const mwDate = $('mwDate');
+    if (mwDate && !mwDate.value) mwDate.value = todayISO();
+    renderManualWeightRecent();
+  }
+});
+$('btnWeightLogClose')?.addEventListener('click', () => {
+  const card = $('weightLogCard');
+  if (card) card.hidden = true;
 });
 
 $('btnSaveManualWeight')?.addEventListener('click', async () => {
