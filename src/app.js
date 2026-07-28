@@ -517,6 +517,20 @@ function showScreen(screen) {
 // called right alongside showScreen().
 function hideBootScreen() {
   if (el.screenBoot) el.screenBoot.hidden = true;
+  markBootResolved();
+}
+
+// Set by the boot watchdog IIFE near the end of this file — declared as
+// a plain `let`/function pair up front like this so hideBootScreen()
+// above (called throughout the auth-state-change handler, which runs
+// long before the watchdog's own declarations further down execute) can
+// still reach them: by the time any of these functions actually GET
+// CALLED, the whole script has finished its top-to-bottom pass and
+// every top-level binding is initialized, regardless of where in the
+// file they're each declared.
+function markBootResolved() {
+  bootResolved = true;
+  clearTimeout(bootWatchdog);
 }
 
 // Auth state — module-scoped so it survives across the auth callback lifecycle
@@ -8450,6 +8464,7 @@ window.__fitl00pHardReset = async function () {
 el.btnBootHardReset?.addEventListener('click', () => window.__fitl00pHardReset());
 
 function showBootConnectivityError() {
+  markBootResolved();
   document.body.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:center;min-height:100dvh;
                 font-family:sans-serif;padding:24px;text-align:center;background:#111318;color:#F0F2F7">
@@ -8473,15 +8488,23 @@ function showBootConnectivityError() {
 // Absolute failsafe, entirely independent of fetch()/AbortController
 // actually working — on iOS the service worker itself can be fully
 // suspended by the OS mid-request, and there's no guarantee an abort
-// signal from the page reaches a worker in that state. If boot hasn't
-// resolved either way within 35s (comfortably past the ~25s retry
-// budget below), force the same connectivity-error screen regardless
-// of what's stuck inside the async logic — this plain timer can't
-// itself get stuck the way a fetch chain can.
+// signal from the page reaches a worker in that state. Cleared only by
+// markBootResolved() (called from hideBootScreen() and the two error
+// paths below), which is what makes this a genuine end-to-end
+// failsafe rather than one that only covers the config fetch: it stays
+// armed all the way through profile load AND the target tab's own data
+// load (navigateTo), since neither of those has its own timeout on
+// every individual query they run — a hang in any of them previously
+// left the boot spinner up forever with nothing to catch it. 90s
+// comfortably clears the legitimate worst case (≈25s of config
+// retries + ≈31s of profile-load retries + real data-query time on a
+// slow connection) without false-triggering mid-boot; the manual
+// reset button on the boot screen is available the whole time
+// regardless, for anyone who doesn't want to wait that long.
 let bootResolved = false;
 const bootWatchdog = setTimeout(() => {
   if (!bootResolved) showBootConnectivityError();
-}, 35000);
+}, 90000);
 
 // Fetches url with its own bounded timeout per attempt, retrying a
 // couple of times with a short backoff before finally giving up —
@@ -8583,8 +8606,6 @@ async function fetchWithRetries(url, { attempts = 3, attemptTimeoutMs = 7000, ba
       }
     });
   } catch (err) {
-    bootResolved = true;
-    clearTimeout(bootWatchdog);
     // No hideBootScreen() call needed — this replaces all of document.body,
     // screenBoot included, so the error message beneath is what appears.
     //
@@ -8593,9 +8614,10 @@ async function fetchWithRetries(url, { attempts = 3, attemptTimeoutMs = 7000, ba
     // misleading (and unactionable, for the user) thing to show for
     // what's usually just a stalled first request on cold PWA launch.
     if (err?.isConnectivity === true) {
-      showBootConnectivityError();
+      showBootConnectivityError(); // calls markBootResolved() itself
       return;
     }
+    markBootResolved();
     document.body.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:center;min-height:100dvh;
                   font-family:sans-serif;padding:24px;text-align:center;background:#111318;color:#F0F2F7">
@@ -8612,8 +8634,13 @@ async function fetchWithRetries(url, { attempts = 3, attemptTimeoutMs = 7000, ba
     return;
   }
 
-  bootResolved = true;
-  clearTimeout(bootWatchdog);
+  // NOTE: bootWatchdog stays armed here on purpose — config/auth resolved
+  // successfully, but the real data load (navigateTo() inside the
+  // SIGNED_IN handler initApp() wires up below) hasn't started yet, and
+  // it has no timeout of its own. The watchdog now covers that phase too;
+  // it's disarmed later by hideBootScreen() once a tab actually finishes
+  // loading (or by showBootConnectivityError()/markBootResolved() if
+  // something still hangs past the 90s window).
 
   // Wire all db-dependent listeners now that db is initialised
   initApp();
