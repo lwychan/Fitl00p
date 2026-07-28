@@ -751,7 +751,7 @@
           <h1 class="view-title">Workout</h1>
           <button type="button" class="btn btn--ghost btn--small" id="btnWorkoutHistory">History →</button>
         </div>
-        <div class="routine-filters">
+        <div class="routine-filters" id="routineFilters">
           <select id="routineFilterSplit" class="split-select">
             <option value="">All splits</option>
             <option value="Push">Push</option>
@@ -1226,6 +1226,31 @@
         <div class="settings-actions" style="padding-top:8px">
           <button class="btn btn--primary btn--small" id="btnSaveManualHealth">Save health data</button>
           <span class="save-status" id="manualHealthStatus"></span>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section__title">Weight logging</div>
+        <label class="checkbox-option checkbox-option--full" style="margin-bottom:10px">
+          <input type="checkbox" id="setManualWeightLogging">
+          <span>I'll log my weight manually in fitl00p <span class="field-hint">Apple Health/MyFitnessPal weight is ignored from then on — a sync can never overwrite what you enter here. Weight shows in lb.</span></span>
+        </label>
+        <div id="manualWeightControls" hidden>
+          <div class="field-grid">
+            <div class="field">
+              <label for="mwDate">Date</label>
+              <input type="date" id="mwDate">
+            </div>
+            <div class="field">
+              <label for="mwWeight">Weight <span class="field-hint">lb</span></label>
+              <input type="number" id="mwWeight" step="0.1" min="0" max="1000" placeholder="165.0" inputmode="decimal">
+            </div>
+          </div>
+          <div class="settings-actions" style="padding-top:8px">
+            <button class="btn btn--primary btn--small" id="btnSaveManualWeight">Log weight</button>
+            <span class="save-status" id="manualWeightStatus"></span>
+          </div>
+          <div id="manualWeightRecent" class="field-hint" style="margin-top:10px;line-height:1.8"></div>
         </div>
       </div>
 

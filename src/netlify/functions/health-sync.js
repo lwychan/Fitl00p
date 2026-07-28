@@ -53,6 +53,15 @@ exports.handler = async function (event) {
   // Update last_used (fire and forget)
   sbFetch(`/rest/v1/health_api_keys?id=eq.${keyId}`, 'PATCH', { last_used: new Date().toISOString() });
 
+  // Some users log weight manually in the fitl00p front end instead of
+  // trusting Apple Health/MyFitnessPal for it (e.g. a synced value from
+  // an old smart-scale entry, or MFP's own weight log conflicting with
+  // what they actually enter) — for them the Body Weight metric below is
+  // parsed but never written, so an automatic sync can never clobber a
+  // manual entry with a stale or unwanted figure.
+  const profRes = await sbFetch(`/rest/v1/profiles?id=eq.${user_id}&select=manual_weight_logging`);
+  const ignoreWeight = profRes.ok && profRes.data?.[0]?.manual_weight_logging === true;
+
   // ── 2. Parse body ─────────────────────────────────────────
   let body;
   try {
@@ -230,7 +239,8 @@ exports.handler = async function (event) {
 
       // ── Body Weight ─────────────────────────────────────
       // Name: "Body Weight" or "Weight", units: kg or lb
-      if (metricName.includes('weight')) { // matches weight_body_mass, body_weight, weight
+      // Skipped entirely for a manual-weight-logging user — see ignoreWeight above.
+      if (metricName.includes('weight') && !ignoreWeight) { // matches weight_body_mass, body_weight, weight
         const val = item.qty;
         if (val != null) {
           const kg = metricUnits.includes('lb') ? round2(val * 0.453592) : round2(val);

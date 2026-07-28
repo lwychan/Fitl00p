@@ -126,6 +126,41 @@ function carbsOnBoard(boluses, now, opts = {}) {
   return total;
 }
 
+// Corrects the Nightscout boluses array's carbs figures against the
+// user's own MFP-logged meals (macroMealLog / diabetes_meals) before any
+// COB/carb-interference calculation runs. Tandem's Control-IQ can reduce
+// or withhold a bolus entirely when current BG is low — the meal still
+// gets eaten, but Nightscout never receives a treatment carrying the
+// real carb figure for it (or receives one with the wrong number), so
+// every downstream carbsOnBoard()/carbAbsorptionWithin() call would
+// silently miss carbs that are actually in the gut. Each meal's own
+// eaten_at timestamp is the more reliable "carbs eaten, right now"
+// signal, so it supersedes rather than merely supplements Nightscout's
+// figure: a meal already matched to a real bolus overrides that dose's
+// carbs field (insulin units/time stay Nightscout's, only carbs move to
+// the MFP figure); an unmatched meal — exactly the low-BG-suppressed-
+// dose case — is added as its own units:0 carbs-only row.
+function mergeMealCarbsIntoBoluses(boluses, macroMealLog) {
+  const list = (boluses || []).map(dose => ({ ...dose }));
+  for (const meal of macroMealLog || []) {
+    const carbs = Number(meal.carbs_g ?? meal.carbs) || 0;
+    const eatenAt = meal.eaten_at ?? meal.time;
+    if (carbs <= 0 || eatenAt == null) continue;
+
+    const matchedAt = meal.matched_bolus_time ? toMs(meal.matched_bolus_time) : null;
+    const match = matchedAt != null
+      ? list.find(d => { const dMs = toMs(d.time); return dMs != null && Math.abs(dMs - matchedAt) < 5 * 60000; })
+      : null;
+
+    if (match) {
+      match.carbs = carbs;
+    } else {
+      list.push({ time: eatenAt, units: 0, carbs });
+    }
+  }
+  return list;
+}
+
 /* ─────────────────────────────────────────────────────────
    Within-horizon variants
    "How much of the currently-active IOB/COB will actually exert itself
@@ -2337,6 +2372,7 @@ const DiabetesEngine = {
   cobFraction,
   activeInsulin,
   carbsOnBoard,
+  mergeMealCarbsIntoBoluses,
   insulinActionWithin,
   carbAbsorptionWithin,
   computeTrend,

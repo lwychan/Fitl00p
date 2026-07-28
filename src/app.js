@@ -2056,6 +2056,7 @@ const elW = {
   active:            $('workoutActive'),
   historyPanel:      $('workoutHistoryPanel'),
   routineFilterSplit:$('routineFilterSplit'),
+  routineFilters:$('routineFilters'),
   routineList:       $('routineList'),
   readinessBanner:   $('readinessBanner'),
   workoutDate:       $('workoutDate'),
@@ -2245,6 +2246,29 @@ async function loadRoutines() {
   if (!currentUser) return;
   elW.routineList.innerHTML = '<p class="empty-state">Loading…</p>';
 
+  // Pinned to a hand-picked set (profiles.workout_routine_override, set
+  // directly in the DB — see Settings) — bypasses the whole equipment/
+  // goal/split/duration recommendation algorithm below and just shows
+  // exactly these routines, in this exact order, every time. The split
+  // filter dropdown has no effect on a fixed set, so it's hidden rather
+  // than left sitting there doing nothing.
+  const override = profile?.workout_routine_override;
+  if (Array.isArray(override) && override.length) {
+    if (elW.routineFilters) elW.routineFilters.hidden = true;
+    const { data, error } = await db.from('routine_templates')
+      .select('id, name, split_type, equipment_id, goal, rest_seconds, min_duration, max_duration, description, full_body_day')
+      .in('id', override);
+    if (error || !data?.length) {
+      elW.routineList.innerHTML = '<p class="empty-state">Custom routine set not found — check Settings.</p>';
+      return;
+    }
+    const byId = new Map(data.map(r => [r.id, r]));
+    const routines = override.map(id => byId.get(id)).filter(Boolean);
+    await renderRoutineCards(routines);
+    return;
+  }
+  if (elW.routineFilters) elW.routineFilters.hidden = false;
+
   // Build query filtered to user's equipment and goal
   const userEquipment = profile?.equipment || [];
   const userGoal      = profile?.goal || 'tone';
@@ -2285,7 +2309,13 @@ async function loadRoutines() {
     : data.filter(r => r.split_type !== 'Full Body');
 
   const routines = filtered.length ? filtered : data;
+  await renderRoutineCards(routines);
+}
 
+// Shared by both the normal recommendation path and the fixed-set
+// override above — everything from here on just renders whatever
+// routines array it's handed.
+async function renderRoutineCards(routines) {
   // One extra round-trip to get a per-routine exercise count (Coachly shows
   // "5 exercises" on every card) — grouped client-side to avoid N+1 queries.
   const routineIds = routines.map(r => r.id);
@@ -4513,7 +4543,23 @@ async function loadSettings() {
   const mhDate = $('mhDate');
   if (mhDate && !mhDate.value) mhDate.value = todayISO();
 
+  const mwDate = $('mwDate');
+  if (mwDate && !mwDate.value) mwDate.value = todayISO();
+
   if (!profile) return;
+
+  // Manual weight logging — same show/hide-on-toggle pattern as the
+  // Apple Health and diabetes-tracking sections above. The checkbox
+  // itself saves immediately (see its own change listener below), same
+  // as "Keep screen awake" — it's a single on/off switch, not part of
+  // the bigger "Save settings" form.
+  const manualWeightToggle = $('setManualWeightLogging');
+  const manualWeightControls = $('manualWeightControls');
+  if (manualWeightToggle) {
+    manualWeightToggle.checked = !!profile.manual_weight_logging;
+    if (manualWeightControls) manualWeightControls.hidden = !manualWeightToggle.checked;
+    if (manualWeightToggle.checked) renderManualWeightRecent();
+  }
 
   // Diabetes tracking (Nightscout) config — stored on the profile row,
   // same as every other per-user setting, so it survives across devices.
@@ -5490,7 +5536,16 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now) {
 async function renderDiabetesTab(data) {
   const settings = dxSettings();
   const [macroMealLog, workouts] = await Promise.all([fetchMacroMealLog(), fetchDxWorkouts()]);
-  const input = { ...data, settings, activities: { workouts }, macroMealLog };
+  // Tandem's Control-IQ can reduce or withhold a bolus entirely when
+  // current BG is low, so Nightscout's own carbs figure for that meal
+  // can be missing or wrong — the MFP-logged entry's own timestamp
+  // supersedes it for every COB-driven calculation below (dosingContext,
+  // forecast, correction, patterns, etc.). Deliberately NOT used for the
+  // MFP-import matching UI just below or the raw chart, which both need
+  // the true, unmodified Nightscout treatment list — carbBoluses is a
+  // separate array, data.boluses itself is untouched.
+  const carbBoluses = DiabetesEngine.mergeMealCarbsIntoBoluses(data.boluses, macroMealLog);
+  const input = { ...data, boluses: carbBoluses, settings, activities: { workouts }, macroMealLog };
   const now = Date.now();
 
   drawDxGlucoseChart(el.dxGlucoseChart, el.dxGlucoseChartEmpty, data, settings, now);
@@ -5501,9 +5556,9 @@ async function renderDiabetesTab(data) {
   const forecast = DiabetesEngine.hypoForecast2h(input, now);
   renderDxForecast(forecast);
 
-  const resolved = DiabetesEngine.resolveCorrections(data.corrections, data.glucoseHistory, data.boluses, now);
+  const resolved = DiabetesEngine.resolveCorrections(data.corrections, data.glucoseHistory, carbBoluses, now);
   const factor = DiabetesEngine.personalCorrectionFactor(resolved);
-  const suggestion = DiabetesEngine.suggestCorrectionDose(ctx, factor, data.boluses, data.corrections, now);
+  const suggestion = DiabetesEngine.suggestCorrectionDose(ctx, factor, carbBoluses, data.corrections, now);
   renderDxCorrection(suggestion);
 
   const patterns = DiabetesEngine.analyzePatterns(input, now);
@@ -5619,18 +5674,23 @@ function stopDxAutoRefresh() {
 async function refreshDxLive() {
   if (!profile?.diabetes_ns_url) return;
   try {
-    const data = await fetchDiabetesData(true);
+    const [data, macroMealLog] = await Promise.all([fetchDiabetesData(true), fetchMacroMealLog()]);
     const settings = dxSettings();
     const now = Date.now();
-    const input = { ...data, settings };
+    // Same MFP-supersedes-Nightscout-carbs correction as renderDiabetesTab
+    // — see mergeMealCarbsIntoBoluses. Kept here too so the Now card,
+    // correction suggestion and Simple View all stay accurate between
+    // full tab reloads, not just right after one.
+    const carbBoluses = DiabetesEngine.mergeMealCarbsIntoBoluses(data.boluses, macroMealLog);
+    const input = { ...data, boluses: carbBoluses, settings };
 
     const ctx = DiabetesEngine.dosingContext(input, now);
     renderDxNow(ctx);
     drawDxGlucoseChart(el.dxGlucoseChart, el.dxGlucoseChartEmpty, data, settings, now);
 
-    const resolved = DiabetesEngine.resolveCorrections(data.corrections, data.glucoseHistory, data.boluses, now);
+    const resolved = DiabetesEngine.resolveCorrections(data.corrections, data.glucoseHistory, carbBoluses, now);
     const factor = DiabetesEngine.personalCorrectionFactor(resolved);
-    const suggestion = DiabetesEngine.suggestCorrectionDose(ctx, factor, data.boluses, data.corrections, now);
+    const suggestion = DiabetesEngine.suggestCorrectionDose(ctx, factor, carbBoluses, data.corrections, now);
     renderDxCorrection(suggestion);
 
     const forecast = DiabetesEngine.hypoForecast2h(input, now);
@@ -6148,8 +6208,12 @@ el.btnDxWorkoutImpact?.addEventListener('click', async () => {
       if (el.dxWorkoutHistoryList) el.dxWorkoutHistoryList.innerHTML = '';
       return;
     }
-    const workouts = await fetchDxWorkouts();
-    const input = { ...data, settings: dxSettings(), activities: { workouts } };
+    const [workouts, macroMealLog] = await Promise.all([fetchDxWorkouts(), fetchMacroMealLog()]);
+    // Same MFP-supersedes-Nightscout-carbs correction as renderDiabetesTab
+    // — a missed/reduced Tandem bolus shouldn't make the "what if I do
+    // this workout" projection start from an artificially low COB.
+    const carbBoluses = DiabetesEngine.mergeMealCarbsIntoBoluses(data.boluses, macroMealLog);
+    const input = { ...data, boluses: carbBoluses, settings: dxSettings(), activities: { workouts } };
     const result = DiabetesEngine.workoutSimulate(input, { workoutType, durationMin, intensity }, Date.now());
     renderDxWorkoutSimulateResult(result);
     const history = DiabetesEngine.workoutHistoryDetail(input, workoutType, Date.now());
@@ -6808,6 +6872,79 @@ document.addEventListener('click', async e => {
       .forEach(id => { if ($(id)) $(id).value = ''; });
   }
 });
+
+/* ═══════════════════════════════════════════════════════════
+   MANUAL WEIGHT LOGGING
+   Reuses daily_logs.weight — the same field the History tab's own
+   date-based log entry writes to and the dashboard/weight-plan cards
+   already read from — rather than a new table, so a manually-logged
+   weight shows up everywhere weight already does. health-sync.js skips
+   writing this field entirely for a user with the toggle on (see there),
+   so this is the only path that can ever set it for them.
+═══════════════════════════════════════════════════════════ */
+$('setManualWeightLogging')?.addEventListener('change', async (e) => {
+  const checked = e.target.checked;
+  const controls = $('manualWeightControls');
+  if (controls) controls.hidden = !checked;
+  if (!currentUser) return;
+  // Turning it on also switches the account to lb — logging in lb but
+  // displaying in kg everywhere else would be confusing, and lb is the
+  // whole point of this toggle for someone who thinks in lb.
+  const updates = { manual_weight_logging: checked };
+  if (checked) updates.weight_unit = 'lb';
+  const { error } = await saveNsProfileFields(updates);
+  if (error) {
+    showToast("Couldn't save: " + error.message, true);
+    e.target.checked = !checked; // revert the visible toggle on failure
+    if (controls) controls.hidden = checked;
+    return;
+  }
+  if (checked && el.setUnit) el.setUnit.value = 'lb';
+  if (checked) renderManualWeightRecent();
+});
+
+$('btnSaveManualWeight')?.addEventListener('click', async () => {
+  if (!currentUser) return;
+  const btn = $('btnSaveManualWeight');
+  const date = $('mwDate')?.value || todayISO();
+  const weight = parseFloat($('mwWeight')?.value);
+  if (!Number.isFinite(weight) || weight <= 0) {
+    flash($('manualWeightStatus'), 'Enter a weight.', true);
+    return;
+  }
+  setBtn(btn, true, 'Log weight', 'Saving…');
+  const { error } = await db
+    .from('daily_logs')
+    .upsert({ user_id: currentUser.id, log_date: date, weight }, { onConflict: 'user_id,log_date' });
+  setBtn(btn, false, 'Log weight');
+  if (error) {
+    flash($('manualWeightStatus'), 'Error: ' + error.message, true);
+    return;
+  }
+  flash($('manualWeightStatus'), 'Saved.');
+  if ($('mwWeight')) $('mwWeight').value = '';
+  renderManualWeightRecent();
+});
+
+async function renderManualWeightRecent() {
+  const el2 = $('manualWeightRecent');
+  if (!el2 || !currentUser) return;
+  const { data, error } = await db
+    .from('daily_logs')
+    .select('log_date, weight')
+    .eq('user_id', currentUser.id)
+    .not('weight', 'is', null)
+    .order('log_date', { ascending: false })
+    .limit(5);
+  if (error || !data?.length) {
+    el2.innerHTML = 'No weights logged yet.';
+    return;
+  }
+  const unit = profile?.weight_unit || 'lb';
+  el2.innerHTML = 'Recent: ' + data
+    .map(r => `${new Date(r.log_date + 'T00:00:00').toLocaleDateString([], { month: 'short', day: 'numeric' })} — ${fmt1(r.weight)}${unit}`)
+    .join(' · ');
+}
 
 /* ═══════════════════════════════════════════════════════════
    APPLE HEALTH API KEY MANAGEMENT
