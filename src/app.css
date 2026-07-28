@@ -3085,6 +3085,25 @@ body { font-size: 15px; }
   background: var(--bg);
 }
 .screen-boot[hidden] { display: none; }
+/* Deliberately subtle — an escape hatch for the rare case boot is
+   actually stuck (see the 35s watchdog / connectivity-error screen in
+   app.js), not a primary action, so it shouldn't compete with the
+   brand mark for attention on every normal, few-hundred-ms boot. */
+.screen-boot__reset {
+  position: absolute;
+  top: max(16px, env(safe-area-inset-top));
+  right: 16px;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border);
+  background: transparent;
+  color: var(--ink-3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.screen-boot__reset:active { background: var(--surface); color: var(--ink); }
 .screen-boot__brand .brand-mark img { width: 36px; height: 36px; }
 .screen-boot__brand .brand-fit,
 .screen-boot__brand .brand-loop { font-size: 26px; }

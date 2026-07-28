@@ -152,6 +152,7 @@ const $ = id => document.getElementById(id);
 const el = {
   // screens
   screenBoot: $('screenBoot'),
+  btnBootHardReset: $('btnBootHardReset'),
   screenAuth: $('screenAuth'),
   screenApp:  $('screenApp'),
   // auth
@@ -605,12 +606,18 @@ function initApp() {
   el.btnSignout.addEventListener('click', handleSignOut);
   el.btnSignoutHeader?.addEventListener('click', handleSignOut);
   el.btnOpenSettingsHeader?.addEventListener('click', () => navigateTo('settings'));
-  // Plain page reload — the session token lives in localStorage, untouched
-  // by this, so it fixes the same "everything's blank" state handleSignOut
-  // does without forcing a re-login.
+  // Clears the service worker + its caches, then reloads — the session
+  // token lives in localStorage, untouched by this, so it fixes the same
+  // "everything's blank/stale" state handleSignOut does without forcing
+  // a re-login, but also catches the case a plain reload can't: a stale
+  // or stuck service worker still serving/intercepting old requests
+  // underneath. Same window.__fitl00pHardReset used by the boot-time
+  // connectivity-error screens (see the async IIFE below) — no reason
+  // this everyday "something looks wrong, refresh" button should settle
+  // for a weaker fix than the one already built for boot failures.
   el.btnReloadHeader?.addEventListener('click', () => {
     el.btnReloadHeader.classList.add('is-loading');
-    window.location.reload();
+    window.__fitl00pHardReset();
   });
   el.btnFixSession?.addEventListener('click', handleSignOut);
   el.btnDismissSessionBanner?.addEventListener('click', () => {
@@ -7929,6 +7936,13 @@ window.__fitl00pHardReset = async function () {
   } catch {}
   window.location.reload();
 };
+
+// Wired here, immediately after the function it calls is defined —
+// this button is painted from the very first frame (it's inside the
+// static #screenBoot markup, not gated behind the connectivity-error
+// screen below), so it needs to be live before anything async below
+// has a chance to run.
+el.btnBootHardReset?.addEventListener('click', () => window.__fitl00pHardReset());
 
 function showBootConnectivityError() {
   document.body.innerHTML = `

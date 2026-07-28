@@ -37,6 +37,13 @@
      actually ready to show. Never managed by showScreen()'s
      mutual-exclusion group; dismissed explicitly by hideBootScreen(). -->
 <div id="screenBoot" class="screen-boot">
+  <button id="btnBootHardReset" class="screen-boot__reset" type="button" aria-label="Clear cache and retry" title="Stuck? Clear cache and retry">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="23 4 23 10 17 10"/>
+      <polyline points="1 20 1 14 7 14"/>
+      <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+    </svg>
+  </button>
   <div class="screen-boot__brand brand-wordmark">
     <div class="brand-mark"><img src="/logo-mark.png" width="36" height="36" alt=""></div>
     <div class="brand-name"><span class="brand-fit">fit</span><span class="brand-loop">l00p</span></div>
@@ -333,7 +340,7 @@
           <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
         </svg>
       </button>
-      <button class="appbar__icon-btn appbar__reload" id="btnReloadHeader" aria-label="Reload data" title="Reload data">
+      <button class="appbar__icon-btn appbar__reload" id="btnReloadHeader" aria-label="Clear cache and reload" title="Clear cache and reload">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="23 4 23 10 17 10"/>
           <polyline points="1 20 1 14 7 14"/>
