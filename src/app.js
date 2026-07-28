@@ -7908,6 +7908,62 @@ if (keepAwakeCheckbox) {
 // It will be replaced by the app screen if a valid session is found
 showScreen('auth');
 
+// Unregisters the service worker and clears its caches, then reloads —
+// the actual fix for a PWA stuck on a frozen/stale service worker.
+// Clearing Safari's own site data does NOT touch this: a Home-Screen-
+// installed PWA keeps its service worker, caches and storage in a
+// separate silo from Safari, invisible to Settings > Safari > Clear
+// Website Data. This can only be done from inside the app's own
+// context, which is exactly what a stuck boot screen can't normally
+// reach — it's offered as a button on the connectivity-error screens.
+window.__fitl00pHardReset = async function () {
+  try {
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map(r => r.unregister()));
+    }
+    if ('caches' in window) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map(k => caches.delete(k)));
+    }
+  } catch {}
+  window.location.reload();
+};
+
+function showBootConnectivityError() {
+  document.body.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:center;min-height:100dvh;
+                font-family:sans-serif;padding:24px;text-align:center;background:#111318;color:#F0F2F7">
+      <div>
+        <div style="font-size:32px;margin-bottom:12px">📡</div>
+        <p style="font-size:17px;font-weight:600;margin-bottom:8px">fitl00p couldn't connect</p>
+        <p style="font-size:14px;color:#888;max-width:320px;line-height:1.5">
+          Still couldn't reach the server after a few tries — this can happen right after opening the app from the home screen. Check your connection and try again.
+        </p>
+        <div style="display:flex;gap:10px;justify-content:center;margin-top:16px;flex-wrap:wrap">
+          <button onclick="window.location.reload()" style="padding:10px 22px;border:none;border-radius:10px;background:#C6FF00;color:#111318;font-weight:700;font-size:15px">Retry</button>
+          <button onclick="window.__fitl00pHardReset()" style="padding:10px 22px;border:1.5px solid #444;border-radius:10px;background:transparent;color:#F0F2F7;font-weight:600;font-size:15px">Clear cache &amp; retry</button>
+        </div>
+        <p style="font-size:11px;color:#555;margin-top:14px;max-width:320px;line-height:1.4">
+          Still stuck after that? Delete the fitl00p icon from your Home Screen and re-add it — Safari's own "Clear Website Data" doesn't reach an installed app's storage, but this does.
+        </p>
+      </div>
+    </div>`;
+}
+
+// Absolute failsafe, entirely independent of fetch()/AbortController
+// actually working — on iOS the service worker itself can be fully
+// suspended by the OS mid-request, and there's no guarantee an abort
+// signal from the page reaches a worker in that state. If boot hasn't
+// resolved either way within 35s (comfortably past the ~25s retry
+// budget below), force the same connectivity-error screen regardless
+// of what's stuck inside the async logic — this plain timer can't
+// itself get stuck the way a fetch chain can.
+let bootResolved = false;
+const bootWatchdog = setTimeout(() => {
+  if (!bootResolved) showBootConnectivityError();
+}, 35000);
+
 // Fetches url with its own bounded timeout per attempt, retrying a
 // couple of times with a short backoff before finally giving up —
 // nothing else on the boot path can proceed without this one succeeding
@@ -8008,6 +8064,8 @@ async function fetchWithRetries(url, { attempts = 3, attemptTimeoutMs = 7000, ba
       }
     });
   } catch (err) {
+    bootResolved = true;
+    clearTimeout(bootWatchdog);
     // No hideBootScreen() call needed — this replaces all of document.body,
     // screenBoot included, so the error message beneath is what appears.
     //
@@ -8015,19 +8073,11 @@ async function fetchWithRetries(url, { attempts = 3, attemptTimeoutMs = 7000, ba
     // "config missing" implies a deployment problem, which would be a
     // misleading (and unactionable, for the user) thing to show for
     // what's usually just a stalled first request on cold PWA launch.
-    const timedOut = err?.isConnectivity === true;
-    document.body.innerHTML = timedOut ? `
-      <div style="display:flex;align-items:center;justify-content:center;min-height:100dvh;
-                  font-family:sans-serif;padding:24px;text-align:center;background:#111318;color:#F0F2F7">
-        <div>
-          <div style="font-size:32px;margin-bottom:12px">📡</div>
-          <p style="font-size:17px;font-weight:600;margin-bottom:8px">fitl00p couldn't connect</p>
-          <p style="font-size:14px;color:#888;max-width:320px;line-height:1.5">
-            Still couldn't reach the server after a few tries — this can happen right after opening the app from the home screen. Check your connection and try again.
-          </p>
-          <button onclick="window.location.reload()" style="margin-top:16px;padding:10px 22px;border:none;border-radius:10px;background:#C6FF00;color:#111318;font-weight:700;font-size:15px">Retry</button>
-        </div>
-      </div>` : `
+    if (err?.isConnectivity === true) {
+      showBootConnectivityError();
+      return;
+    }
+    document.body.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:center;min-height:100dvh;
                   font-family:sans-serif;padding:24px;text-align:center;background:#111318;color:#F0F2F7">
         <div>
@@ -8042,6 +8092,9 @@ async function fetchWithRetries(url, { attempts = 3, attemptTimeoutMs = 7000, ba
       </div>`;
     return;
   }
+
+  bootResolved = true;
+  clearTimeout(bootWatchdog);
 
   // Wire all db-dependent listeners now that db is initialised
   initApp();

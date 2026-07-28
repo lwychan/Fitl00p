@@ -4,7 +4,7 @@
    Handles incoming push notifications.
    ═══════════════════════════════════════════════════════════ */
 
-const CACHE_NAME    = 'fitl00p-v2';
+const CACHE_NAME    = 'fitl00p-v3';
 const NEVER_CACHE   = ['/app.js', '/app.css', '/index.html', '/', '/diabetes-engine.js', '/nightscout-adapter.js'];
 const STATIC_ASSETS = [
   '/sw.js',
@@ -34,6 +34,22 @@ self.addEventListener('activate', event => {
   );
 });
 
+// Bounds the SW's own network-first fetch. iOS can fully suspend a
+// backgrounded PWA's service worker mid-request; when it wakes to
+// resume that request, or the request itself is simply slow to settle,
+// event.respondWith()'s promise is what the page's own fetch() is
+// ultimately waiting on — a page-side AbortController racing against
+// this same request isn't guaranteed to unstick it (the abort signal
+// has to travel through the SW's own fetch machinery, an extra hop
+// with more room for a platform quirk to swallow it). Bounding it here,
+// at the source, means this promise always settles on its own terms
+// regardless of whether that outer signal ever arrives.
+function fetchBounded(request, ms) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  return fetch(request, { signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
 /* ── FETCH: network-first for app files, cache-first for assets ── */
 self.addEventListener('fetch', event => {
   const { request } = event;
@@ -50,7 +66,7 @@ self.addEventListener('fetch', event => {
 
   if (alwaysNetwork) {
     event.respondWith(
-      fetch(request).catch(() => {
+      fetchBounded(request, 8000).catch(() => {
         // Offline fallback for navigation
         if (request.mode === 'navigate') {
           return caches.match('/index.html');
