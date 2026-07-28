@@ -277,6 +277,24 @@ const el = {
   tzPenAddButtonWrap:  $('tzPenAddButtonWrap'),
   tzPenFormStatus:     $('tzPenFormStatus'),
   tzPenHistory:        $('tzPenHistory'),
+  // BPC-157 — opened/closed together with the tz card by the same
+  // needle icon (btnTzToggle), each with its own independent ✕.
+  btnBpcClose:         $('btnBpcClose'),
+  bpcCard:             $('bpcCard'),
+  bpcChart:            $('bpcChart'),
+  bpcChartEmpty:       $('bpcChartEmpty'),
+  bpcCurrentLevel:     $('bpcCurrentLevel'),
+  bpcInspectPanel:     $('bpcInspectPanel'),
+  bpcLogForm:          $('bpcLogForm'),
+  bpcLogButtonWrap:    $('bpcLogButtonWrap'),
+  btnBpcLog:           $('btnBpcLog'),
+  btnBpcSave:          $('btnBpcSave'),
+  btnBpcCancel:        $('btnBpcCancel'),
+  bpcDoseMg:           $('bpcDoseMg'),
+  bpcInjectedAt:       $('bpcInjectedAt'),
+  bpcSite:             $('bpcSite'),
+  bpcFormStatus:       $('bpcFormStatus'),
+  bpcDoseList:         $('bpcDoseList'),
   // settings
   setDisplayName:    $('setDisplayName'),
   setUnit:           $('setUnit'),
@@ -4104,9 +4122,16 @@ function tzXToMs(x) {
   return windowStart + frac * (windowEnd - windowStart);
 }
 
+// Opens both peptide trackers together — each still closes independently
+// via its own ✕ (btnTzClose / btnBpcClose above), so looking at just one
+// afterwards doesn't require reopening both from scratch.
 el.btnTzToggle?.addEventListener('click', () => {
   el.tzCard.hidden = false;
   loadTirzepatideSection();
+  if (el.bpcCard) {
+    el.bpcCard.hidden = false;
+    loadBpcSection();
+  }
 });
 
 el.btnTzClose?.addEventListener('click', () => {
@@ -4226,6 +4251,326 @@ el.tzPenHistory?.addEventListener('click', async (e) => {
   const { error } = await db.from('tirzepatide_pens').delete().eq('id', btn.dataset.id).eq('user_id', currentUser.id);
   if (error) { showToast('Failed: ' + error.message, true); return; }
   await loadTirzepatideSection();
+});
+
+/* ═══════════════════════════════════════════════════════════
+   BPC-157 TRACKER — same needle icon as Tirzepatide (btnTzToggle
+   below opens both together), independent ✕. No pen/vial tracker —
+   doses are drawn from a vial by syringe, not a fixed-click pen, so
+   there's no equivalent "clicks per mg"/inventory concept to track.
+
+   Same two-phase Bateman absorption/elimination shape as Tirzepatide
+   (see the big comment above TZ_KE_PER_HOUR), just with its own ka/ke
+   solved for a much faster peptide: no rigorous published human PK
+   study exists for BPC-157 (unlike Tirzepatide's clinical data), so
+   these are community-estimated figures — ~4h terminal half-life,
+   ~30min time-to-peak for a subcutaneous dose — not a precise number.
+   Doses superpose linearly, same principle as everywhere else in this
+   app that models an active-substance curve.
+═══════════════════════════════════════════════════════════ */
+const BPC_KE_PER_HOUR = Math.log(2) / 4; // ~4h estimated terminal half-life
+// Solved numerically so Tmax = ln(ka/ke)/(ka-ke) = 0.5h exactly, given
+// BPC_KE_PER_HOUR above — same bisection approach as TZ_KA_PER_HOUR.
+const BPC_KA_PER_HOUR = 7.782710769449455;
+const BPC_PEAK_HOURS = 0.5;
+function bpcDoseShape(hoursSince) {
+  if (hoursSince < 0) return 0;
+  return Math.exp(-BPC_KE_PER_HOUR * hoursSince) - Math.exp(-BPC_KA_PER_HOUR * hoursSince);
+}
+const BPC_SHAPE_AT_PEAK = bpcDoseShape(BPC_PEAK_HOURS);
+function bpcLevelAt(doses, atMs) {
+  let total = 0;
+  for (const d of doses) {
+    const hoursSince = (atMs - d.injectedMs) / 3600000;
+    if (hoursSince < 0) continue;
+    total += d.doseMg * (bpcDoseShape(hoursSince) / BPC_SHAPE_AT_PEAK);
+  }
+  return total;
+}
+
+let bpcDosesCache = null;
+let bpcChartGeom = null;
+let bpcInspectMs = null;
+
+// "If daily routine continues" — same idea as tzRoutineDoses but at a
+// 24h cadence and a much shorter runway (BPC-157's fast clearance means
+// steady-state shows up within a couple of days, not months).
+const BPC_DAY_MS = 24 * 3600000;
+function bpcRoutineDoses(sortedRealDoses, windowEnd) {
+  if (!sortedRealDoses.length) return [];
+  const last = sortedRealDoses[sortedRealDoses.length - 1];
+  const routine = [];
+  for (let t = last.injectedMs + BPC_DAY_MS; t <= windowEnd; t += BPC_DAY_MS) {
+    routine.push({ doseMg: last.doseMg, injectedMs: t });
+  }
+  return routine;
+}
+
+async function fetchBpc157Doses() {
+  if (!currentUser) return [];
+  const { data, error } = await db.from('bpc157_doses')
+    .select('id, dose_mg, injected_at, site')
+    .eq('user_id', currentUser.id)
+    .order('injected_at', { ascending: true })
+    .limit(200);
+  if (error) { console.error('fetchBpc157Doses error:', error.message); return []; }
+  return (data || []).map(d => ({ id: d.id, doseMg: Number(d.dose_mg), injectedMs: new Date(d.injected_at).getTime(), site: d.site || null }));
+}
+
+async function loadBpcSection() {
+  const doses = await fetchBpc157Doses();
+  bpcDosesCache = doses;
+  bpcInspectMs = null;
+  renderBpcSection(doses);
+}
+
+function updateBpcInspectPanel() {
+  if (!el.bpcInspectPanel) return;
+  if (bpcInspectMs == null || !bpcDosesCache?.length || !bpcChartGeom) {
+    el.bpcInspectPanel.hidden = true;
+    return;
+  }
+  const sorted = [...bpcDosesCache].sort((a, b) => a.injectedMs - b.injectedMs);
+  const routineDoses = bpcRoutineDoses(sorted, bpcChartGeom.windowEnd);
+  const level = bpcLevelAt([...sorted, ...routineDoses], bpcInspectMs);
+  const dateLabel = new Date(bpcInspectMs).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const tense = bpcInspectMs > Date.now() ? 'projected' : 'estimated';
+  el.bpcInspectPanel.hidden = false;
+  el.bpcInspectPanel.innerHTML = `<span class="tz-inspect-panel__value">${fmt1(level)} mg</span><span class="tz-inspect-panel__label">${tense} level — ${dateLabel}</span>`;
+}
+
+function renderBpcSection(doses) {
+  if (!el.bpcCard) return;
+
+  if (!doses.length) {
+    if (el.bpcCurrentLevel) el.bpcCurrentLevel.hidden = true;
+    if (el.bpcInspectPanel) el.bpcInspectPanel.hidden = true;
+    if (el.bpcDoseList) el.bpcDoseList.innerHTML = '<p class="empty-state">No injections logged yet.</p>';
+    drawBpcChart(el.bpcChart, el.bpcChartEmpty, []);
+    return;
+  }
+
+  const now = Date.now();
+  const currentLevel = bpcLevelAt(doses, now);
+  if (el.bpcCurrentLevel) {
+    el.bpcCurrentLevel.hidden = false;
+    el.bpcCurrentLevel.innerHTML = `<span class="tz-current-level__value">${fmt1(currentLevel)} mg</span><span class="tz-current-level__label">estimated level now</span>`;
+  }
+
+  const sortedDesc = [...doses].sort((a, b) => b.injectedMs - a.injectedMs);
+  if (el.bpcDoseList) {
+    el.bpcDoseList.innerHTML = sortedDesc.map(d => `
+      <div class="tz-dose-item" data-id="${d.id}">
+        <div>
+          <div class="tz-dose-item__meta">${fmt1(d.doseMg)} mg${d.site ? ' · ' + TZ_SITE_LABELS[d.site] : ''}</div>
+          <div class="tz-dose-item__date">${new Date(d.injectedMs).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</div>
+        </div>
+        <button type="button" class="btn btn--icon" data-action="bpc-delete" data-id="${d.id}" title="Delete">🗑</button>
+      </div>
+    `).join('');
+  }
+
+  drawBpcChart(el.bpcChart, el.bpcChartEmpty, doses);
+  updateBpcInspectPanel();
+}
+
+function drawBpcChart(canvas, emptyEl, doses) {
+  if (!canvas) return;
+  if (!doses.length) {
+    if (emptyEl) emptyEl.hidden = false;
+    canvas.hidden = true;
+    bpcChartGeom = null;
+    return;
+  }
+  if (emptyEl) emptyEl.hidden = true;
+  canvas.hidden = false;
+
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  const MAX_W = 800, MAX_H = 260, MIN_W = 100;
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  const rawW = canvas.parentElement?.clientWidth || 320;
+  const rawH = parseInt(canvas.getAttribute('height')) || 200;
+  const W = Math.min(MAX_W, Math.max(MIN_W, rawW));
+  const H = Math.min(MAX_H, Math.max(120, rawH));
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  canvas.width = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  const now = Date.now();
+  const sorted = [...doses].sort((a, b) => a.injectedMs - b.injectedMs);
+  const windowStart = sorted[0].injectedMs;
+  // 5 days out — BPC-157's ~4h half-life reaches daily-dosing steady
+  // state within a day or two, so a long runway like Tirzepatide's 90
+  // days would just be mostly-flat dead space.
+  const FUTURE_MS = 5 * 24 * 3600 * 1000;
+  const windowEnd = now + FUTURE_MS;
+
+  const routineDoses = bpcRoutineDoses(sorted, windowEnd);
+  const projectionDoses = [...sorted, ...routineDoses];
+
+  const STEP_MS = 20 * 60 * 1000; // 20min resolution — the whole curve plays out over hours, not weeks
+  const pastPts = [];
+  for (let t = windowStart; t <= now; t += STEP_MS) pastPts.push({ ms: t, v: bpcLevelAt(sorted, t) });
+  pastPts.push({ ms: now, v: bpcLevelAt(sorted, now) });
+  const futurePts = [];
+  for (let t = now; t <= windowEnd; t += STEP_MS) futurePts.push({ ms: t, v: bpcLevelAt(projectionDoses, t) });
+  futurePts.push({ ms: windowEnd, v: bpcLevelAt(projectionDoses, windowEnd) });
+
+  const allVals = [...pastPts, ...futurePts].map(p => p.v);
+  const vMax = Math.max(0.1, ...allVals) * 1.15;
+
+  const padL = 30, padR = 8, padTop = 8, padBottom = 18;
+  const plotW = W - padL - padR, plotH = H - padTop - padBottom;
+  const xAt = ms => padL + ((ms - windowStart) / (windowEnd - windowStart)) * plotW;
+  const yAt = v => padTop + plotH - (v / vMax) * plotH;
+
+  bpcChartGeom = { windowStart, windowEnd, padL, padR, plotW, padTop, plotH };
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  ctx.fillStyle = 'rgba(255,255,255,0.35)';
+  ctx.font = '9px -apple-system, sans-serif';
+  ctx.textAlign = 'right';
+  const step = vMax > 1.5 ? 0.5 : vMax > 0.6 ? 0.2 : 0.1;
+  for (let v = 0; v <= vMax; v += step) {
+    const y = yAt(v);
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
+    ctx.fillText(v.toFixed(1), padL - 4, y + 3);
+  }
+
+  ctx.textAlign = 'center';
+  const dayMs = 24 * 3600 * 1000;
+  const totalDays = (windowEnd - windowStart) / dayMs;
+  const tickEvery = totalDays > 14 ? 2 : 1; // days between x-axis labels
+  for (let t = windowStart; t <= windowEnd; t += tickEvery * dayMs) {
+    ctx.fillText(new Date(t).toLocaleDateString([], { month: 'short', day: 'numeric' }), xAt(t), H - 4);
+  }
+
+  const xNow = xAt(now);
+  ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+  ctx.setLineDash([2, 3]);
+  ctx.beginPath(); ctx.moveTo(xNow, padTop); ctx.lineTo(xNow, padTop + plotH); ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.strokeStyle = '#3B9EFF';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  pastPts.forEach((p, i) => { const x = xAt(p.ms), y = yAt(p.v); if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
+  ctx.stroke();
+
+  ctx.strokeStyle = 'rgba(59, 158, 255, 0.65)';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([4, 3]);
+  ctx.beginPath();
+  futurePts.forEach((p, i) => { const x = xAt(p.ms), y = yAt(p.v); if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.fillStyle = '#3B9EFF';
+  sorted.forEach(d => {
+    const x = xAt(d.injectedMs), y = yAt(bpcLevelAt(sorted, d.injectedMs));
+    ctx.beginPath(); ctx.arc(x, y, 2.5, 0, Math.PI * 2); ctx.fill();
+  });
+
+  ctx.strokeStyle = 'rgba(59, 158, 255, 0.65)';
+  ctx.lineWidth = 1.5;
+  routineDoses.forEach(d => {
+    const x = xAt(d.injectedMs), y = yAt(bpcLevelAt(projectionDoses, d.injectedMs));
+    ctx.beginPath(); ctx.arc(x, y, 2.5, 0, Math.PI * 2); ctx.stroke();
+  });
+
+  if (bpcInspectMs != null) {
+    const ix = xAt(bpcInspectMs);
+    ctx.strokeStyle = 'rgba(245, 166, 35, 0.55)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.moveTo(ix, padTop); ctx.lineTo(ix, padTop + plotH); ctx.stroke();
+    ctx.setLineDash([]);
+
+    const iy = yAt(bpcLevelAt(projectionDoses, bpcInspectMs));
+    ctx.fillStyle = '#F5A623';
+    ctx.beginPath(); ctx.arc(ix, iy, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#1a1d24'; ctx.lineWidth = 1.5; ctx.stroke();
+  }
+}
+
+function bpcXToMs(x) {
+  if (!bpcChartGeom) return null;
+  const { windowStart, windowEnd, padL, plotW } = bpcChartGeom;
+  const frac = (x - padL) / plotW;
+  return windowStart + frac * (windowEnd - windowStart);
+}
+
+el.btnBpcClose?.addEventListener('click', () => {
+  el.bpcCard.hidden = true;
+});
+
+el.bpcChart?.addEventListener('click', (e) => {
+  if (!bpcChartGeom || !bpcDosesCache?.length) return;
+  const rect = el.bpcChart.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const ms = bpcXToMs(x);
+  if (ms == null) return;
+  const { windowStart, windowEnd } = bpcChartGeom;
+  bpcInspectMs = Math.min(windowEnd, Math.max(windowStart, ms));
+  drawBpcChart(el.bpcChart, el.bpcChartEmpty, bpcDosesCache);
+  updateBpcInspectPanel();
+});
+
+el.btnBpcLog?.addEventListener('click', () => {
+  el.bpcLogButtonWrap.hidden = true;
+  el.bpcLogForm.hidden = false;
+  el.bpcInjectedAt.value = toLocalDatetimeInputValue(new Date());
+  if (bpcDosesCache?.length) {
+    const last = [...bpcDosesCache].sort((a, b) => b.injectedMs - a.injectedMs)[0];
+    el.bpcDoseMg.value = last.doseMg;
+    if (el.bpcSite) el.bpcSite.value = tzNextSite(last.site);
+  } else {
+    el.bpcDoseMg.value = 0.5;
+    if (el.bpcSite) el.bpcSite.value = TZ_SITE_ORDER[0];
+  }
+});
+
+el.btnBpcCancel?.addEventListener('click', () => {
+  el.bpcLogForm.hidden = true;
+  el.bpcLogButtonWrap.hidden = false;
+  el.bpcFormStatus.textContent = '';
+});
+
+el.btnBpcSave?.addEventListener('click', async () => {
+  if (!currentUser) return;
+  const doseMg = parseFloat(el.bpcDoseMg.value);
+  const injectedAtLocal = el.bpcInjectedAt.value;
+  if (!Number.isFinite(doseMg) || doseMg <= 0) { el.bpcFormStatus.textContent = 'Enter a valid dose.'; return; }
+  if (!injectedAtLocal) { el.bpcFormStatus.textContent = 'Pick a date and time.'; return; }
+  const injectedAtIso = new Date(injectedAtLocal).toISOString();
+  const site = el.bpcSite?.value || null;
+
+  setBtn(el.btnBpcSave, true, 'Save injection', 'Saving…');
+  const { error } = await db.from('bpc157_doses').insert({
+    user_id: currentUser.id, dose_mg: doseMg, injected_at: injectedAtIso, site,
+  });
+  setBtn(el.btnBpcSave, false, 'Save injection');
+
+  if (error) { el.bpcFormStatus.textContent = 'Error: ' + error.message; return; }
+
+  el.bpcLogForm.hidden = true;
+  el.bpcLogButtonWrap.hidden = false;
+  el.bpcFormStatus.textContent = '';
+  await loadBpcSection();
+});
+
+el.bpcDoseList?.addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-action="bpc-delete"]');
+  if (!btn || !currentUser) return;
+  if (!confirm('Delete this injection entry?')) return;
+  const { error } = await db.from('bpc157_doses').delete().eq('id', btn.dataset.id).eq('user_id', currentUser.id);
+  if (error) { showToast('Failed: ' + error.message, true); return; }
+  await loadBpcSection();
 });
 
 el.btnExportCsv.addEventListener('click', async () => {

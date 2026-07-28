@@ -15,6 +15,9 @@
 [functions."notify-tirzepatide"]
   schedule = "10 8-21 * * 5"    # hourly, Friday 09:00-21:00 Europe/London, until logged
 
+[functions."notify-bpc157"]
+  schedule = "30 6-21 * * *"    # hourly, 07:30-21:30 Europe/London daily, until logged
+
 [functions."notify-weighin"]
   schedule = "10 9-21 * * 2"    # hourly, Tuesday 10:00-21:00 Europe/London, until logged
 

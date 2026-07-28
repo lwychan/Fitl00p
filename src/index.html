@@ -841,7 +841,7 @@
         <h1 class="view-title">Daily history</h1>
         <div class="view-head-actions">
           <button class="btn btn--ghost btn--small btn--icon" id="btnWeightLogToggle" title="Log weight" aria-label="Log weight" hidden>⚖️</button>
-          <button class="btn btn--ghost btn--small btn--icon" id="btnTzToggle" title="Tirzepatide tracker" aria-label="Tirzepatide tracker">💉</button>
+          <button class="btn btn--ghost btn--small btn--icon" id="btnTzToggle" title="Peptide trackers" aria-label="Peptide trackers">💉</button>
           <button class="btn btn--ghost btn--small" id="btnExportCsv">Export CSV</button>
         </div>
       </div>
@@ -961,6 +961,63 @@
         <div id="tzPenHistory" class="tz-dose-list"></div>
         <p class="field-hint" style="margin-top:8px;line-height:1.5">
           28-day default is general guidance for a pre-mixed research-peptide pen kept refrigerated (2–8°C) — potency is commonly cited as dropping below ~90% past that point. Room temperature is shorter, closer to 21 days. Adjust per pen if your supplier states otherwise.
+        </p>
+      </div>
+
+      <!-- Opened/closed together with tzCard by the same 💉 needle icon
+           (see btnTzToggle) — no pen/vial tracker, unlike Tirzepatide,
+           since doses are drawn from a vial by syringe rather than a
+           fixed-click pen. -->
+      <div class="card" id="bpcCard" hidden>
+        <div class="tz-card-head">
+          <span class="card-eyebrow">BPC-157 tracker</span>
+          <button type="button" class="btn btn--icon" id="btnBpcClose" title="Close" aria-label="Close">✕</button>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="bpcChart" height="200"></canvas>
+          <p class="chart-empty" id="bpcChartEmpty">Log an injection to see your levels.</p>
+        </div>
+        <div class="history-legend">
+          <span class="legend-item legend-item--actual">— Logged level</span>
+          <span class="legend-item legend-item--proj">- - If daily routine continues</span>
+          <span class="legend-item legend-item--tz-preview">● Tap the chart to inspect a time</span>
+        </div>
+        <div id="bpcCurrentLevel" class="tz-current-level" hidden></div>
+        <div id="bpcInspectPanel" class="tz-inspect-panel" hidden></div>
+
+        <div id="bpcLogForm" class="tz-log-form" hidden>
+          <div class="field">
+            <label>Dose <span class="field-hint">mg</span></label>
+            <input type="number" id="bpcDoseMg" step="0.1" min="0.1" value="0.5">
+          </div>
+          <div class="field">
+            <label>Date &amp; time</label>
+            <input type="datetime-local" id="bpcInjectedAt">
+          </div>
+          <div class="field">
+            <label>Injection site</label>
+            <select id="bpcSite">
+              <option value="left_thigh">Left thigh</option>
+              <option value="right_thigh">Right thigh</option>
+              <option value="left_stomach">Left stomach</option>
+              <option value="right_stomach">Right stomach</option>
+              <option value="centre_stomach">Centre stomach</option>
+            </select>
+          </div>
+          <div class="settings-actions">
+            <button class="btn btn--primary btn--small" id="btnBpcSave">Save injection</button>
+            <button class="btn btn--ghost btn--small" id="btnBpcCancel">Cancel</button>
+          </div>
+          <span class="save-status" id="bpcFormStatus"></span>
+        </div>
+
+        <div class="settings-actions" id="bpcLogButtonWrap">
+          <button class="btn btn--primary btn--small" id="btnBpcLog">Log injection</button>
+        </div>
+
+        <div id="bpcDoseList" class="tz-dose-list"></div>
+        <p class="field-hint" style="margin-top:8px;line-height:1.5">
+          Level curve uses a community-estimated ~4h half-life and ~30min time-to-peak for subcutaneous BPC-157 — there's no rigorous published human pharmacokinetic study to draw on (unlike Tirzepatide's clinical data), so treat this as a rough shape, not a precise figure.
         </p>
       </div>
 
