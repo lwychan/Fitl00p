@@ -6270,8 +6270,11 @@ $('btnDxMealDose')?.addEventListener('click', async () => {
       return;
     }
 
+    const trendGlyph = trendArrow(r.trendPerMinute);
+    const projectedShown = r.effectiveGlucose != null && r.currentGlucose != null
+      && Math.abs(r.effectiveGlucose - r.currentGlucose) >= 0.1;
     const glucoseLine = r.currentGlucose != null
-      ? `${fmt1(r.currentGlucose)} mmol/L now${r.idealTarget != null ? ` → target ${fmt1(r.idealTarget)}` : ''}`
+      ? `${fmt1(r.currentGlucose)} mmol/L now ${trendGlyph}${projectedShown ? ` (~${fmt1(r.effectiveGlucose)} in 30min, used for the correction below)` : ''}${r.idealTarget != null ? ` → target ${fmt1(r.idealTarget)}` : ''}`
       : null;
 
     const doseHtml = r.guide.tier === 'single'

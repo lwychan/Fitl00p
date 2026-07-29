@@ -1950,6 +1950,7 @@ function suggestMacroMealDose(input, meal, now = Date.now()) {
     iob: ctx.iob,
     currentGlucose: ctx.currentGlucose,
     effectiveGlucose: ctx.effectiveGlucose,
+    trendPerMinute: ctx.trendPerMinute,
     idealTarget: Number.isFinite(idealTarget) ? idealTarget : null,
     factor: factorResult.factor,
     factorSource: factorResult.source,
