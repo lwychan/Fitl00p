@@ -6307,6 +6307,9 @@ $('btnDxMealDose')?.addEventListener('click', async () => {
         ? `Personalized from ${r.personalizedSampleSize} ${r.personalizedBy === 'meal-name' ? `past "${escapeHtml(mealName)}" meals` : 'similar-fat past meals'}${r.nudgePct ? `, nudged ${fmtSigned(r.nudgePct, 0)}%` : ''}.`
         : 'Guide default — log a few more meals like this to personalize it.')
       : '';
+    const situationalNote = carbs > 0 && r.situationalMatches > 0
+      ? `Weighted toward ${r.situationalMatches} past meal${r.situationalMatches === 1 ? '' : 's'} eaten with a similar BG trend and IOB level to right now.`
+      : '';
 
     el.dxMealDoseBody.innerHTML = `
       ${glucoseLine ? `<p class="dx-note" style="margin-bottom:8px">${escapeHtml(glucoseLine)}</p>` : ''}
@@ -6316,6 +6319,7 @@ $('btnDxMealDose')?.addEventListener('click', async () => {
       ${r.lowGlucoseWarning ? '<p class="dx-note" style="color:var(--orange)">You\'re below target right now — treat the low first if you need to.</p>' : ''}
       ${!r.correctionAvailable && r.idealTarget == null ? '<p class="dx-note">Set a correction target and factor in Settings to have this account for your current glucose.</p>' : ''}
       ${personalizedNote ? `<p class="dx-note">${personalizedNote}</p>` : ''}
+      ${situationalNote ? `<p class="dx-note">${escapeHtml(situationalNote)}</p>` : ''}
     `;
 
     if (carbs > 0) await recordMacroMeal({ time: now, mealName: mealName || null, carbs, fat, protein }, r);

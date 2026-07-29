@@ -1579,6 +1579,19 @@ const MEAL_DOSE_RATING_WINDOW_HOURS   = 6;
 const MEAL_DOSE_MIN_SAMPLES       = 3;
 const HEALTH_CHECK_WINDOW_DAYS    = 7;
 
+// How much a past meal's weight decays as its BG trend / active-IOB
+// situation diverges from right now — same exponential-similarity
+// shape as carbSimWeight/timeOfDayWeight below, just on two more axes.
+// A past meal eaten in a near-identical situation (falling fast with
+// insulin already onboard, say) counts almost fully; one eaten in a
+// very different situation still counts, just far less. Scales picked
+// off the trendArrow() thresholds (app.js) and typical IOB range: ~0.08
+// mmol/L/min is roughly the up/steepUp boundary, ~1u is a normal
+// single-meal dose.
+const SITUATION_TREND_SCALE_MMOL_PER_MIN = 0.08;
+const SITUATION_IOB_SCALE_UNITS          = 1.0;
+const SITUATION_MATCH_THRESHOLD          = 0.4; // combined weight above this counts as "a similar situation" for the UI note
+
 /* ── Meal memory ──────────────────────────────────────────────
    Only meals with a real name can be "remembered" — unnamed boluses
    (e.g. from a pump with no food-name data, see nightscout-adapter.js)
@@ -1707,22 +1720,27 @@ function mealMemory(input, now = Date.now()) {
 
 /* ── Meal-dose suggestion ────────────────────────────────────
    Weights every past carb-bearing bolus by: carb similarity to the new
-   meal, recency (30-day half-life), time-of-day proximity, and whether
-   it shares the same exercise-context as right now. Ratio outliers
-   (an unusually high/low observed grams-per-unit for that one meal,
-   via IQR) get down-weighted rather than excluded outright. The final
-   suggestion is nudged a small, capped amount by how similar past
-   meals actually turned out (ran high → nudge up; went low → nudge
-   down). Falls back to the plain manual carb ratio when there isn't
-   enough weighted history to trust — never fabricates a personalized
-   number from too little data. */
+   meal, recency (30-day half-life), time-of-day proximity, whether it
+   shares the same exercise-context as right now, AND how closely its
+   own BG trend + active IOB (at the moment it was eaten) match right
+   now's — a meal eaten while falling with insulin already onboard is
+   a much more relevant precedent for another falling/stacked moment
+   than one eaten flat with a clear tank, even if the carb count is
+   identical. Ratio outliers (an unusually high/low observed
+   grams-per-unit for that one meal, via IQR) get down-weighted rather
+   than excluded outright. The final suggestion is nudged a small,
+   capped amount by how similar past meals actually turned out (ran
+   high → nudge up; went low → nudge down). Falls back to the plain
+   manual carb ratio when there isn't enough weighted history to trust
+   — never fabricates a personalized number from too little data. */
 function suggestMealDose(input, newCarbs, now = Date.now()) {
-  const { glucoseHistory = [], boluses = [], activities = {}, settings = {} } = input || {};
+  const { glucoseHistory = [], boluses = [], corrections = [], activities = {}, settings = {} } = input || {};
   const nowMs = toMs(now);
   const readings = sortedReadings(glucoseHistory, -Infinity, nowMs);
   const workouts = activities.workouts || [];
   const low = Number(settings.targetLow) || 4.5;
   const high = Number(settings.targetHigh) || 8.5;
+  const curveOpts = insulinCurveOpts(settings);
 
   const isNearExercise = (ms) => workouts.some(w => {
     const endMs = toMs(w.endTime) ?? toMs(w.startTime);
@@ -1730,6 +1748,8 @@ function suggestMealDose(input, newCarbs, now = Date.now()) {
   });
   const nowNearExercise = isNearExercise(nowMs);
   const nowHour = hourOfDay(nowMs);
+  const nowTrend = computeTrend(glucoseHistory, nowMs);
+  const nowIob = activeInsulin(boluses, corrections, nowMs, curveOpts);
 
   const pastMeals = (boluses || [])
     .filter(b => Number(b.carbs) > 0 && Number(b.units) > 0 && toMs(b.time) < nowMs)
@@ -1744,13 +1764,25 @@ function suggestMealDose(input, newCarbs, now = Date.now()) {
       const timeOfDayWeight = Math.exp(-hourDiff / 6);
       const exerciseWeight = isNearExercise(ms) === nowNearExercise ? 1 : 0.5;
 
+      // -1ms excludes this meal's own bolus from its own "IOB already
+      // onboard when I ate this" reading — same as nowIob only counting
+      // doses already active before the (hypothetical) new one.
+      const pastTrend = computeTrend(glucoseHistory, ms);
+      const pastIob = activeInsulin(boluses, corrections, ms - 1, curveOpts);
+      const trendSimWeight = Math.exp(-Math.abs(pastTrend - nowTrend) / SITUATION_TREND_SCALE_MMOL_PER_MIN);
+      const iobSimWeight = Math.exp(-Math.abs(pastIob - nowIob) / SITUATION_IOB_SCALE_UNITS);
+      const situationWeight = trendSimWeight * iobSimWeight;
+
       const window = readings.filter(r => r.ms >= ms && r.ms <= ms + 3 * 3600000);
       let outcomeBias = 0; // +1 ran high, -1 went low, 0 stayed in range
       if (window.length) {
         if (Math.max(...window.map(r => r.value)) > high) outcomeBias = 1;
         if (window.some(r => r.value < low)) outcomeBias = -1;
       }
-      return { ms, carbs, units, ratio, weight: recencyWeight * carbSimWeight * timeOfDayWeight * exerciseWeight, outcomeBias };
+      return {
+        ms, carbs, units, ratio, outcomeBias, situationWeight,
+        weight: recencyWeight * carbSimWeight * timeOfDayWeight * exerciseWeight * situationWeight,
+      };
     });
 
   if (pastMeals.length < MEAL_DOSE_MIN_SAMPLES) return fallbackMealDose(newCarbs, settings, 'insufficient-meal-history');
@@ -1780,6 +1812,7 @@ function suggestMealDose(input, newCarbs, now = Date.now()) {
     weightedRatio,
     nudgePct: nudgePct * 100,
     sampleSize: pastMeals.length,
+    situationalMatches: pastMeals.filter(m => m.situationWeight >= SITUATION_MATCH_THRESHOLD).length,
     withheldReason: null,
   };
 }
@@ -1854,13 +1887,29 @@ function splitDoseGuide(fatGrams, proteinGrams, settings) {
 // Weighted outcome bias (recency-weighted, +1 ran high / -1 went low)
 // across a set of past macro-tagged meals cross-referenced against the
 // glucose trace that actually followed each one. Shared by the
-// meal-name and fat-similarity personalization paths below.
-function macroMealOutcomeBias(comparable, readings, low, high, nowMs) {
-  let weightedBias = 0, totalWeight = 0;
+// meal-name and fat-similarity personalization paths below. `situation`
+// (optional) additionally down-weights past meals whose BG trend/active
+// IOB at the time diverged from right now's — same rationale as
+// suggestMealDose's own situational weighting above: a past instance of
+// this exact meal eaten in today's kind of situation (falling with
+// insulin already onboard, say) is stronger evidence than one eaten in
+// a calmer moment, even though both are "this meal".
+function macroMealOutcomeBias(comparable, readings, low, high, nowMs, situation = null) {
+  let weightedBias = 0, totalWeight = 0, situationalMatches = 0;
   for (const m of comparable) {
     const ms = toMs(m.time);
     const daysAgo = (nowMs - ms) / DAY_MS;
-    const weight = Math.pow(0.5, daysAgo / MEAL_DOSE_RECENCY_HALFLIFE_DAYS);
+    let weight = Math.pow(0.5, daysAgo / MEAL_DOSE_RECENCY_HALFLIFE_DAYS);
+    if (situation) {
+      const { glucoseHistory, boluses, corrections, curveOpts, nowTrend, nowIob } = situation;
+      const pastTrend = computeTrend(glucoseHistory, ms);
+      const pastIob = activeInsulin(boluses, corrections, ms - 1, curveOpts);
+      const situationWeight =
+        Math.exp(-Math.abs(pastTrend - nowTrend) / SITUATION_TREND_SCALE_MMOL_PER_MIN) *
+        Math.exp(-Math.abs(pastIob - nowIob) / SITUATION_IOB_SCALE_UNITS);
+      if (situationWeight >= SITUATION_MATCH_THRESHOLD) situationalMatches++;
+      weight *= situationWeight;
+    }
     const window = readings.filter(r => r.ms >= ms && r.ms <= ms + 6 * 3600000);
     if (!window.length) continue;
     let bias = 0;
@@ -1869,7 +1918,7 @@ function macroMealOutcomeBias(comparable, readings, low, high, nowMs) {
     weightedBias += bias * weight;
     totalWeight += weight;
   }
-  return totalWeight > 0 ? weightedBias / totalWeight : null;
+  return totalWeight > 0 ? { bias: weightedBias / totalWeight, situationalMatches } : null;
 }
 
 // Full bolus calculator: carbs/ICR (personalized by exact meal-name
@@ -1895,6 +1944,7 @@ function suggestMacroMealDose(input, meal, now = Date.now()) {
   let carbUnits = 0;
   let carbBase = { source: 'none' };
   let personalized = false, personalizedBy = null, personalizedSampleSize = 0, nudgePct = 0;
+  let situationalMatches = 0;
 
   if (carbs > 0) {
     carbBase = suggestMealDose(input, carbs, now);
@@ -1902,6 +1952,7 @@ function suggestMacroMealDose(input, meal, now = Date.now()) {
       return { ...carbBase, guide, upfrontUnits: null, delayedUnits: null, personalized: false };
     }
     carbUnits = carbBase.suggestedUnits;
+    situationalMatches += carbBase.situationalMatches || 0;
 
     const readings = sortedReadings(input.glucoseHistory, -Infinity, nowMs);
     const low = Number(settings.targetLow) || 4.5;
@@ -1915,12 +1966,17 @@ function suggestMacroMealDose(input, meal, now = Date.now()) {
     const comparable = useNameMatch ? byName : byFat;
 
     if (comparable.length >= MACRO_HISTORY_MIN_SAMPLE) {
-      const bias = macroMealOutcomeBias(comparable, readings, low, high, nowMs);
-      if (bias != null) {
-        nudgePct = clamp(bias * 0.12, -0.2, 0.2); // capped +/-20%
+      const situation = {
+        glucoseHistory: input.glucoseHistory, boluses: input.boluses, corrections: input.corrections,
+        curveOpts: insulinCurveOpts(settings), nowTrend: ctx.trendPerMinute, nowIob: ctx.iob,
+      };
+      const result = macroMealOutcomeBias(comparable, readings, low, high, nowMs, situation);
+      if (result != null) {
+        nudgePct = clamp(result.bias * 0.12, -0.2, 0.2); // capped +/-20%
         personalized = true;
         personalizedBy = useNameMatch ? 'meal-name' : 'fat-similarity';
         personalizedSampleSize = comparable.length;
+        situationalMatches += result.situationalMatches;
         carbUnits = Math.max(0, carbUnits * (1 + nudgePct));
       }
     }
@@ -1958,6 +2014,7 @@ function suggestMacroMealDose(input, meal, now = Date.now()) {
     source: carbBase.source,
     guide, upfrontUnits, delayedUnits,
     personalized, personalizedBy, personalizedSampleSize,
+    situationalMatches,
     nudgePct: nudgePct * 100,
     zeroedByFloor,
     lowGlucoseWarning: ctx.effectiveGlucose != null && ctx.effectiveGlucose < low,
