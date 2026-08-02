@@ -1412,6 +1412,35 @@ const SIMULATE_WATCH_WINDOW_GENERIC = '1–4h after finishing';
 const SIMULATE_CARB_TROUGH_ETA_DEFAULT_MIN = 60; // used for the fast-rescue-vs-slow-buffer call when no personal timeToNadir exists
 const SIMULATE_PROJECTION_FLOOR_MMOL = 1.5; // display floor — a raw drop-estimate arithmetic can push well below what's physiologically real for long/vigorous inputs
 
+// Shared by workoutSimulate and the "unplug" pump-suspend simulator below:
+// personal per-session drop range once there's enough history for the
+// exact activity type, else a duration/intensity-scaled generic estimate.
+function estimateExerciseDrop(activities, glucoseHistory, workoutType, durationMin, intensity) {
+  const profiles = buildWorkoutTypeProfiles(activities.workouts, glucoseHistory);
+  const profile = profiles[workoutType];
+
+  if (profile && profile.n >= WORKOUT_MIN_SESSIONS_PERSONAL && profile.drops?.length) {
+    return {
+      dropLow: Math.min(...profile.drops),
+      dropHigh: Math.max(...profile.drops),
+      source: 'personal',
+      sampleSize: profile.n,
+      timeToNadirMin: profile.medianTimeToNadirMin,
+    };
+  }
+  const perMin = (SIMULATE_DROP_PER_30MIN[intensity] || SIMULATE_DROP_PER_30MIN.light) / 30;
+  const effectiveDurationMin = Math.min(durationMin, SIMULATE_DURATION_SOFT_CAP_MIN)
+    + Math.max(0, durationMin - SIMULATE_DURATION_SOFT_CAP_MIN) * SIMULATE_DURATION_OVERAGE_FACTOR;
+  const dropMid = perMin * effectiveDurationMin;
+  return {
+    dropLow: dropMid * (1 - SIMULATE_RANGE_SPREAD_PCT),
+    dropHigh: dropMid * (1 + SIMULATE_RANGE_SPREAD_PCT),
+    source: 'generic',
+    sampleSize: 0,
+    timeToNadirMin: null, // unknown — generic watch window used instead
+  };
+}
+
 function workoutSimulate(input, opts = {}, now = Date.now()) {
   const { workoutType, durationMin = 30, intensity = 'light' } = opts;
   const { glucoseHistory = [], boluses = [], corrections = [], activities = {}, settings = {} } = input || {};
@@ -1421,27 +1450,8 @@ function workoutSimulate(input, opts = {}, now = Date.now()) {
     return { withheldReason: 'stale-reading', staleMessage: ctx.staleMessage };
   }
 
-  const profiles = buildWorkoutTypeProfiles(activities.workouts, glucoseHistory);
-  const profile = profiles[workoutType];
-
-  let dropLow, dropHigh, source, sampleSize, timeToNadirMin;
-  if (profile && profile.n >= WORKOUT_MIN_SESSIONS_PERSONAL && profile.drops?.length) {
-    dropLow = Math.min(...profile.drops);
-    dropHigh = Math.max(...profile.drops);
-    source = 'personal';
-    sampleSize = profile.n;
-    timeToNadirMin = profile.medianTimeToNadirMin;
-  } else {
-    const perMin = (SIMULATE_DROP_PER_30MIN[intensity] || SIMULATE_DROP_PER_30MIN.light) / 30;
-    const effectiveDurationMin = Math.min(durationMin, SIMULATE_DURATION_SOFT_CAP_MIN)
-      + Math.max(0, durationMin - SIMULATE_DURATION_SOFT_CAP_MIN) * SIMULATE_DURATION_OVERAGE_FACTOR;
-    const dropMid = perMin * effectiveDurationMin;
-    dropLow = dropMid * (1 - SIMULATE_RANGE_SPREAD_PCT);
-    dropHigh = dropMid * (1 + SIMULATE_RANGE_SPREAD_PCT);
-    source = 'generic';
-    sampleSize = 0;
-    timeToNadirMin = null; // unknown — generic watch window used instead
-  }
+  const { dropLow, dropHigh, source, sampleSize, timeToNadirMin } =
+    estimateExerciseDrop(activities, glucoseHistory, workoutType, durationMin, intensity);
 
   const projectedLow = Math.max(SIMULATE_PROJECTION_FLOOR_MMOL, ctx.currentGlucose - dropHigh);
   const projectedHigh = Math.max(projectedLow, ctx.currentGlucose - dropLow);
@@ -1468,6 +1478,200 @@ function workoutSimulate(input, opts = {}, now = Date.now()) {
     projectedLow, projectedHigh,
     risk, watchPeriod,
     carbAdvice,
+  };
+}
+
+/* ── "Unplug" pump-disconnect simulator ─────────────────────────
+   Same live/anchored spirit as workoutSimulate, but for the very
+   different question "what if I take the pump off for a while" — no
+   basal at all rather than a normal-basal workout. Two things stack:
+   the BG *rise* from the basal insulin that won't be delivered, and
+   the BG *drop* from whatever activity is happening during the
+   disconnect (reusing estimateExerciseDrop — swimming/walking/running
+   are exactly why someone unplugs). The engine otherwise never models
+   basal at all (see whatIfSimulator's own note above) — this is the
+   one place it does, deliberately scoped to just this question.
+
+   Historical grounding: detectBasalSuspendEpisodes below finds past
+   stretches where the pump's own delivered-rate stream (basalDoses —
+   real Tandem/Control-IQ segments, not a schedule) actually went to
+   ~0 for a while. Only ones that overlap a logged workout are used as
+   personal precedent here — Control-IQ can also auto-suspend basal on
+   its own when it predicts a low, which would look identical in the
+   raw rate data but means something completely different (BG was
+   already trending down before the suspend even started); requiring
+   a logged workout is what keeps this to "deliberately took it off to
+   exercise" instances instead of contaminating the estimate with
+   those. With >=2 comparable-duration personal instances, their
+   actual outcome is used directly (in a real disconnect, the exercise
+   drop already happened along with the missed basal, so the observed
+   delta captures both at once, however they trade off in real life)
+   instead of the physiological formula. */
+const UNPLUG_RATE_NEAR_ZERO_UPH        = 0.05; // u/hr — below this counts as "suspended", not just a low temp rate
+const UNPLUG_MIN_EPISODE_MIN           = 10;   // shorter blips aren't a deliberate disconnect
+const UNPLUG_EPISODE_GAP_TOLERANCE_MIN = 10;   // bridges small gaps in the ~5min segment stream within one suspend run
+const UNPLUG_DURATION_SIMILARITY_PCT   = 0.5;  // past episode's duration must be within +/-50% of the requested one to count as comparable
+const UNPLUG_MIN_PERSONAL_EPISODES     = 2;    // same threshold as WORKOUT_MIN_SESSIONS_PERSONAL, for consistency
+const UNPLUG_BASAL_RATE_LOOKBACK_HOURS = 2;    // how far back to average the "rate that would have been delivered"
+const UNPLUG_EPISODE_HISTORY_LIMIT     = 20;
+
+// Time-weighted average delivered basal rate over the trailing window —
+// stands in for "the rate that would have kept being delivered" since
+// Control-IQ continuously auto-adjusts it rather than running a flat
+// scheduled rate, so a straight schedule lookup wouldn't reflect reality.
+function resolveRecentBasalRate(basalDoses, now, lookbackHours = UNPLUG_BASAL_RATE_LOOKBACK_HOURS) {
+  const nowMs = toMs(now);
+  const recent = windowFilter(basalDoses, 'time', nowMs - lookbackHours * 3600000, nowMs);
+  let totalUnits = 0, totalHours = 0;
+  for (const d of recent) {
+    const durH = (Number(d.durationMin) || 0) / 60;
+    if (durH <= 0 || !Number.isFinite(Number(d.rate))) continue;
+    totalUnits += Number(d.rate) * durH;
+    totalHours += durH;
+  }
+  return totalHours > 0 ? totalUnits / totalHours : null;
+}
+
+// Finds past near-zero-rate runs in the real delivered-basal stream long
+// enough to be a genuine disconnect, each cross-referenced against
+// logged workouts and the surrounding glucose trace.
+function detectBasalSuspendEpisodes(basalDoses, glucoseHistory, activities, now = Date.now()) {
+  const nowMs = toMs(now);
+  const segments = (basalDoses || [])
+    .map(d => ({ ms: toMs(d.time), durationMin: Number(d.durationMin) || 0, rate: Number(d.rate) }))
+    .filter(d => d.ms != null && d.ms <= nowMs && d.durationMin > 0 && Number.isFinite(d.rate))
+    .sort((a, b) => a.ms - b.ms);
+
+  const readings = sortedReadings(glucoseHistory, -Infinity, nowMs);
+  const workouts = activities?.workouts || [];
+
+  const runs = [];
+  let current = null;
+  for (const seg of segments) {
+    const segEndMs = seg.ms + seg.durationMin * 60000;
+    if (seg.rate > UNPLUG_RATE_NEAR_ZERO_UPH) {
+      if (current) { runs.push(current); current = null; }
+      continue;
+    }
+    if (!current) {
+      current = { startMs: seg.ms, endMs: segEndMs };
+    } else if (seg.ms - current.endMs <= UNPLUG_EPISODE_GAP_TOLERANCE_MIN * 60000) {
+      current.endMs = Math.max(current.endMs, segEndMs);
+    } else {
+      runs.push(current);
+      current = { startMs: seg.ms, endMs: segEndMs };
+    }
+  }
+  if (current) runs.push(current);
+
+  return runs
+    .map(run => {
+      const durationMin = Math.round((run.endMs - run.startMs) / 60000);
+      if (durationMin < UNPLUG_MIN_EPISODE_MIN) return null;
+
+      const before = nearestReading(readings, run.startMs, 30);
+      const after = nearestReading(readings, run.endMs, 30);
+      const postWindow = readings.filter(r => r.ms >= run.endMs && r.ms <= run.endMs + WORKOUT_HISTORY_POST_WINDOW_HOURS * 3600000);
+      const lowestPost = postWindow.length ? Math.min(...postWindow.map(r => r.value)) : null;
+
+      const overlap = workouts.find(w => {
+        const wStart = toMs(w.startTime);
+        const wEnd = toMs(w.endTime) ?? wStart;
+        return wStart != null && wStart <= run.endMs && wEnd >= run.startMs;
+      });
+
+      return {
+        startMs: run.startMs, endMs: run.endMs, durationMin,
+        bgBefore: before ? before.value : null,
+        bgAfter: after ? after.value : null,
+        bgDelta: before && after ? Math.round((after.value - before.value) * 100) / 100 : null,
+        lowestPost,
+        overlapsWorkout: !!overlap,
+        workoutType: overlap?.workoutType || null,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.startMs - a.startMs)
+    .slice(0, UNPLUG_EPISODE_HISTORY_LIMIT);
+}
+
+function estimateUnplugImpact(input, opts = {}, now = Date.now()) {
+  const { durationMin = 30, workoutType = 'Unplugged', intensity = 'light' } = opts;
+  const { glucoseHistory = [], boluses = [], corrections = [], basalDoses = [], activities = {}, settings = {} } = input || {};
+
+  const ctx = dosingContext(input, now);
+  if (ctx.stale || ctx.currentGlucose == null) {
+    return { withheldReason: 'stale-reading', staleMessage: ctx.staleMessage };
+  }
+
+  const basalRate = resolveRecentBasalRate(basalDoses, now);
+  if (basalRate == null) {
+    return { withheldReason: 'no-basal-data', staleMessage: 'No recent pump basal data synced yet — connect Nightscout in Settings to estimate this.' };
+  }
+
+  const resolvedCorrections = resolveCorrections(corrections, glucoseHistory, boluses, now);
+  const factorResult = resolveCorrectionFactor(resolvedCorrections, settings);
+
+  const missedUnits = basalRate * (durationMin / 60);
+  const riseFromMissedBasal = factorResult.factor != null ? missedUnits * factorResult.factor : null;
+
+  const drop = estimateExerciseDrop(activities, glucoseHistory, workoutType, durationMin, intensity);
+  const episodes = detectBasalSuspendEpisodes(basalDoses, glucoseHistory, activities, now);
+  const comparable = episodes.filter(e =>
+    e.overlapsWorkout && e.bgDelta != null &&
+    e.durationMin >= durationMin * (1 - UNPLUG_DURATION_SIMILARITY_PCT) &&
+    e.durationMin <= durationMin * (1 + UNPLUG_DURATION_SIMILARITY_PCT)
+  );
+
+  let projectedLow, projectedHigh, source, sampleSize;
+  if (comparable.length >= UNPLUG_MIN_PERSONAL_EPISODES) {
+    const deltas = comparable.map(e => e.bgDelta);
+    const avgDelta = deltas.reduce((s, d) => s + d, 0) / deltas.length;
+    const spread = Math.max(0.5, Math.max(...deltas) - Math.min(...deltas));
+    projectedLow = Math.max(SIMULATE_PROJECTION_FLOOR_MMOL, ctx.currentGlucose + avgDelta - spread / 2);
+    projectedHigh = Math.max(projectedLow, ctx.currentGlucose + avgDelta + spread / 2);
+    source = 'personal';
+    sampleSize = comparable.length;
+  } else if (riseFromMissedBasal != null) {
+    projectedLow = Math.max(SIMULATE_PROJECTION_FLOOR_MMOL, ctx.currentGlucose + riseFromMissedBasal - drop.dropHigh);
+    projectedHigh = Math.max(projectedLow, ctx.currentGlucose + riseFromMissedBasal - drop.dropLow);
+    source = 'physiological-estimate';
+    sampleSize = 0;
+  } else {
+    // No reliable correction factor yet AND not enough personal precedent —
+    // can still show the exercise-only drop so the tool isn't a dead end,
+    // clearly labelled as not accounting for the missed basal.
+    projectedLow = Math.max(SIMULATE_PROJECTION_FLOOR_MMOL, ctx.currentGlucose - drop.dropHigh);
+    projectedHigh = Math.max(projectedLow, ctx.currentGlucose - drop.dropLow);
+    source = 'exercise-only-no-factor';
+    sampleSize = 0;
+  }
+
+  const low = Number(settings.targetLow) || HYPO_FIXED_MMOL;
+  const high = Number(settings.targetHigh) || HYPER_FIXED_MMOL;
+  const hypoRisk = projectedLow < low ? (projectedLow < low - 1.0 ? 'high' : 'medium') : 'low';
+  const hyperRisk = projectedHigh > high ? (projectedHigh > high + 2.0 ? 'high' : 'medium') : 'low';
+
+  let carbAdvice = null;
+  if (projectedLow < low && factorResult.factor != null) {
+    carbAdvice = preventativeCarbAdvice(projectedLow, drop.timeToNadirMin ?? SIMULATE_CARB_TROUGH_ETA_DEFAULT_MIN, factorResult.factor, settings);
+  }
+
+  return {
+    withheldReason: null,
+    durationMin, workoutType, intensity,
+    currentGlucose: ctx.currentGlucose,
+    iob: ctx.iob,
+    basalRate: Math.round(basalRate * 1000) / 1000,
+    missedUnits: Math.round(missedUnits * 100) / 100,
+    riseFromMissedBasal: riseFromMissedBasal != null ? Math.round(riseFromMissedBasal * 100) / 100 : null,
+    exerciseDropSource: drop.source,
+    exerciseDropSampleSize: drop.sampleSize,
+    projectedLow, projectedHigh,
+    hypoRisk, hyperRisk,
+    source, sampleSize,
+    carbAdvice,
+    pastEpisodes: episodes,
   };
 }
 
@@ -2456,9 +2660,13 @@ const DiabetesEngine = {
   preWorkoutAdvisor,
   classifyIntensity,
   workoutSimulate,
+  estimateExerciseDrop,
   workoutHistoryDetail,
   whatIfSimulator,
   preventativeCarbAdvice,
+  resolveRecentBasalRate,
+  detectBasalSuspendEpisodes,
+  estimateUnplugImpact,
   // Stage 5 API
   mealMemory,
   suggestMealDose,

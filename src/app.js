@@ -339,6 +339,7 @@ const el = {
   dxRegimenBody:     $('dxRegimenBody'),
   dxWorkoutImpactCard: $('dxWorkoutImpactCard'),
   dxWorkoutImpactPills: $('dxWorkoutImpactPills'),
+  dxUnplugMode:        $('dxUnplugMode'),
   dxWorkoutImpactDuration: $('dxWorkoutImpactDuration'),
   dxWorkoutImpactIntensity: $('dxWorkoutImpactIntensity'),
   btnDxWorkoutImpact:  $('btnDxWorkoutImpact'),
@@ -6562,11 +6563,90 @@ el.dxWorkoutImpactPills?.addEventListener('click', e => {
   selectDxSimulatePill(btn.dataset.type, Number(btn.dataset.duration), btn.dataset.intensity);
 });
 
+// "Unplug" mode — same card, same duration/intensity/activity-type
+// inputs, but simulates a pump disconnect (no basal) instead of a
+// normal-basal workout. See estimateUnplugImpact in diabetes-engine.js.
+function renderDxUnplugResult(result) {
+  if (!el.dxWorkoutImpactBody) return;
+  if (result.withheldReason === 'stale-reading' || result.withheldReason === 'no-basal-data') {
+    el.dxWorkoutImpactBody.innerHTML = `<p class="empty-state">${escapeHtml(result.staleMessage || 'Not enough data to simulate this yet.')}</p>`;
+    if (el.dxWorkoutHistoryList) el.dxWorkoutHistoryList.innerHTML = '';
+    return;
+  }
+
+  const worseRisk = (result.hyperRisk === 'high' || result.hypoRisk === 'high') ? 'high'
+    : (result.hyperRisk === 'medium' || result.hypoRisk === 'medium') ? 'medium' : 'low';
+  const riskClass = worseRisk === 'high' ? 'dx-simulate-result--high' : worseRisk === 'medium' ? 'dx-simulate-result--medium' : '';
+
+  const sourceNote = result.source === 'personal'
+    ? `Based on ${result.sampleSize} of your own past disconnects of a similar length while ${escapeHtml(result.workoutType)}.`
+    : result.source === 'physiological-estimate'
+      ? `Estimated from your recent delivered basal rate (${fmt1(result.basalRate)}u/hr) and correction factor, combined with a${result.exerciseDropSource === 'personal' ? ' personal' : ' generic'} exercise-drop estimate — log a couple of real disconnects to personalize this fully.`
+      : 'Correction factor not established yet in Settings — this is the exercise-only drop, not accounting for the missed basal.';
+
+  const carbLine = result.carbAdvice?.gramsNeeded > 0
+    ? `<div class="dx-simulate-result__line">🍬 ${escapeHtml(result.carbAdvice.message)}</div>`
+    : '';
+  const rangeText = result.projectedLow === result.projectedHigh
+    ? `≤${fmt1(result.projectedLow)}`
+    : `${fmt1(result.projectedLow)}–${fmt1(result.projectedHigh)}`;
+
+  const hypoBadge = result.hypoRisk !== 'low' ? `<span class="badge ${result.hypoRisk === 'high' ? 'badge--red' : 'badge--orange'}">low: ${result.hypoRisk}</span>` : '';
+  const hyperBadge = result.hyperRisk !== 'low' ? `<span class="badge ${result.hyperRisk === 'high' ? 'badge--red' : 'badge--orange'}">high: ${result.hyperRisk}</span>` : '';
+  const riskLine = `<div class="dx-simulate-result__line"><b>Risk:</b> ${hypoBadge || hyperBadge ? `${hypoBadge}${hyperBadge}` : '<span class="badge badge--green">low</span>'}</div>`;
+
+  const missedLine = result.missedUnits > 0
+    ? `<div class="dx-simulate-result__line">${fmt1(result.missedUnits)}u basal missed over ${result.durationMin}min${result.riseFromMissedBasal != null ? ` (~${fmtSigned(result.riseFromMissedBasal, 1)} mmol/L on its own)` : ''}</div>`
+    : '';
+
+  el.dxWorkoutImpactBody.innerHTML = `
+    <div class="dx-simulate-result ${riskClass}">
+      <div class="dx-simulate-result__line"><b>Likely range after:</b> ${rangeText} mmol/L (from ${fmt1(result.currentGlucose)}, ${fmt1(result.iob)}u on board)</div>
+      ${riskLine}
+      ${missedLine}
+      ${carbLine}
+      <div class="dx-simulate-result__line">${sourceNote}</div>
+    </div>
+  `;
+
+  renderDxUnplugHistory(result.pastEpisodes || []);
+}
+
+function renderDxUnplugHistory(episodes) {
+  if (!el.dxWorkoutHistoryList) return;
+  if (!episodes.length) {
+    el.dxWorkoutHistoryList.innerHTML = '<p class="empty-state">No past disconnects detected yet — needs pump data showing basal at ~0 for 10+ min.</p>';
+    return;
+  }
+  el.dxWorkoutHistoryList.innerHTML = `
+    <div class="dx-workout-history__title">Past disconnects</div>
+    ${episodes.map(e => {
+      const start = new Date(e.startMs);
+      const dateStr = start.toLocaleDateString([], { day: 'numeric', month: 'short' });
+      const timeStr = start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return `
+        <div class="dx-workout-history__row">
+          <div class="dx-workout-history__when">
+            <span>${dateStr} · ${timeStr}${e.overlapsWorkout ? ` · ${escapeHtml(e.workoutType || 'workout')}` : ' · no workout logged'}</span>
+            <span class="dx-workout-history__dur">${e.durationMin}min</span>
+          </div>
+          <div class="dx-workout-history__stats">
+            <div><span class="dx-workout-history__label">Before</span><span class="dx-workout-history__val">${e.bgBefore != null ? fmt1(e.bgBefore) : '—'}</span></div>
+            <div><span class="dx-workout-history__label">After</span><span class="dx-workout-history__val">${e.bgAfter != null ? fmt1(e.bgAfter) : '—'}</span></div>
+            <div><span class="dx-workout-history__label">Change</span><span class="dx-workout-history__val">${e.bgDelta != null ? fmtSigned(e.bgDelta, 1) : '—'}</span></div>
+            <div><span class="dx-workout-history__label">Lowest after</span><span class="dx-workout-history__val">${e.lowestPost != null ? fmt1(e.lowestPost) : '—'}</span></div>
+          </div>
+        </div>`;
+    }).join('')}
+  `;
+}
+
 el.btnDxWorkoutImpact?.addEventListener('click', async () => {
   if (!el.dxWorkoutImpactBody) return;
   const workoutType = dxSimulateSelectedType || 'Other';
   const durationMin = Number(el.dxWorkoutImpactDuration?.value) || 30;
   const intensity = el.dxWorkoutImpactIntensity?.value || 'light';
+  const unplug = !!el.dxUnplugMode?.checked;
   setBtn(el.btnDxWorkoutImpact, true, 'Simulate', 'Simulating…');
   try {
     const data = await fetchDiabetesDataWide();
@@ -6581,10 +6661,15 @@ el.btnDxWorkoutImpact?.addEventListener('click', async () => {
     // this workout" projection start from an artificially low COB.
     const carbBoluses = DiabetesEngine.mergeMealCarbsIntoBoluses(data.boluses, macroMealLog);
     const input = { ...data, boluses: carbBoluses, settings: dxSettings(), activities: { workouts } };
-    const result = DiabetesEngine.workoutSimulate(input, { workoutType, durationMin, intensity }, Date.now());
-    renderDxWorkoutSimulateResult(result);
-    const history = DiabetesEngine.workoutHistoryDetail(input, workoutType, Date.now());
-    renderDxWorkoutHistory(history, workoutType);
+    if (unplug) {
+      const result = DiabetesEngine.estimateUnplugImpact(input, { workoutType, durationMin, intensity }, Date.now());
+      renderDxUnplugResult(result);
+    } else {
+      const result = DiabetesEngine.workoutSimulate(input, { workoutType, durationMin, intensity }, Date.now());
+      renderDxWorkoutSimulateResult(result);
+      const history = DiabetesEngine.workoutHistoryDetail(input, workoutType, Date.now());
+      renderDxWorkoutHistory(history, workoutType);
+    }
   } finally {
     setBtn(el.btnDxWorkoutImpact, false, 'Simulate');
   }
