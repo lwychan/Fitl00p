@@ -1060,7 +1060,7 @@ async function _loadDashboardInner() {
   const unit = profile?.weight_unit || 'kg';
 
   // ── Fetch all data in parallel ────────────────────────────
-  const [logRes, healthRes, healthHistRes, logsRes, lastSessionRes, lastSyncRes, mfpCalRes] = await Promise.all([
+  const [logRes, healthRes, healthHistRes, logsRes, lastSessionRes, lastSyncRes, mfpCalRes, todayWorkoutsRes] = await Promise.all([
     db.from('daily_logs')
       .select('*, cal_apple')
       .eq('user_id', currentUser.id)
@@ -1113,6 +1113,16 @@ async function _loadDashboardInner() {
       .select('log_date, cal_mfp')
       .eq('user_id', currentUser.id)
       .gte('log_date', new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10)),
+
+    // Today's real per-workout heart-rate data (Watch-synced) for the
+    // TRIMP-based Strain calc below — health_daily only has a same-day
+    // AVERAGE workout HR, not the per-session duration needed to compute
+    // cardiovascular load properly.
+    db.from('apple_health_workouts')
+      .select('workout_type, started_at, ended_at, avg_heart_rate, active_energy_kcal')
+      .eq('user_id', currentUser.id)
+      .gte('started_at', new Date(new Date().setHours(0, 0, 0, 0)).toISOString())
+      .order('started_at', { ascending: true }),
   ]);
 
   const log           = logRes.data;
@@ -1156,6 +1166,7 @@ async function _loadDashboardInner() {
   const logs          = logsRes.data || [];
   const lastSession   = lastSessionRes.data;
   const lastSync      = lastSyncRes.data;
+  const todayWorkouts = todayWorkoutsRes.data || [];
 
   // Broken-session detection: a stale/invalid local Supabase session can
   // return HTTP 200 with silently-empty results — Postgres RLS just
@@ -1240,7 +1251,7 @@ async function _loadDashboardInner() {
   renderScoreGauges({
     recovery:  computeRecoveryScore(health, healthHistory),
     sleep:     computeSleepScore(health, healthHistory),
-    strain:    computeStrainScore(health, healthHistory, log),
+    strain:    computeStrainScore(health, healthHistory, log, todayWorkouts),
     nutrition: computeNutritionScore(health, log, smartTarget),
   });
   renderHealthTiles(health, healthHistory);
@@ -1371,12 +1382,16 @@ function tieredSleepDurationScore(hrs) {
 }
 
 // ── Recovery ─────────────────────────────────────────────────
-// Physiological readiness: HRV and resting HR relative to this
-// person's own 30-day baseline (falling back to fixed population
-// thresholds when there isn't yet enough history to build one), plus
-// last night's sleep. Calorie balance deliberately isn't a factor
-// here anymore — that's what the separate Nutrition score is for;
-// folding it into Recovery too would double-count the same signal.
+// Physiological readiness — same four inputs WHOOP publicly states
+// theirs uses (HRV, resting HR, respiratory rate, sleep), each scored
+// against this person's own 30-day baseline (falling back to fixed
+// population thresholds when there isn't yet enough history to build
+// one). HRV is weighted well above the others — independent analyses
+// of WHOOP's real-world scores consistently find it dominates, with
+// RHR secondary and sleep/respiratory rate smaller supporting inputs,
+// not co-equal factors. Calorie balance deliberately isn't a factor
+// here — that's what the separate Nutrition score is for; folding it
+// into Recovery too would double-count the same signal.
 function computeRecoveryScore(health, healthHistory) {
   let totalScore = 0, totalWeight = 0;
   const factors = [];
@@ -1388,7 +1403,7 @@ function computeRecoveryScore(health, healthHistory) {
     const hrvScore = baseline != null
       ? scoreVsBaseline(hrv, baseline, 200, true)
       : (hrv >= 100 ? 100 : hrv >= 80 ? 90 : hrv >= 60 ? 78 : hrv >= 40 ? 62 : hrv >= 25 ? 45 : hrv >= 15 ? 28 : 15);
-    totalScore += hrvScore * 0.35; totalWeight += 0.35;
+    totalScore += hrvScore * 0.40; totalWeight += 0.40;
     factors.push({ label: 'HRV', val: `${Math.round(hrv)}ms`, pct: Math.round(hrvScore), cls: 'hrv' });
   }
 
@@ -1402,13 +1417,27 @@ function computeRecoveryScore(health, healthHistory) {
     factors.push({ label: 'Resting HR', val: `${Math.round(rhr)}bpm`, pct: Math.round(rhrScore), cls: 'hr' });
   }
 
+  // A resting respiratory rate that's crept up above this person's own
+  // norm is a recognized early illness/overreach signal in the wearable
+  // literature (Oura, WHOOP, and others all surface it for that reason)
+  // — small weight since it's a supporting signal, not a primary one.
+  const rr = health?.respiratory_rate;
+  if (rr != null) {
+    const baseline = baselineMean(healthHistory, 'respiratory_rate', todayDate);
+    const rrScore = baseline != null ? scoreVsBaseline(rr, baseline, 40, false) : null;
+    if (rrScore != null) {
+      totalScore += rrScore * 0.10; totalWeight += 0.10;
+      factors.push({ label: 'Respiratory rate', val: `${fmt1(rr)}/min`, pct: Math.round(rrScore), cls: 'hr' });
+    }
+  }
+
   const sleep = health?.sleep_total_hrs;
   if (sleep != null) {
     let sleepScore = tieredSleepDurationScore(sleep);
     const deep = health?.sleep_deep_hrs || 0;
     const rem  = health?.sleep_rem_hrs  || 0;
     sleepScore = Math.min(100, sleepScore + Math.min(10, (deep + rem) * 5));
-    totalScore += sleepScore * 0.40; totalWeight += 0.40;
+    totalScore += sleepScore * 0.25; totalWeight += 0.25;
     factors.push({ label: 'Sleep', val: `${fmt1(sleep)}h`, pct: Math.round(sleepScore), cls: 'sleep' });
   }
 
@@ -1487,44 +1516,81 @@ function computeSleepScore(health, healthHistory) {
 }
 
 // ── Strain ───────────────────────────────────────────────────
-// Today's exertion so far: active energy relative to this person's
-// own baseline output, exercise minutes, and — only on days an actual
-// workout was logged — average workout heart rate against an
-// age-estimated max HR.
-function computeStrainScore(health, healthHistory, log) {
-  const active = health?.active_energy_kcal ?? log?.active_energy_kcal;
-  if (active == null) return { score: null, label: '', factors: [] };
+// A genuine cardiovascular-load "Day Strain" on a 0-21 scale, modeled
+// after the Borg Scale of Perceived Exertion the same way WHOOP
+// publicly describes theirs — not a reverse-engineering of their exact
+// (undisclosed) constants, but the same well-published methodology:
+//
+// 1. Per-workout TRIMP (Banister's exponential Training Impulse,
+//    Banister 1991) from each of today's real Watch-synced workouts:
+//    TRIMP = duration_min x HRr x a x e^(b x HRr), HRr = heart rate
+//    reserve fraction = (avgHR - restingHR) / (HRmax - restingHR).
+//    HRmax uses the Tanaka formula (208 - 0.7 x age) — better-validated
+//    across ages than the older 220-age rule — falling back to 35 when
+//    age isn't set in Settings. a/b are Banister's own published
+//    constants (0.64/1.92 male, 0.86/1.67 female).
+// 2. Non-workout daily activity (today's active-energy total minus
+//    whatever's already attributed to a logged workout, so the two
+//    pathways below can't double-count the same calories) contributes
+//    a smaller secondary load — captures ordinary walking-around
+//    movement the way a continuously-worn strap would, which a
+//    workout-only TRIMP sum alone would miss entirely.
+// 3. Both loads combine inside one shared exponential-saturation
+//    curve — Strain = 21 x (1 - e^-(k1*TRIMP + k2*kcal)) — the same
+//    "more effort needed for the same marginal increase as the day
+//    gets harder" shape WHOOP describes, asymptotic to 21 rather than
+//    hard-capped. k1/k2 are calibrated (see comments below) so a solid
+//    ~60min moderate-vigorous session alone lands around 13-14 and a
+//    quiet day with just typical daily movement lands low single
+//    digits — openly a calibration choice, not WHOOP's own constant.
+const STRAIN_MAX = 21;
+// Solved so a 60min session at HRr=0.731 (~150bpm avg, RHR 55, HRmax 185)
+// -> TRIMP~=114 -> Strain~=13, a plausible "solid hour" WHOOP-style number.
+const STRAIN_K_TRIMP = 0.0085;
+// Solved so ~500kcal of non-workout active energy alone -> Strain~=7,
+// a plausible "active day, no logged workout" number.
+const STRAIN_K_KCAL  = 0.00081;
 
-  let totalScore = 0, totalWeight = 0;
+function tanakaHrMax(ageYears) { return 208 - 0.7 * (ageYears || 35); }
+
+function computeStrainScore(health, healthHistory, log, workoutsToday) {
+  const dailyActiveKcal = health?.active_energy_kcal ?? log?.active_energy_kcal;
+  const workouts = (workoutsToday || []).filter(w => Number.isFinite(Number(w.avg_heart_rate)));
+  if (dailyActiveKcal == null && !workouts.length) return { score: null, label: '', factors: [] };
+
+  const restingHr = health?.resting_hr;
+  const hrMax = tanakaHrMax(profile?.age_years);
+  const isFemale = profile?.sex === 'female';
+
+  let cumulativeTrimp = 0;
+  let workoutKcal = 0;
+  for (const w of workouts) {
+    const avgHr = Number(w.avg_heart_rate);
+    const durMin = (new Date(w.ended_at) - new Date(w.started_at)) / 60000;
+    workoutKcal += Number(w.active_energy_kcal) || 0;
+    if (restingHr == null || !Number.isFinite(durMin) || durMin <= 0 || hrMax <= restingHr) continue;
+    const hrr = clamp((avgHr - restingHr) / (hrMax - restingHr), 0, 1);
+    cumulativeTrimp += isFemale
+      ? durMin * hrr * 0.86 * Math.exp(1.67 * hrr)
+      : durMin * hrr * 0.64 * Math.exp(1.92 * hrr);
+  }
+
+  const residualKcal = Math.max(0, (dailyActiveKcal || 0) - workoutKcal);
+  const strainFraction = 1 - Math.exp(-(STRAIN_K_TRIMP * cumulativeTrimp + STRAIN_K_KCAL * residualKcal));
+  const score = Math.round(STRAIN_MAX * strainFraction * 10) / 10;
+
   const factors = [];
-
-  const activeBaseline = baselineMean(healthHistory, 'active_energy_kcal', health?.log_date);
-  const activeScore = activeBaseline != null
-    ? scoreVsBaseline(active, activeBaseline, 60, true)
-    : clamp((active / 700) * 100, 0, 100);
-  totalScore += activeScore * 0.45; totalWeight += 0.45;
-  factors.push({ label: 'Active energy', val: `${Math.round(active)} kcal`, pct: Math.round(activeScore), cls: 'active' });
-
-  const exMins = health?.exercise_mins;
-  if (exMins != null) {
-    const exScore = clamp((exMins / 60) * 100, 0, 100);
-    totalScore += exScore * 0.25; totalWeight += 0.25;
-    factors.push({ label: 'Exercise', val: `${exMins}m`, pct: Math.round(exScore), cls: 'exercise' });
+  if (cumulativeTrimp > 0) {
+    factors.push({ label: 'Workout load', val: `${Math.round(cumulativeTrimp)} TRIMP`, pct: clamp(Math.round((cumulativeTrimp / 300) * 100), 0, 100), cls: 'intensity' });
+  } else if (workouts.length) {
+    factors.push({ label: 'Workout load', val: restingHr == null ? 'no resting HR yet' : '—', pct: 0, cls: 'intensity' });
   }
+  factors.push({ label: 'Daily activity', val: `${Math.round(residualKcal)} kcal`, pct: clamp(Math.round((residualKcal / 700) * 100), 0, 100), cls: 'active' });
 
-  const workoutHr = health?.workout_hr_avg;
-  if (workoutHr) {
-    const estMaxHr = 220 - (profile?.age_years || 35);
-    const intensityScore = clamp((workoutHr / estMaxHr) * 100, 0, 100);
-    totalScore += intensityScore * 0.30; totalWeight += 0.30;
-    factors.push({ label: 'Workout intensity', val: `${Math.round(workoutHr)}bpm avg`, pct: Math.round(intensityScore), cls: 'intensity' });
-  }
-
-  if (totalWeight === 0) return { score: null, label: '', factors: [] };
-  const score = Math.round(totalScore / totalWeight);
-  const label = score >= 80 ? 'High strain — big effort today.' :
-                score >= 50 ? 'Moderate strain today.' :
-                score >= 20 ? 'Light day so far.' :
+  const label = score >= 15 ? 'All-out day — plan for real recovery.' :
+                score >= 10 ? 'High strain today.' :
+                score >= 6  ? 'Moderate strain today.' :
+                score >= 2  ? 'Light day so far.' :
                               'Very low strain so far today.';
   return { score, label, factors };
 }
@@ -1554,14 +1620,22 @@ function computeNutritionScore(health, log, smartTarget) {
   return { score, label, factors };
 }
 
+// max: the score's own natural ceiling for ring-fill purposes — Strain
+// is a real 0-21 WHOOP-style scale (shown as-is, one decimal, the same
+// way WHOOP's own UI shows a bare "14.2" rather than a percentage),
+// the rest stay the existing 0-100 scoring.
 const SCORE_META = {
-  recovery:  { label: 'Recovery',  icon: '⚡' },
-  sleep:     { label: 'Sleep',     icon: '🌙' },
-  strain:    { label: 'Strain',    icon: '🔥' },
-  nutrition: { label: 'Nutrition', icon: '🍽️' },
+  recovery:  { label: 'Recovery',  icon: '⚡', max: 100 },
+  sleep:     { label: 'Sleep',     icon: '🌙', max: 100 },
+  strain:    { label: 'Strain',    icon: '🔥', max: STRAIN_MAX },
+  nutrition: { label: 'Nutrition', icon: '🍽️', max: 100 },
 };
 const SCORE_RING_CIRCUMFERENCE = 188.5; // 2*π*30, r=30 per the SVG markup
 let dashScoresData = null; // last-rendered scores, for tap-to-expand
+
+function formatScoreVal(key, score) {
+  return SCORE_META[key]?.max === STRAIN_MAX ? fmt1(score) : Math.round(score);
+}
 
 function setScoreGauge(key, score) {
   const ring = $(`scoreRing_${key}`);
@@ -1572,9 +1646,10 @@ function setScoreGauge(key, score) {
     val.textContent = '—';
     return;
   }
-  const pct = clamp(score, 0, 100) / 100;
+  const max = SCORE_META[key]?.max || 100;
+  const pct = clamp(score, 0, max) / max;
   ring.style.strokeDashoffset = SCORE_RING_CIRCUMFERENCE * (1 - pct);
-  val.textContent = Math.round(score);
+  val.textContent = formatScoreVal(key, score);
 }
 
 function renderScoreGauges(scores) {
@@ -1602,7 +1677,7 @@ function showScoreDetail(key) {
   if (!s || s.score == null || !el.scoreDetail) return;
   el.scoreDetail.hidden = false;
   el.scoreDetail.dataset.key = key;
-  el.scoreDetailLabel.textContent = `${meta.icon} ${meta.label} — ${s.score}`;
+  el.scoreDetailLabel.textContent = `${meta.icon} ${meta.label} — ${formatScoreVal(key, s.score)}`;
   el.scoreDetailMeta.textContent = s.label;
   el.scoreDetailFactors.innerHTML = s.factors.map(f => `
     <div class="battery-factor">
