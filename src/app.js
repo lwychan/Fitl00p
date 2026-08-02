@@ -347,6 +347,17 @@ const el = {
   dxWorkoutHistoryList: $('dxWorkoutHistoryList'),
   dxGlucoseChart:      $('dxGlucoseChart'),
   dxGlucoseChartEmpty: $('dxGlucoseChartEmpty'),
+  btnDxLogActivity:  $('btnDxLogActivity'),
+  dxActivityLogForm: $('dxActivityLogForm'),
+  dxActivityType:    $('dxActivityType'),
+  dxActivityDate:    $('dxActivityDate'),
+  dxActivityTime:    $('dxActivityTime'),
+  dxActivityDuration: $('dxActivityDuration'),
+  dxActivityUnplugged: $('dxActivityUnplugged'),
+  btnSaveDxActivity: $('btnSaveDxActivity'),
+  btnCancelDxActivity: $('btnCancelDxActivity'),
+  dxActivityLogStatus: $('dxActivityLogStatus'),
+  dxActivityLogList: $('dxActivityLogList'),
   dxLastSync:        $('dxLastSync'),
   btnDxSimpleMode:   $('btnDxSimpleMode'),
   screenDxSimple:    $('screenDxSimple'),
@@ -5098,9 +5109,11 @@ async function saveNsProfileFields(updates) {
 // build) is the true start for anything logged since; older rows never
 // captured it, so they fall back to created_at for both ends — a same-
 // instant window rather than a fabricated duration.
+const MANUAL_ACTIVITY_LABELS = { swim: 'Swim', walk: 'Walk', run: 'Run', strength: 'Strength', other: 'Other' };
+
 async function fetchDxWorkouts() {
   if (!currentUser) return [];
-  const [sessionsRes, appleRes] = await Promise.all([
+  const [sessionsRes, appleRes, manualRes] = await Promise.all([
     db.from('workout_sessions')
       .select('id, split_type, started_at, created_at')
       .eq('user_id', currentUser.id)
@@ -5116,9 +5129,17 @@ async function fetchDxWorkouts() {
       .eq('user_id', currentUser.id)
       .order('started_at', { ascending: false })
       .limit(200),
+    // User's own manual log — covers activity that's neither a fitl00p
+    // routine session nor watch-synced (e.g. no watch worn swimming).
+    db.from('manual_activities')
+      .select('activity_type, started_at, ended_at, unplugged')
+      .eq('user_id', currentUser.id)
+      .order('started_at', { ascending: false })
+      .limit(200),
   ]);
   if (sessionsRes.error) console.error('fetchDxWorkouts (workout_sessions) error:', sessionsRes.error.message);
   if (appleRes.error) console.error('fetchDxWorkouts (apple_health_workouts) error:', appleRes.error.message);
+  if (manualRes.error) console.error('fetchDxWorkouts (manual_activities) error:', manualRes.error.message);
 
   const fromSessions = (sessionsRes.data || []).map(w => ({
     startTime: w.started_at || w.created_at,
@@ -5130,7 +5151,13 @@ async function fetchDxWorkouts() {
     endTime: w.ended_at,
     workoutType: w.workout_type,
   }));
-  return [...fromSessions, ...fromApple];
+  const fromManual = (manualRes.data || []).map(w => ({
+    startTime: w.started_at,
+    endTime: w.ended_at,
+    workoutType: MANUAL_ACTIVITY_LABELS[w.activity_type] || w.activity_type,
+    unplugged: !!w.unplugged,
+  }));
+  return [...fromSessions, ...fromApple, ...fromManual];
 }
 
 async function fetchMacroMealLog() {
@@ -5689,12 +5716,31 @@ const WITHHELD_MESSAGES = {
   'low-confidence-factor': 'Your correction factor looks unreliable right now — cleaner corrections (no food nearby) will sharpen it.',
 };
 
+// Icon for a workout marker on the glucose chart — checked against the
+// raw workoutType string so it covers all three sources fetchDxWorkouts()
+// merges (fitl00p's own Push/Pull/Legs/Full Body split names, Apple
+// Health's own vocabulary like "Walking"/"Traditional Strength Training",
+// and the manual log's Swim/Walk/Run/Strength/Other) without needing each
+// source to agree on exact naming. Disconnected always wins over the
+// activity's own icon — "was the pump off here" is the more operationally
+// relevant thing to see at a glance. Unrecognized types (golf, yoga, …)
+// intentionally draw nothing rather than clutter the chart with a guess.
+function dxActivityIcon(workoutType, unplugged) {
+  if (unplugged) return '🔌';
+  const t = String(workoutType || '').toLowerCase();
+  if (t.includes('walk')) return '🚶';
+  if (t.includes('swim')) return '🏊';
+  if (t.includes('run')) return '🏃';
+  if (['push', 'pull', 'legs', 'full body', 'strength', 'weight', 'lift', 'resistance'].some(k => t.includes(k))) return '🏋️';
+  return null;
+}
+
 /* ── Glucose/IOB/projection chart (canvas, no deps) ──────────
    Past ~6h of real glucose, active IOB along the bottom on its own
    scale, and a dashed near-term projection from the same model
    hypoForecast2h/projectedGlucoseCurve use — openly approximate, not
    a real predictive model, capped at 2h out for exactly that reason. */
-function drawDxGlucoseChart(canvas, emptyEl, data, settings, now) {
+function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
   if (!canvas) return;
   const MAX_W = 800, MAX_H = 260, MIN_W = 100;
   const ctx = canvas.getContext('2d');
@@ -5851,6 +5897,21 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now) {
     ctx.fillText(units.toFixed(1), x, markerY - 9);
   });
 
+  // Activity markers — small emoji near the top of the main chart, well
+  // clear of the bolus/correction markers on the baseline below.
+  ctx.font = '12px -apple-system, sans-serif';
+  ctx.textAlign = 'center';
+  (workouts || []).forEach(w => {
+    const startMs = Number(new Date(w.startTime).getTime());
+    const endMs = Number(new Date(w.endTime ?? w.startTime).getTime());
+    if (!Number.isFinite(startMs)) return;
+    const midMs = Number.isFinite(endMs) ? (startMs + endMs) / 2 : startMs;
+    if (midMs < windowStart || midMs > now) return;
+    const icon = dxActivityIcon(w.workoutType, w.unplugged);
+    if (!icon) return;
+    ctx.fillText(icon, xAt(midMs), padTop + 9);
+  });
+
   // IOB strip (own 0..max scale)
   const maxIob = Math.max(0.5, ...iobSeries.map(p => p.value));
   const iobY = v => iobTop + iobStripH - (v / maxIob) * iobStripH;
@@ -5909,7 +5970,7 @@ async function renderDiabetesTab(data) {
   const input = { ...data, boluses: carbBoluses, settings, activities: { workouts }, macroMealLog };
   const now = Date.now();
 
-  drawDxGlucoseChart(el.dxGlucoseChart, el.dxGlucoseChartEmpty, data, settings, now);
+  drawDxGlucoseChart(el.dxGlucoseChart, el.dxGlucoseChartEmpty, data, settings, now, workouts);
 
   const ctx = DiabetesEngine.dosingContext(input, now);
   renderDxNow(ctx);
@@ -5947,7 +6008,118 @@ async function renderDiabetesTab(data) {
   renderDxRegimen(regimen, prescribed, hasThuProfile);
 
   el.dxLastSync.textContent = `Last synced ${new Date(diabetesFetchedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+
+  const activities = await fetchManualActivities();
+  renderDxActivityLog(activities);
 }
+
+/* ── Manual activity log ─────────────────────────────────────
+   Fills the gap fetchDxWorkouts()'s other two sources (fitl00p's own
+   routine sessions, Apple Health sync) can't cover — an activity done
+   with no watch on, most commonly swimming. Feeds three things: the
+   glucose chart's activity-icon markers (via fetchDxWorkouts merging
+   it in), the workout/unplug what-if simulators' personal-history
+   matching, and detectBasalSuspendEpisodes' overlap check for real
+   unplug precedent. */
+async function fetchManualActivities() {
+  if (!currentUser) return [];
+  const { data, error } = await db.from('manual_activities')
+    .select('id, activity_type, started_at, ended_at, unplugged')
+    .eq('user_id', currentUser.id)
+    .order('started_at', { ascending: false })
+    .limit(10);
+  if (error) { console.error('fetchManualActivities error:', error.message); return []; }
+  return data || [];
+}
+
+function renderDxActivityLog(rows) {
+  if (!el.dxActivityLogList) return;
+  if (!rows.length) { el.dxActivityLogList.innerHTML = ''; return; }
+  el.dxActivityLogList.innerHTML = `
+    <div class="dx-workout-history__title" style="margin-top:14px">Recently logged</div>
+    ${rows.map(r => {
+      const start = new Date(r.started_at);
+      const dateStr = start.toLocaleDateString([], { day: 'numeric', month: 'short' });
+      const timeStr = start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const durationMin = Math.round((new Date(r.ended_at) - start) / 60000);
+      const label = MANUAL_ACTIVITY_LABELS[r.activity_type] || r.activity_type;
+      return `
+        <div class="dx-workout-history__row">
+          <div class="dx-workout-history__when">
+            <span>${escapeHtml(label)}${r.unplugged ? ' · 🔌 unplugged' : ''} · ${dateStr} · ${timeStr}</span>
+            <span class="dx-workout-history__dur">${durationMin}min</span>
+          </div>
+          <button class="btn btn--ghost btn--small" data-action="activity-delete" data-id="${r.id}">Delete</button>
+        </div>`;
+    }).join('')}
+  `;
+}
+
+async function refreshDxActivityMarkers() {
+  const [data, workouts] = await Promise.all([fetchDiabetesData(), fetchDxWorkouts()]);
+  if (!data) return;
+  drawDxGlucoseChart(el.dxGlucoseChart, el.dxGlucoseChartEmpty, data, dxSettings(), Date.now(), workouts);
+  renderDxActivityLog(await fetchManualActivities());
+}
+
+el.btnDxLogActivity?.addEventListener('click', () => {
+  if (!el.dxActivityLogForm) return;
+  el.dxActivityLogForm.hidden = false;
+  const now = new Date();
+  if (el.dxActivityDate) el.dxActivityDate.value = now.toISOString().slice(0, 10);
+  if (el.dxActivityTime) el.dxActivityTime.value = now.toTimeString().slice(0, 5);
+  if (el.dxActivityLogStatus) el.dxActivityLogStatus.textContent = '';
+});
+el.btnCancelDxActivity?.addEventListener('click', () => {
+  if (el.dxActivityLogForm) el.dxActivityLogForm.hidden = true;
+});
+
+el.btnSaveDxActivity?.addEventListener('click', async () => {
+  if (!currentUser) return;
+  const activityType = el.dxActivityType?.value || 'other';
+  const dateStr = el.dxActivityDate?.value;
+  const timeStr = el.dxActivityTime?.value;
+  const durationMin = Number(el.dxActivityDuration?.value) || 0;
+  const unplugged = !!el.dxActivityUnplugged?.checked;
+  if (!dateStr || !timeStr || durationMin <= 0) {
+    if (el.dxActivityLogStatus) el.dxActivityLogStatus.textContent = 'Fill in date, start time and a duration first.';
+    return;
+  }
+  const startedAt = new Date(`${dateStr}T${timeStr}`);
+  if (Number.isNaN(startedAt.getTime())) {
+    if (el.dxActivityLogStatus) el.dxActivityLogStatus.textContent = "That date/time didn't parse — check the fields.";
+    return;
+  }
+  const endedAt = new Date(startedAt.getTime() + durationMin * 60000);
+
+  setBtn(el.btnSaveDxActivity, true, 'Save', 'Saving…');
+  try {
+    const { error } = await db.from('manual_activities').insert({
+      user_id: currentUser.id,
+      activity_type: activityType,
+      started_at: startedAt.toISOString(),
+      ended_at: endedAt.toISOString(),
+      unplugged,
+    });
+    if (error) {
+      if (el.dxActivityLogStatus) el.dxActivityLogStatus.textContent = `Couldn't save: ${error.message}`;
+      return;
+    }
+    if (el.dxActivityLogForm) el.dxActivityLogForm.hidden = true;
+    if (el.dxActivityUnplugged) el.dxActivityUnplugged.checked = false;
+    await refreshDxActivityMarkers();
+  } finally {
+    setBtn(el.btnSaveDxActivity, false, 'Save');
+  }
+});
+
+el.dxActivityLogList?.addEventListener('click', async e => {
+  const btn = e.target.closest('[data-action="activity-delete"]');
+  if (!btn) return;
+  const { error } = await db.from('manual_activities').delete().eq('id', btn.dataset.id);
+  if (error) { showToast("Couldn't delete: " + error.message, true); return; }
+  await refreshDxActivityMarkers();
+});
 
 function renderDxNow(ctx) {
   el.dxCurrentGlucose.textContent = ctx.currentGlucose != null ? fmt1(ctx.currentGlucose) : '—';
@@ -6035,7 +6207,7 @@ function stopDxAutoRefresh() {
 async function refreshDxLive() {
   if (!profile?.diabetes_ns_url) return;
   try {
-    const [data, macroMealLog] = await Promise.all([fetchDiabetesData(true), fetchMacroMealLog()]);
+    const [data, macroMealLog, workouts] = await Promise.all([fetchDiabetesData(true), fetchMacroMealLog(), fetchDxWorkouts()]);
     const settings = dxSettings();
     const now = Date.now();
     // Same MFP-supersedes-Nightscout-carbs correction as renderDiabetesTab
@@ -6047,7 +6219,7 @@ async function refreshDxLive() {
 
     const ctx = DiabetesEngine.dosingContext(input, now);
     renderDxNow(ctx);
-    drawDxGlucoseChart(el.dxGlucoseChart, el.dxGlucoseChartEmpty, data, settings, now);
+    drawDxGlucoseChart(el.dxGlucoseChart, el.dxGlucoseChartEmpty, data, settings, now, workouts);
 
     const resolved = DiabetesEngine.resolveCorrections(data.corrections, data.glucoseHistory, carbBoluses, now);
     const factor = DiabetesEngine.personalCorrectionFactor(resolved);

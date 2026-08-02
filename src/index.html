@@ -1485,7 +1485,10 @@
         </div>
 
         <div class="card">
-          <div class="card-eyebrow">Glucose trend <span class="card-eyebrow-sub">6h back · 2h projected</span></div>
+          <div class="card-eyebrow">
+            <span>Glucose trend <span class="card-eyebrow-sub">6h back · 2h projected</span></span>
+            <button class="btn btn--ghost btn--small" id="btnDxLogActivity" type="button">+ Activity</button>
+          </div>
           <div class="dx-chart-wrap">
             <canvas id="dxGlucoseChart" height="240"></canvas>
             <p class="chart-empty" id="dxGlucoseChartEmpty" hidden>Not enough recent glucose data.</p>
@@ -1498,7 +1501,45 @@
             <span class="dx-chart-legend__item"><span class="dx-chart-legend__swatch" style="background:#2dd4bf"></span>Basal rate</span>
             <span class="dx-chart-legend__item"><span class="dx-chart-legend__swatch" style="background:#A78BFA"></span>IOB</span>
             <span class="dx-chart-legend__item"><span class="dx-chart-legend__swatch" style="background:rgba(74,222,128,.35)"></span>Target range</span>
+            <span class="dx-chart-legend__item">🏊🚶🏃🏋️ Activity · 🔌 Unplugged</span>
           </div>
+
+          <div id="dxActivityLogForm" hidden style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+            <div class="field">
+              <label for="dxActivityType">Activity</label>
+              <select id="dxActivityType">
+                <option value="swim">Swim</option>
+                <option value="walk">Walk</option>
+                <option value="run">Run</option>
+                <option value="strength">Strength</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+            <div style="display:flex;gap:10px">
+              <div class="field" style="flex:1;margin-bottom:0">
+                <label for="dxActivityDate">Date</label>
+                <input type="date" id="dxActivityDate">
+              </div>
+              <div class="field" style="flex:1;margin-bottom:0">
+                <label for="dxActivityTime">Start time</label>
+                <input type="time" id="dxActivityTime">
+              </div>
+              <div class="field" style="flex:1;margin-bottom:0">
+                <label for="dxActivityDuration">Duration (min)</label>
+                <input type="number" id="dxActivityDuration" min="1" value="30" inputmode="numeric">
+              </div>
+            </div>
+            <label class="checkbox-option checkbox-option--full" style="margin-top:12px">
+              <input type="checkbox" id="dxActivityUnplugged">
+              <span>🔌 I disconnected my pump during this</span>
+            </label>
+            <div style="display:flex;gap:10px;margin-top:14px">
+              <button class="btn btn--primary" id="btnSaveDxActivity" style="flex:1">Save</button>
+              <button class="btn btn--ghost" id="btnCancelDxActivity" style="flex:1">Cancel</button>
+            </div>
+            <p class="field-hint" id="dxActivityLogStatus"></p>
+          </div>
+          <div id="dxActivityLogList"></div>
         </div>
 
         <div class="card" id="dxForecastCard">
