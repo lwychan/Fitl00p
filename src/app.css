@@ -773,6 +773,32 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
   letter-spacing: .05em; color: var(--ink-3); margin-top: 3px;
 }
 
+/* Log-food macro totals — same visual language as .today-metrics */
+.macro-totals { display: grid; grid-template-columns: repeat(4,1fr); gap: 8px; text-align: center; }
+.macro-total__val {
+  display: block;
+  font-size: 18px; font-weight: 800; letter-spacing: -.02em;
+  color: var(--ink); line-height: 1.15;
+}
+.macro-total__label {
+  font-size: 9.5px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .05em; color: var(--ink-3); margin-top: 3px;
+}
+
+/* Log-food custom-food search results */
+.lf-search-result {
+  display: flex; align-items: center; justify-content: space-between;
+  width: 100%; padding: 10px 4px;
+  background: none; border: none; border-top: 1px solid var(--border-2);
+  font-family: var(--ui); text-align: left; cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.lf-search-result:first-of-type { border-top: none; }
+.lf-search-result:active { background: var(--surface-2); }
+.lf-search-result__name { font-size: 13px; font-weight: 600; color: var(--ink); }
+.lf-search-result__brand { font-size: 11px; font-weight: 500; color: var(--ink-3); }
+.lf-search-result__cals { font-size: 12px; font-weight: 700; color: var(--ink-3); white-space: nowrap; margin-left: 8px; }
+
 /* Chart card */
 .chart-wrap {
   position: relative;

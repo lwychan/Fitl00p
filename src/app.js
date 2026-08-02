@@ -185,6 +185,45 @@ const el = {
   viewHistory:      $('viewHistory'),
   viewSettings:     $('viewSettings'),
   viewWorkoutAdmin: $('viewWorkoutAdmin'),
+  viewLogFood:      $('viewLogFood'),
+  btnOpenLogFood:   $('btnOpenLogFood'),
+  btnLogFoodBack:   $('btnLogFoodBack'),
+  mtCals:           $('mtCals'),
+  mtProtein:        $('mtProtein'),
+  mtCarbs:          $('mtCarbs'),
+  mtFat:            $('mtFat'),
+  lfMealSlot:       $('lfMealSlot'),
+  lfModePills:      $('lfModePills'),
+  lfScanPanel:      $('lfScanPanel'),
+  lfScanVideo:      $('lfScanVideo'),
+  lfScanStatus:     $('lfScanStatus'),
+  lfScanUnsupported: $('lfScanUnsupported'),
+  btnLfScanStop:    $('btnLfScanStop'),
+  lfSearchPanel:    $('lfSearchPanel'),
+  lfSearchInput:    $('lfSearchInput'),
+  lfSearchResults:  $('lfSearchResults'),
+  lfPhotoPanel:     $('lfPhotoPanel'),
+  lfPhotoInput:     $('lfPhotoInput'),
+  lfPhotoPreview:   $('lfPhotoPreview'),
+  lfPhotoDesc:      $('lfPhotoDesc'),
+  btnLfEstimate:    $('btnLfEstimate'),
+  lfEstimateStatus: $('lfEstimateStatus'),
+  lfReviewForm:     $('lfReviewForm'),
+  lfFoodName:       $('lfFoodName'),
+  lfBrand:          $('lfBrand'),
+  lfQuantity:       $('lfQuantity'),
+  lfServingDesc:    $('lfServingDesc'),
+  lfCals:           $('lfCals'),
+  lfProtein:        $('lfProtein'),
+  lfCarbs:          $('lfCarbs'),
+  lfFat:            $('lfFat'),
+  lfEstimateNote:   $('lfEstimateNote'),
+  lfSaveAsCustom:   $('lfSaveAsCustom'),
+  lfSaveAsCustomWrap: $('lfSaveAsCustomWrap'),
+  btnLfSave:        $('btnLfSave'),
+  btnLfCancel:      $('btnLfCancel'),
+  lfSaveStatus:     $('lfSaveStatus'),
+  lfTodayList:      $('lfTodayList'),
   // dashboard
   dCurrentWeight: $('dCurrentWeight'),
   dCurrentUnit:   $('dCurrentUnit'),
@@ -871,6 +910,7 @@ const views = {
   diabetes:     el.viewDiabetes,
   settings:     el.viewSettings,
   workoutAdmin: el.viewWorkoutAdmin,
+  logFood:      el.viewLogFood,
 };
 
 const viewLoaders = {
@@ -880,6 +920,7 @@ const viewLoaders = {
   diabetes:     loadDiabetes,
   settings:     loadSettings,
   workoutAdmin: loadWorkoutAdminData,
+  logFood:      loadLogFood,
 };
 
 // Hides the Diabetes tab button (and bounces off the Diabetes view itself,
@@ -8677,6 +8718,453 @@ function initOnboarding() {
     requestNotificationPermission();
   }
 }
+
+/* ═══════════════════════════════════════════════════════════
+   LOG FOOD — fitl00p-native calorie/macro tracking
+   Four ways in: barcode scan (BarcodeDetector + Open Food Facts,
+   client-side, no backend needed for lookups — OFF's API is keyless
+   and CORS-open), search the shared custom-foods list, a Claude
+   vision estimate from a photo + description, or plain manual entry.
+   All four funnel into the same review/save form so the numbers are
+   always checked before they're logged, never saved sight-unseen.
+═══════════════════════════════════════════════════════════ */
+const MEAL_SLOT_BY_HOUR = { 5: 'breakfast', 11: 'lunch', 16: 'dinner', 21: 'snack' };
+function defaultMealSlot() {
+  const h = new Date().getHours();
+  if (h < 11) return 'breakfast';
+  if (h < 16) return 'lunch';
+  if (h < 21) return 'dinner';
+  return 'snack';
+}
+
+let lfSelectedMode = null;
+let lfBarcodeStream = null;
+let lfBarcodeDetector = null;
+let lfBarcodeScanRAF = null;
+let lfPhotoBase64 = null;
+let lfPhotoMediaType = null;
+let lfSelectedCustomFoodId = null; // set when the review form was populated from an existing custom_foods row (scan/search) — avoids re-saving a duplicate
+let lfPendingBarcode = null; // carries a scanned (found-or-not) barcode into save, so a not-found product is still remembered for next time
+
+async function loadLogFood() {
+  if (el.lfMealSlot) el.lfMealSlot.value = defaultMealSlot();
+  resetLfForm();
+  selectLfMode(null);
+  await Promise.all([renderLfTodayTotals(), renderLfTodayList()]);
+}
+
+el.btnOpenLogFood?.addEventListener('click', () => navigateTo('logFood'));
+el.btnLogFoodBack?.addEventListener('click', () => {
+  stopBarcodeScan();
+  navigateTo('dashboard');
+});
+
+/* ── Mode switching ──────────────────────────────────────── */
+function selectLfMode(mode) {
+  if (lfSelectedMode === 'scan' && mode !== 'scan') stopBarcodeScan();
+  lfSelectedMode = mode;
+  el.lfModePills?.querySelectorAll('.pill').forEach(p => p.classList.toggle('active', p.dataset.mode === mode));
+  if (el.lfScanPanel)   el.lfScanPanel.hidden   = mode !== 'scan';
+  if (el.lfSearchPanel) el.lfSearchPanel.hidden = mode !== 'search';
+  if (el.lfPhotoPanel)  el.lfPhotoPanel.hidden  = mode !== 'photo';
+  if (mode === 'manual') { resetLfForm(); showLfReviewForm(); }
+  else if (el.lfReviewForm) el.lfReviewForm.hidden = true;
+  if (mode === 'scan') startBarcodeScan();
+}
+el.lfModePills?.addEventListener('click', e => {
+  const btn = e.target.closest('.pill');
+  if (btn) selectLfMode(btn.dataset.mode);
+});
+
+function resetLfForm() {
+  lfPhotoBase64 = null;
+  lfPhotoMediaType = null;
+  lfSelectedCustomFoodId = null;
+  lfPendingBarcode = null;
+  if (el.lfFoodName) el.lfFoodName.value = '';
+  if (el.lfBrand) el.lfBrand.value = '';
+  if (el.lfQuantity) el.lfQuantity.value = '1';
+  if (el.lfServingDesc) el.lfServingDesc.value = '';
+  if (el.lfCals) el.lfCals.value = '';
+  if (el.lfProtein) el.lfProtein.value = '';
+  if (el.lfCarbs) el.lfCarbs.value = '';
+  if (el.lfFat) el.lfFat.value = '';
+  if (el.lfEstimateNote) el.lfEstimateNote.textContent = '';
+  if (el.lfSaveStatus) el.lfSaveStatus.textContent = '';
+  if (el.lfSaveAsCustom) el.lfSaveAsCustom.checked = true;
+  if (el.lfSaveAsCustomWrap) el.lfSaveAsCustomWrap.hidden = false; // may have been hidden by a scan/search selection — a fresh entry should always offer it
+  if (el.lfPhotoPreview) { el.lfPhotoPreview.hidden = true; el.lfPhotoPreview.src = ''; }
+  if (el.lfPhotoDesc) el.lfPhotoDesc.value = '';
+  if (el.lfPhotoInput) el.lfPhotoInput.value = '';
+  if (el.btnLfEstimate) el.btnLfEstimate.disabled = true;
+}
+function showLfReviewForm() {
+  if (el.lfReviewForm) el.lfReviewForm.hidden = false;
+  el.lfFoodName?.focus();
+}
+
+/* ── Barcode scanning ────────────────────────────────────── */
+async function startBarcodeScan() {
+  if (!el.lfScanVideo) return;
+  if (!('BarcodeDetector' in window)) {
+    if (el.lfScanUnsupported) el.lfScanUnsupported.hidden = false;
+    if (el.lfScanStatus) el.lfScanStatus.hidden = true;
+    return;
+  }
+  if (el.lfScanUnsupported) el.lfScanUnsupported.hidden = true;
+  try {
+    lfBarcodeDetector = new window.BarcodeDetector({ formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128'] });
+    lfBarcodeStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    el.lfScanVideo.srcObject = lfBarcodeStream;
+    el.lfScanVideo.hidden = false;
+    await el.lfScanVideo.play();
+    if (el.btnLfScanStop) el.btnLfScanStop.hidden = false;
+    if (el.lfScanStatus) el.lfScanStatus.textContent = 'Point the camera at a barcode…';
+    scanBarcodeFrame();
+  } catch (err) {
+    if (el.lfScanStatus) el.lfScanStatus.textContent = "Couldn't access the camera: " + err.message;
+  }
+}
+function stopBarcodeScan() {
+  if (lfBarcodeScanRAF) cancelAnimationFrame(lfBarcodeScanRAF);
+  lfBarcodeScanRAF = null;
+  lfBarcodeStream?.getTracks().forEach(t => t.stop());
+  lfBarcodeStream = null;
+  if (el.lfScanVideo) { el.lfScanVideo.srcObject = null; el.lfScanVideo.hidden = true; }
+  if (el.btnLfScanStop) el.btnLfScanStop.hidden = true;
+}
+el.btnLfScanStop?.addEventListener('click', () => { stopBarcodeScan(); selectLfMode(null); });
+
+let lfScanBusy = false;
+async function scanBarcodeFrame() {
+  if (!lfBarcodeStream || !lfBarcodeDetector) return;
+  if (!lfScanBusy) {
+    lfScanBusy = true;
+    try {
+      const codes = await lfBarcodeDetector.detect(el.lfScanVideo);
+      if (codes.length) {
+        const barcode = codes[0].rawValue;
+        stopBarcodeScan();
+        await handleScannedBarcode(barcode);
+        lfScanBusy = false;
+        return; // don't reschedule — a barcode was found
+      }
+    } catch { /* transient detection errors are normal mid-scan — just keep trying */ }
+    lfScanBusy = false;
+  }
+  lfBarcodeScanRAF = requestAnimationFrame(scanBarcodeFrame);
+}
+
+async function handleScannedBarcode(barcode) {
+  if (el.lfScanStatus) { el.lfScanStatus.hidden = false; el.lfScanStatus.textContent = `Looking up ${barcode}…`; }
+
+  // Check the shared custom-foods list first — instant, no network,
+  // and covers anything already added (including a previous scan of
+  // this exact product that Open Food Facts didn't have).
+  const { data: existing } = await db.from('custom_foods')
+    .select('id, name, brand, serving_desc, serving_qty, serving_unit, calories_kcal, protein_g, carbs_g, fat_g')
+    .eq('barcode', barcode)
+    .limit(1);
+  if (existing?.length) {
+    populateLfFormFromFood(existing[0], { custom_food_id: existing[0].id, hideSaveAsCustom: true });
+    selectLfMode(null); // closes the scan panel, but keep the review form (selectLfMode(null) hides it too — reopen explicitly)
+    showLfReviewForm();
+    return;
+  }
+
+  const off = await fetchOpenFoodFacts(barcode);
+  if (off) {
+    populateLfFormFromFood(off, { barcode });
+    selectLfMode(null);
+    showLfReviewForm();
+    return;
+  }
+
+  showToast(`Barcode ${barcode} not found — add it manually and it'll be remembered next time.`);
+  resetLfForm();
+  if (el.lfServingDesc) el.lfServingDesc.value = '100g';
+  lfPendingBarcode = barcode;
+  selectLfMode(null);
+  showLfReviewForm();
+}
+
+async function fetchOpenFoodFacts(barcode) {
+  try {
+    const res = await fetch(`https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(barcode)}.json?fields=product_name,brands,nutriments`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data.status !== 1 || !data.product) return null;
+    const n = data.product.nutriments || {};
+    const cals = n['energy-kcal_100g'] ?? (n['energy_100g'] != null ? n['energy_100g'] / 4.184 : null);
+    if (cals == null) return null; // no usable nutrition data — treat as not found
+    return {
+      name: data.product.product_name || 'Unknown product',
+      brand: data.product.brands || null,
+      serving_desc: '100g',
+      serving_qty: 100,
+      serving_unit: 'g',
+      calories_kcal: Math.round(cals),
+      protein_g: Math.round((n.proteins_100g || 0) * 10) / 10,
+      carbs_g: Math.round((n.carbohydrates_100g || 0) * 10) / 10,
+      fat_g: Math.round((n.fat_100g || 0) * 10) / 10,
+      barcode,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function populateLfFormFromFood(food, opts = {}) {
+  lfSelectedCustomFoodId = opts.custom_food_id || null;
+  if (el.lfFoodName) el.lfFoodName.value = food.name || '';
+  if (el.lfBrand) el.lfBrand.value = food.brand || '';
+  if (el.lfQuantity) el.lfQuantity.value = '1';
+  if (el.lfServingDesc) el.lfServingDesc.value = food.serving_desc || '';
+  if (el.lfCals) el.lfCals.value = food.calories_kcal ?? '';
+  if (el.lfProtein) el.lfProtein.value = food.protein_g ?? '';
+  if (el.lfCarbs) el.lfCarbs.value = food.carbs_g ?? '';
+  if (el.lfFat) el.lfFat.value = food.fat_g ?? '';
+  if (el.lfEstimateNote) el.lfEstimateNote.textContent = '';
+  if (el.lfSaveAsCustomWrap) el.lfSaveAsCustomWrap.hidden = !!opts.hideSaveAsCustom;
+  lfPendingBarcode = opts.barcode || null;
+}
+
+/* ── Search mode ─────────────────────────────────────────── */
+let lfSearchDebounce = null;
+el.lfSearchInput?.addEventListener('input', () => {
+  clearTimeout(lfSearchDebounce);
+  const q = el.lfSearchInput.value.trim();
+  lfSearchDebounce = setTimeout(() => runLfSearch(q), 300);
+});
+async function runLfSearch(query) {
+  if (!el.lfSearchResults) return;
+  if (query.length < 2) { el.lfSearchResults.innerHTML = ''; return; }
+  const { data, error } = await db.from('custom_foods')
+    .select('id, name, brand, serving_desc, serving_qty, serving_unit, calories_kcal, protein_g, carbs_g, fat_g')
+    .or(`name.ilike.%${query}%,brand.ilike.%${query}%`)
+    .order('name', { ascending: true })
+    .limit(20);
+  if (error || !data?.length) {
+    el.lfSearchResults.innerHTML = '<p class="empty-state">No matches — try Photo or Manual instead.</p>';
+    return;
+  }
+  el.lfSearchResults.innerHTML = data.map(f => `
+    <button type="button" class="lf-search-result" data-id="${f.id}">
+      <span class="lf-search-result__name">${escapeHtml(f.name)}${f.brand ? ` <span class="lf-search-result__brand">${escapeHtml(f.brand)}</span>` : ''}</span>
+      <span class="lf-search-result__cals">${Math.round(f.calories_kcal)} kcal</span>
+    </button>`).join('');
+  el.lfSearchResults.querySelectorAll('.lf-search-result').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const food = data.find(f => f.id === btn.dataset.id);
+      if (!food) return;
+      populateLfFormFromFood(food, { custom_food_id: food.id, hideSaveAsCustom: true });
+      showLfReviewForm();
+    });
+  });
+}
+
+/* ── Photo mode ──────────────────────────────────────────── */
+el.lfPhotoInput?.addEventListener('change', async () => {
+  const file = el.lfPhotoInput.files?.[0];
+  if (!file) return;
+  try {
+    const { base64, mediaType, dataUrl } = await resizeImageToBase64(file);
+    lfPhotoBase64 = base64;
+    lfPhotoMediaType = mediaType;
+    if (el.lfPhotoPreview) { el.lfPhotoPreview.src = dataUrl; el.lfPhotoPreview.hidden = false; }
+    if (el.btnLfEstimate) el.btnLfEstimate.disabled = false;
+  } catch (err) {
+    showToast("Couldn't read that photo: " + err.message, true);
+  }
+});
+
+// Downscales to a max 1024px side and re-encodes as JPEG — keeps the
+// upload small/cheap regardless of the original photo's resolution,
+// comfortably under the function's own size cap.
+function resizeImageToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const MAX = 1024;
+      const scale = Math.min(1, MAX / Math.max(img.width, img.height));
+      const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, w, h);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+      resolve({ base64: dataUrl.split(',')[1], mediaType: 'image/jpeg', dataUrl });
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not load image')); };
+    img.src = url;
+  });
+}
+
+el.btnLfEstimate?.addEventListener('click', async () => {
+  if (!lfPhotoBase64) return;
+  setBtn(el.btnLfEstimate, true, 'Estimate calories & macros', 'Estimating…');
+  if (el.lfEstimateStatus) el.lfEstimateStatus.textContent = '';
+  try {
+    const session = (await db.auth.getSession()).data.session;
+    const res = await fetch('/.netlify/functions/food-photo-estimate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
+      body: JSON.stringify({ image_base64: lfPhotoBase64, media_type: lfPhotoMediaType, description: el.lfPhotoDesc?.value || '' }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      if (el.lfEstimateStatus) el.lfEstimateStatus.textContent = data.error || 'Estimate failed.';
+      return;
+    }
+    lfSelectedCustomFoodId = null;
+    if (el.lfFoodName && !el.lfFoodName.value) el.lfFoodName.value = el.lfPhotoDesc?.value?.slice(0, 60) || 'Photo estimate';
+    if (el.lfQuantity) el.lfQuantity.value = '1';
+    if (el.lfServingDesc) el.lfServingDesc.value = 'estimated meal';
+    if (el.lfCals) el.lfCals.value = data.calories_kcal;
+    if (el.lfProtein) el.lfProtein.value = data.protein_g;
+    if (el.lfCarbs) el.lfCarbs.value = data.carbs_g;
+    if (el.lfFat) el.lfFat.value = data.fat_g;
+    if (el.lfEstimateNote) {
+      el.lfEstimateNote.textContent = `Claude's estimate (${data.confidence} confidence): ${data.note || 'no notes'} — review and adjust before saving.`;
+    }
+    if (el.lfSaveAsCustomWrap) el.lfSaveAsCustomWrap.hidden = false;
+    if (el.lfSaveAsCustom) el.lfSaveAsCustom.checked = false; // a one-off estimated meal usually isn't worth saving as a reusable food
+    showLfReviewForm();
+  } catch (err) {
+    if (el.lfEstimateStatus) el.lfEstimateStatus.textContent = "Couldn't reach the estimator: " + err.message;
+  } finally {
+    setBtn(el.btnLfEstimate, false, 'Estimate calories & macros');
+  }
+});
+
+/* ── Save ────────────────────────────────────────────────── */
+el.btnLfCancel?.addEventListener('click', () => { resetLfForm(); selectLfMode(null); });
+
+el.btnLfSave?.addEventListener('click', async () => {
+  if (!currentUser) return;
+  const name = el.lfFoodName?.value.trim();
+  const quantity = Number(el.lfQuantity?.value) || 1;
+  const baseCals = Number(el.lfCals?.value) || 0;
+  const baseProtein = Number(el.lfProtein?.value) || 0;
+  const baseCarbs = Number(el.lfCarbs?.value) || 0;
+  const baseFat = Number(el.lfFat?.value) || 0;
+  if (!name || baseCals <= 0) {
+    if (el.lfSaveStatus) el.lfSaveStatus.textContent = 'Enter a food name and calories first.';
+    return;
+  }
+  const mealSlot = el.lfMealSlot?.value || defaultMealSlot();
+  const brand = el.lfBrand?.value.trim() || null;
+  const servingDesc = el.lfServingDesc?.value.trim() || null;
+
+  setBtn(el.btnLfSave, true, 'Log it', 'Saving…');
+  try {
+    let customFoodId = lfSelectedCustomFoodId;
+    if (!customFoodId && el.lfSaveAsCustom?.checked) {
+      const { data: saved, error: saveErr } = await db.from('custom_foods').insert({
+        user_id: currentUser.id, name, brand,
+        barcode: lfPendingBarcode, serving_desc: servingDesc,
+        serving_qty: 1, serving_unit: 'serving',
+        calories_kcal: baseCals, protein_g: baseProtein, carbs_g: baseCarbs, fat_g: baseFat,
+      }).select('id').single();
+      if (!saveErr) customFoodId = saved?.id || null;
+    }
+
+    const logDate = todayISO();
+    const { error } = await db.from('food_log').insert({
+      user_id: currentUser.id,
+      log_date: logDate,
+      logged_at: new Date().toISOString(),
+      meal_slot: mealSlot,
+      source: lfSelectedCustomFoodId ? (lfSelectedMode === 'search' ? 'search' : 'scan') : (lfPhotoBase64 ? 'photo' : (lfPendingBarcode ? 'scan' : 'manual')),
+      food_name: name, brand, serving_desc: servingDesc,
+      quantity,
+      calories_kcal: Math.round(baseCals * quantity),
+      protein_g: Math.round(baseProtein * quantity * 10) / 10,
+      carbs_g: Math.round(baseCarbs * quantity * 10) / 10,
+      fat_g: Math.round(baseFat * quantity * 10) / 10,
+      barcode: lfPendingBarcode,
+      estimate_note: el.lfEstimateNote?.textContent || null,
+      custom_food_id: customFoodId,
+    });
+    if (error) {
+      if (el.lfSaveStatus) el.lfSaveStatus.textContent = "Couldn't save: " + error.message;
+      return;
+    }
+
+    // Bridge into the diabetes tab's own meal log too, when relevant —
+    // so meal-dose personalization keeps learning from real logged
+    // meals regardless of which UI logged them. Same recordMacroMeal
+    // shape the Diabetes tab's own meal-dose calculator already uses.
+    if (profile?.diabetes_enabled !== false && baseCarbs * quantity > 0) {
+      await db.from('diabetes_meals').insert({
+        user_id: currentUser.id,
+        eaten_at: new Date().toISOString(),
+        meal_name: name,
+        carbs_g: Math.round(baseCarbs * quantity * 10) / 10,
+        fat_g: Math.round(baseFat * quantity * 10) / 10,
+        protein_g: Math.round(baseProtein * quantity * 10) / 10,
+        source: 'manual',
+      });
+    }
+
+    resetLfForm();
+    selectLfMode(null);
+    await Promise.all([renderLfTodayTotals(), renderLfTodayList()]);
+    showToast(`Logged ${name}.`);
+  } finally {
+    setBtn(el.btnLfSave, false, 'Log it');
+  }
+});
+
+/* ── Today's totals + list ──────────────────────────────────── */
+async function fetchTodayFoodLog() {
+  if (!currentUser) return [];
+  const { data, error } = await db.from('food_log')
+    .select('id, meal_slot, food_name, brand, quantity, serving_desc, calories_kcal, protein_g, carbs_g, fat_g, source, logged_at')
+    .eq('user_id', currentUser.id)
+    .eq('log_date', todayISO())
+    .order('logged_at', { ascending: true });
+  if (error) { console.error('fetchTodayFoodLog error:', error.message); return []; }
+  return data || [];
+}
+
+async function renderLfTodayTotals() {
+  const rows = await fetchTodayFoodLog();
+  const totals = rows.reduce((t, r) => ({
+    cals: t.cals + (Number(r.calories_kcal) || 0),
+    protein: t.protein + (Number(r.protein_g) || 0),
+    carbs: t.carbs + (Number(r.carbs_g) || 0),
+    fat: t.fat + (Number(r.fat_g) || 0),
+  }), { cals: 0, protein: 0, carbs: 0, fat: 0 });
+  if (el.mtCals) el.mtCals.textContent = Math.round(totals.cals);
+  if (el.mtProtein) el.mtProtein.textContent = `${Math.round(totals.protein)}g`;
+  if (el.mtCarbs) el.mtCarbs.textContent = `${Math.round(totals.carbs)}g`;
+  if (el.mtFat) el.mtFat.textContent = `${Math.round(totals.fat)}g`;
+}
+
+const LF_SOURCE_ICON = { scan: '📷', search: '🔍', photo: '📸', manual: '✏️' };
+async function renderLfTodayList() {
+  if (!el.lfTodayList) return;
+  const rows = await fetchTodayFoodLog();
+  if (!rows.length) { el.lfTodayList.innerHTML = '<p class="empty-state">Nothing logged yet.</p>'; return; }
+  el.lfTodayList.innerHTML = rows.map(r => `
+    <div class="dx-workout-history__row">
+      <div class="dx-workout-history__when">
+        <span>${LF_SOURCE_ICON[r.source] || ''} ${escapeHtml(r.food_name)}${r.brand ? ` <span class="lf-search-result__brand">${escapeHtml(r.brand)}</span>` : ''} · ${r.meal_slot}</span>
+        <span class="dx-workout-history__dur">${Math.round(r.calories_kcal)} kcal</span>
+      </div>
+      <button class="btn btn--ghost btn--small" data-action="food-delete" data-id="${r.id}">Delete</button>
+    </div>`).join('');
+}
+el.lfTodayList?.addEventListener('click', async e => {
+  const btn = e.target.closest('[data-action="food-delete"]');
+  if (!btn) return;
+  const { error } = await db.from('food_log').delete().eq('id', btn.dataset.id);
+  if (error) { showToast("Couldn't delete: " + error.message, true); return; }
+  await Promise.all([renderLfTodayTotals(), renderLfTodayList()]);
+});
 
 /* ═══════════════════════════════════════════════════════════
    THEME

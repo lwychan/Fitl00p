@@ -38,6 +38,9 @@
 #   SUPABASE_URL          (your Supabase project URL)
 #   SUPABASE_ANON_KEY     (your Supabase anon key)
 #   SUPABASE_SERVICE_KEY  (your Supabase service role key)
+#   ANTHROPIC_API_KEY     (console.anthropic.com — used by food-photo-estimate.js
+#                          for the Log Food photo-estimate feature; get one at
+#                          https://console.anthropic.com/settings/keys)
 
 [[redirects]]
   from = "/*"

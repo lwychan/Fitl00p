@@ -485,7 +485,10 @@
 
         <!-- Today summary card -->
         <div class="card card--today">
-          <div class="card-eyebrow">Today <span id="dTodayDate" class="card-eyebrow-date"></span></div>
+          <div class="card-eyebrow">
+            <span>Today <span id="dTodayDate" class="card-eyebrow-date"></span></span>
+            <button class="btn btn--primary btn--small" id="btnOpenLogFood" type="button">+ Log food</button>
+          </div>
           <div class="today-metrics" id="dTodayMetrics">
             <div class="today-metric">
               <span class="today-metric__icon">⚖️</span>
@@ -1685,6 +1688,126 @@
     <div class="dx-simple__footer">
       <span class="dx-simple__live-dot" id="dxSimpleLiveDot" aria-hidden="true"></span>
       <span id="dxSimpleUpdated">—</span>
+    </div>
+  </div>
+
+  <!-- ── LOG FOOD (reached from the Dashboard's Today card) ── -->
+  <div class="view" id="viewLogFood" hidden>
+    <div class="view-inner">
+      <div class="view-head">
+        <button type="button" class="btn btn--ghost btn--small" id="btnLogFoodBack">← Back</button>
+        <h1 class="view-title" style="margin:0;font-size:20px">Log food</h1>
+      </div>
+
+      <div class="card">
+        <div class="card-eyebrow">Today's totals</div>
+        <div class="macro-totals" id="foodMacroTotals">
+          <div class="macro-total"><span class="macro-total__val" id="mtCals">0</span><span class="macro-total__label">kcal</span></div>
+          <div class="macro-total"><span class="macro-total__val" id="mtProtein">0g</span><span class="macro-total__label">Protein</span></div>
+          <div class="macro-total"><span class="macro-total__val" id="mtCarbs">0g</span><span class="macro-total__label">Carbs</span></div>
+          <div class="macro-total"><span class="macro-total__val" id="mtFat">0g</span><span class="macro-total__label">Fat</span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="field">
+          <label for="lfMealSlot">Meal</label>
+          <select id="lfMealSlot">
+            <option value="breakfast">Breakfast</option>
+            <option value="lunch">Lunch</option>
+            <option value="dinner">Dinner</option>
+            <option value="snack">Snack</option>
+          </select>
+        </div>
+
+        <div class="onboard-pills" id="lfModePills">
+          <button type="button" class="pill" data-mode="scan">📷 Scan</button>
+          <button type="button" class="pill" data-mode="search">🔍 Search</button>
+          <button type="button" class="pill" data-mode="photo">📸 Photo</button>
+          <button type="button" class="pill" data-mode="manual">✏️ Manual</button>
+        </div>
+
+        <!-- Scan mode -->
+        <div id="lfScanPanel" hidden style="margin-top:12px">
+          <video id="lfScanVideo" playsinline muted style="width:100%;border-radius:var(--r-md);background:#000;display:block" hidden></video>
+          <p class="field-hint" id="lfScanStatus">Point the camera at a barcode</p>
+          <p class="empty-state" id="lfScanUnsupported" hidden>Barcode scanning isn't supported in this browser — try Search or Manual instead.</p>
+          <button class="btn btn--ghost btn--small" id="btnLfScanStop" hidden>Stop camera</button>
+        </div>
+
+        <!-- Search mode -->
+        <div id="lfSearchPanel" hidden style="margin-top:12px">
+          <input type="text" id="lfSearchInput" placeholder="Search foods you've added before…">
+          <div id="lfSearchResults"></div>
+        </div>
+
+        <!-- Photo mode -->
+        <div id="lfPhotoPanel" hidden style="margin-top:12px">
+          <input type="file" id="lfPhotoInput" accept="image/*" capture="environment">
+          <img id="lfPhotoPreview" hidden style="max-width:100%;border-radius:var(--r-md);margin-top:8px">
+          <div class="field" style="margin-top:8px">
+            <label for="lfPhotoDesc">Description <span class="field-hint">helps the estimate — portion size, ingredients</span></label>
+            <textarea id="lfPhotoDesc" placeholder="e.g. grilled chicken, rice, side salad, medium portion" rows="2"></textarea>
+          </div>
+          <button class="btn btn--primary btn--full" id="btnLfEstimate" disabled>Estimate calories &amp; macros</button>
+          <p class="field-hint" id="lfEstimateStatus"></p>
+        </div>
+
+        <!-- Shared review/save form -->
+        <div id="lfReviewForm" hidden style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+          <div class="field">
+            <label for="lfFoodName">Food</label>
+            <input type="text" id="lfFoodName" placeholder="e.g. Grilled chicken breast">
+          </div>
+          <div class="field">
+            <label for="lfBrand">Brand <span class="field-hint">optional</span></label>
+            <input type="text" id="lfBrand" placeholder="">
+          </div>
+          <div style="display:flex;gap:10px">
+            <div class="field" style="flex:1;margin-bottom:0">
+              <label for="lfQuantity">Servings</label>
+              <input type="number" id="lfQuantity" min="0.1" step="0.1" value="1" inputmode="decimal">
+            </div>
+            <div class="field" style="flex:2;margin-bottom:0">
+              <label for="lfServingDesc">Serving size</label>
+              <input type="text" id="lfServingDesc" placeholder="e.g. 100g">
+            </div>
+          </div>
+          <div class="field-grid">
+            <div class="field">
+              <label for="lfCals">Calories</label>
+              <input type="number" id="lfCals" min="0" step="1" inputmode="numeric">
+            </div>
+            <div class="field">
+              <label for="lfProtein">Protein (g)</label>
+              <input type="number" id="lfProtein" min="0" step="0.1" inputmode="decimal">
+            </div>
+            <div class="field">
+              <label for="lfCarbs">Carbs (g)</label>
+              <input type="number" id="lfCarbs" min="0" step="0.1" inputmode="decimal">
+            </div>
+            <div class="field">
+              <label for="lfFat">Fat (g)</label>
+              <input type="number" id="lfFat" min="0" step="0.1" inputmode="decimal">
+            </div>
+          </div>
+          <p class="field-hint" id="lfEstimateNote"></p>
+          <label class="checkbox-option checkbox-option--full" id="lfSaveAsCustomWrap">
+            <input type="checkbox" id="lfSaveAsCustom" checked>
+            <span>Save to shared food list for next time</span>
+          </label>
+          <div style="display:flex;gap:10px;margin-top:10px">
+            <button class="btn btn--primary" id="btnLfSave" style="flex:1">Log it</button>
+            <button class="btn btn--ghost" id="btnLfCancel" style="flex:1">Cancel</button>
+          </div>
+          <p class="field-hint" id="lfSaveStatus"></p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-eyebrow">Logged today</div>
+        <div id="lfTodayList"><p class="empty-state">Nothing logged yet.</p></div>
+      </div>
     </div>
   </div>
 
