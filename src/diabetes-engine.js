@@ -1514,6 +1514,9 @@ const UNPLUG_DURATION_SIMILARITY_PCT   = 0.5;  // past episode's duration must b
 const UNPLUG_MIN_PERSONAL_EPISODES     = 2;    // same threshold as WORKOUT_MIN_SESSIONS_PERSONAL, for consistency
 const UNPLUG_BASAL_RATE_LOOKBACK_HOURS = 2;    // how far back to average the "rate that would have been delivered"
 const UNPLUG_EPISODE_HISTORY_LIMIT     = 20;
+const UNPLUG_BOLUS_MIN_DURATION_MIN    = 45;   // shorter disconnects aren't worth pre-bolusing for
+const UNPLUG_BOLUS_COVERAGE_FRACTION   = 0.5;  // cover roughly half the missed basal, not all of it — exercise (even light) still raises insulin sensitivity, so fully replacing it risks a low mid-session instead
+const UNPLUG_BOLUS_MIN_SUGGESTED_UNITS = 0.5;  // below this it's not worth the hassle/risk of an extra dose
 
 // Time-weighted average delivered basal rate over the trailing window —
 // stands in for "the rate that would have kept being delivered" since
@@ -1595,6 +1598,25 @@ function detectBasalSuspendEpisodes(basalDoses, glucoseHistory, activities, now 
     .slice(0, UNPLUG_EPISODE_HISTORY_LIMIT);
 }
 
+// Only relevant on the hyper side of a disconnect, and only when the low
+// side is clear — never suggests extra insulin alongside a hypo warning.
+// Deliberately covers only about half the missed basal rather than all
+// of it: exercise raises insulin sensitivity even at low intensity, so a
+// straight 1:1 replacement risks trading a high for a low mid-session,
+// which is a worse outcome to hand someone about to go swimming. Short
+// disconnects are skipped entirely — a 20-minute low-intensity walk
+// isn't worth an extra dose over.
+function preventativeUnplugBolusAdvice(missedUnits, durationMin, hyperRisk, hypoRisk) {
+  if (hyperRisk === 'low' || hypoRisk !== 'low') return null;
+  if (durationMin < UNPLUG_BOLUS_MIN_DURATION_MIN) return null;
+  const suggestedUnits = Math.round(missedUnits * UNPLUG_BOLUS_COVERAGE_FRACTION * 2) / 2;
+  if (suggestedUnits < UNPLUG_BOLUS_MIN_SUGGESTED_UNITS) return null;
+  return {
+    suggestedUnits,
+    message: `A small ~${suggestedUnits}u pre-bolus a little before you disconnect (roughly half the missed basal) may help hold the line — exercise still raises insulin sensitivity even at low intensity, so covering all of it risks a low instead.`,
+  };
+}
+
 function estimateUnplugImpact(input, opts = {}, now = Date.now()) {
   const { durationMin = 30, workoutType = 'Unplugged', intensity = 'light' } = opts;
   const { glucoseHistory = [], boluses = [], corrections = [], basalDoses = [], activities = {}, settings = {} } = input || {};
@@ -1657,6 +1679,13 @@ function estimateUnplugImpact(input, opts = {}, now = Date.now()) {
     carbAdvice = preventativeCarbAdvice(projectedLow, drop.timeToNadirMin ?? SIMULATE_CARB_TROUGH_ETA_DEFAULT_MIN, factorResult.factor, settings);
   }
 
+  // Only sized/offered once a real correction factor exists — same
+  // guard preventativeCarbAdvice already applies for the same reason.
+  let bolusAdvice = null;
+  if (factorResult.factor != null) {
+    bolusAdvice = preventativeUnplugBolusAdvice(missedUnits, durationMin, hyperRisk, hypoRisk);
+  }
+
   return {
     withheldReason: null,
     durationMin, workoutType, intensity,
@@ -1667,6 +1696,7 @@ function estimateUnplugImpact(input, opts = {}, now = Date.now()) {
     riseFromMissedBasal: riseFromMissedBasal != null ? Math.round(riseFromMissedBasal * 100) / 100 : null,
     exerciseDropSource: drop.source,
     exerciseDropSampleSize: drop.sampleSize,
+    bolusAdvice,
     projectedLow, projectedHigh,
     hypoRisk, hyperRisk,
     source, sampleSize,
@@ -2666,6 +2696,7 @@ const DiabetesEngine = {
   preventativeCarbAdvice,
   resolveRecentBasalRate,
   detectBasalSuspendEpisodes,
+  preventativeUnplugBolusAdvice,
   estimateUnplugImpact,
   // Stage 5 API
   mealMemory,

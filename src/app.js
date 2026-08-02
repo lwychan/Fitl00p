@@ -6587,6 +6587,9 @@ function renderDxUnplugResult(result) {
   const carbLine = result.carbAdvice?.gramsNeeded > 0
     ? `<div class="dx-simulate-result__line">🍬 ${escapeHtml(result.carbAdvice.message)}</div>`
     : '';
+  const bolusLine = result.bolusAdvice
+    ? `<div class="dx-simulate-result__line">💉 ${escapeHtml(result.bolusAdvice.message)}</div>`
+    : '';
   const rangeText = result.projectedLow === result.projectedHigh
     ? `≤${fmt1(result.projectedLow)}`
     : `${fmt1(result.projectedLow)}–${fmt1(result.projectedHigh)}`;
@@ -6604,6 +6607,7 @@ function renderDxUnplugResult(result) {
       <div class="dx-simulate-result__line"><b>Likely range after:</b> ${rangeText} mmol/L (from ${fmt1(result.currentGlucose)}, ${fmt1(result.iob)}u on board)</div>
       ${riskLine}
       ${missedLine}
+      ${bolusLine}
       ${carbLine}
       <div class="dx-simulate-result__line">${sourceNote}</div>
     </div>
