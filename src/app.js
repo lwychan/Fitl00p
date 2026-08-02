@@ -197,6 +197,7 @@ const el = {
   dDeficitNeeded: $('dDeficitNeeded'),
   dWeeklyPace:    $('dWeeklyPace'),
   dTodayDate:     $('dTodayDate'),
+  dHeroDate:      $('dHeroDate'),
   dTodayWeight:   $('dTodayWeight'),
   dTodaySteps:    $('dTodaySteps'),
   dTodayCals:     $('dTodayCals'),
@@ -1059,6 +1060,12 @@ async function loadDashboard() {
 async function _loadDashboardInner() {
   const unit = profile?.weight_unit || 'kg';
 
+  // Only visibly rendered under the Nebula theme (see .dash-hero__head in
+  // app.css) — harmless to always set.
+  if (el.dHeroDate) {
+    el.dHeroDate.textContent = new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
+  }
+
   // ── Fetch all data in parallel ────────────────────────────
   const [logRes, healthRes, healthHistRes, logsRes, lastSessionRes, lastSyncRes, mfpCalRes, todayWorkoutsRes] = await Promise.all([
     db.from('daily_logs')
@@ -1638,18 +1645,21 @@ function formatScoreVal(key, score) {
 }
 
 function setScoreGauge(key, score) {
-  const ring = $(`scoreRing_${key}`);
-  const val  = $(`scoreVal_${key}`);
+  const ring   = $(`scoreRing_${key}`);
+  const val    = $(`scoreVal_${key}`);
+  const liquid = $(`scoreLiquid_${key}`); // Nebula theme only — inert (display:none) elsewhere
   if (!ring || !val) return;
   if (score == null) {
     ring.style.strokeDashoffset = SCORE_RING_CIRCUMFERENCE;
     val.textContent = '—';
+    liquid?.style.setProperty('--fill-pct', '0%');
     return;
   }
   const max = SCORE_META[key]?.max || 100;
   const pct = clamp(score, 0, max) / max;
   ring.style.strokeDashoffset = SCORE_RING_CIRCUMFERENCE * (1 - pct);
   val.textContent = formatScoreVal(key, score);
+  liquid?.style.setProperty('--fill-pct', `${pct * 100}%`);
 }
 
 function renderScoreGauges(scores) {
@@ -8642,9 +8652,12 @@ function initOnboarding() {
 const THEME_KEY = 'fitl00p:theme';
 
 function applyTheme(theme, persist = true) {
-  // Migrate old theme names → new equivalents
+  // Migrate old theme names → new equivalents. "midnight" mapped to
+  // obsidian here refers to a genuinely retired old theme name from
+  // before the 3-theme consolidation — unrelated to Nebula, a distinct
+  // new 4th theme added later with its own real data-theme value.
   const OLD_MAP = { light: 'aurora', dark: 'slate', midnight: 'obsidian', forest: 'slate', rose: 'aurora', '': 'slate' };
-  const validThemes = ['slate','obsidian','aurora'];
+  const validThemes = ['slate','obsidian','aurora','nebula'];
   const t = validThemes.includes(theme) ? theme : (OLD_MAP[theme] || 'slate');
 
   document.documentElement.setAttribute('data-theme', t);
@@ -8662,6 +8675,7 @@ function applyTheme(theme, persist = true) {
       slate:    '#F5F5F5', // Hybrid
       obsidian: '#121212', // Dark
       aurora:   '#FFFFFF', // Light
+      nebula:   '#09090F', // Nebula
     };
     metaTheme.content = themeColors[t] || '#F5F5F5';
   }

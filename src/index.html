@@ -373,8 +373,14 @@
 
       <div class="dash-grid">
 
-        <!-- Score gauge carousel -->
+        <!-- Score gauge carousel — the dash-hero__head greeting only
+             renders visibly under the nebula theme (see app.css); other
+             themes keep the plain "Today's scores" eyebrow unchanged. -->
         <div class="card card--scores">
+          <div class="dash-hero__head">
+            <div class="dash-hero__title">Today</div>
+            <div class="dash-hero__date" id="dHeroDate"></div>
+          </div>
           <div class="card-eyebrow">Today's scores</div>
           <p class="empty-state" id="scoreCarouselEmpty">Connect Apple Health for your scores</p>
           <div class="score-carousel" id="scoreCarousel" hidden>
@@ -384,6 +390,7 @@
                   <circle class="score-ring-bg" cx="35" cy="35" r="30"/>
                   <circle class="score-ring-fill" id="scoreRing_recovery" cx="35" cy="35" r="30" stroke-dasharray="188.5" stroke-dashoffset="188.5"/>
                 </svg>
+                <div class="score-gauge__liquid" id="scoreLiquid_recovery"></div>
                 <div class="score-gauge__val" id="scoreVal_recovery">—</div>
               </div>
               <div class="score-gauge__label"><span class="score-gauge__icon">⚡</span>Recovery</div>
@@ -394,6 +401,7 @@
                   <circle class="score-ring-bg" cx="35" cy="35" r="30"/>
                   <circle class="score-ring-fill" id="scoreRing_sleep" cx="35" cy="35" r="30" stroke-dasharray="188.5" stroke-dashoffset="188.5"/>
                 </svg>
+                <div class="score-gauge__liquid" id="scoreLiquid_sleep"></div>
                 <div class="score-gauge__val" id="scoreVal_sleep">—</div>
               </div>
               <div class="score-gauge__label"><span class="score-gauge__icon">🌙</span>Sleep</div>
@@ -404,6 +412,7 @@
                   <circle class="score-ring-bg" cx="35" cy="35" r="30"/>
                   <circle class="score-ring-fill" id="scoreRing_strain" cx="35" cy="35" r="30" stroke-dasharray="188.5" stroke-dashoffset="188.5"/>
                 </svg>
+                <div class="score-gauge__liquid" id="scoreLiquid_strain"></div>
                 <div class="score-gauge__val" id="scoreVal_strain">—</div>
               </div>
               <div class="score-gauge__label"><span class="score-gauge__icon">🔥</span>Strain</div>
@@ -414,6 +423,7 @@
                   <circle class="score-ring-bg" cx="35" cy="35" r="30"/>
                   <circle class="score-ring-fill" id="scoreRing_nutrition" cx="35" cy="35" r="30" stroke-dasharray="188.5" stroke-dashoffset="188.5"/>
                 </svg>
+                <div class="score-gauge__liquid" id="scoreLiquid_nutrition"></div>
                 <div class="score-gauge__val" id="scoreVal_nutrition">—</div>
               </div>
               <div class="score-gauge__label"><span class="score-gauge__icon">🍽️</span>Nutrition</div>
@@ -1077,6 +1087,10 @@
           <button class="theme-btn" data-theme="aurora" title="Light — white + navy, cyan &amp; lime accents">
             <div class="theme-swatch swatch--aurora"></div>
             <span class="theme-label">Light</span>
+          </button>
+          <button class="theme-btn" data-theme="nebula" title="Nebula — deep space + violet &amp; fuchsia, gradient dashboard hero">
+            <div class="theme-swatch swatch--nebula"></div>
+            <span class="theme-label">Nebula</span>
           </button>
         </div>
         <div class="field" style="margin-top:14px">

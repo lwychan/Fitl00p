@@ -131,6 +131,51 @@
   --shadow-lg:  0 8px 40px rgba(0,32,64,.10), 0 2px 8px rgba(0,32,64,.06);
 }
 
+/* ══════════════════════════════════════════════════════════
+   THEME D — NEBULA
+   Deep space near-black · Violet primary + fuchsia secondary,
+   a purple→pink dusk-gradient dashboard hero and liquid-fill
+   score gauges are this theme's own signature (see dash-hero /
+   score-gauge--liquid rules further down, both gated on
+   [data-theme="nebula"] specifically).
+   data-theme="nebula"
+══════════════════════════════════════════════════════════ */
+:root[data-theme="nebula"] {
+  --bg:         #09090F;
+  --surface:    #15141F;
+  --surface-2:  #1E1D2C;
+  --border:     rgba(255,255,255,.08);
+  --border-2:   rgba(255,255,255,.04);
+
+  --ink:        #FFFFFF;
+  --ink-2:      rgba(255,255,255,.72);
+  --ink-3:      rgba(255,255,255,.42);
+  --ink-4:      rgba(255,255,255,.20);
+
+  --blue:       #9F87F5;  /* violet — primary accent */
+  --blue-light: rgba(159,135,245,.14);
+  --blue-dark:  #8570E0;
+  --accent-b:   #F472B6;  /* fuchsia — secondary */
+  --accent-b-light: rgba(244,114,182,.14);
+
+  --green:      #34D399;
+  --green-light:rgba(52,211,153,.14);
+  --orange:     #FB923C;
+  --orange-light:rgba(251,146,60,.12);
+  --red:        #F87171;
+  --red-light:  rgba(248,113,113,.12);
+  --purple:     #E879F9;
+  --purple-light:rgba(232,121,249,.14);
+
+  --nebula-1:   #2D1B4E;  /* dash-hero gradient stops — deep violet */
+  --nebula-2:   #7B3B6E;  /* dusky magenta midpoint */
+  --nebula-3:   #09090F;  /* fades into --bg at the base */
+
+  --shadow-sm:  0 1px 3px rgba(0,0,0,.5),  0 1px 2px rgba(0,0,0,.4);
+  --shadow-md:  0 4px 16px rgba(0,0,0,.6), 0 1px 4px rgba(0,0,0,.5);
+  --shadow-lg:  0 8px 40px rgba(0,0,0,.7), 0 2px 8px rgba(0,0,0,.6);
+}
+
 /* ── RESET ───────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html {
@@ -739,7 +784,7 @@ canvas { width: 100%; display: block; }
   position: absolute; inset: 0;
   display: flex; align-items: center; justify-content: center;
   font-size: 13px; color: var(--ink-4); font-weight: 500;
-  background: rgba(255,255,255,.85);
+  background: var(--surface);
   border-radius: var(--r-md);
 }
 .chart-empty[hidden] { display: none; }
@@ -1655,6 +1700,9 @@ input[type="checkbox"].import-check {
 .swatch--aurora   {
   background: linear-gradient(135deg, #FFFFFF 50%, #00BCD4 50%);
 }
+.swatch--nebula   {
+  background: linear-gradient(165deg, #2D1B4E 0%, #7B3B6E 55%, #09090F 100%);
+}
 
 /* ── APPLE HEALTH KEY UI ────────────────────────────────── */
 .health-key-status {
@@ -1816,6 +1864,71 @@ input[type="checkbox"].import-check {
   color: var(--ink-3);
 }
 .score-gauge__icon { font-size: 12px; }
+
+/* ── NEBULA DASHBOARD HERO + LIQUID GAUGES ───────────────────
+   Everything below is gated on [data-theme="nebula"] and inert for
+   the other three themes (.dash-hero__head stays display:none,
+   .score-gauge__liquid stays display:none, the SVG ring keeps
+   rendering exactly as before) — no shared layout changes for
+   anyone who hasn't picked Nebula. */
+.dash-hero__head { display: none; }
+[data-theme="nebula"] .card--scores {
+  background: linear-gradient(165deg, var(--nebula-1) 0%, var(--nebula-2) 55%, var(--nebula-3) 100%);
+  border: none;
+  box-shadow: var(--shadow-lg);
+  padding-top: 20px;
+}
+[data-theme="nebula"] .card--scores .card-eyebrow { display: none; }
+[data-theme="nebula"] .dash-hero__head {
+  display: block;
+  margin-bottom: 18px;
+}
+[data-theme="nebula"] .dash-hero__title {
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: -.02em;
+  color: #fff;
+}
+[data-theme="nebula"] .dash-hero__date {
+  font-size: 14px;
+  color: rgba(255,255,255,.65);
+  margin-top: 2px;
+}
+[data-theme="nebula"] .score-gauge__label { color: rgba(255,255,255,.75); }
+[data-theme="nebula"] .score-gauge__ring svg { opacity: 0; }
+
+.score-gauge__liquid { display: none; }
+[data-theme="nebula"] .score-gauge__liquid {
+  display: block;
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  overflow: hidden;
+  background: rgba(255,255,255,.06);
+  box-shadow: inset 0 2px 8px rgba(0,0,0,.45), inset 0 -1px 3px rgba(255,255,255,.06);
+}
+[data-theme="nebula"] .score-gauge__liquid::before {
+  content: '';
+  position: absolute;
+  left: -10%; right: -10%; bottom: 0;
+  height: var(--fill-pct, 0%);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--fill-color) 75%, white) 0%, var(--fill-color) 100%);
+  transition: height .6s cubic-bezier(.2,.8,.2,1);
+}
+[data-theme="nebula"] .score-gauge__liquid::after {
+  /* glassy highlight, like a droplet's specular glare */
+  content: '';
+  position: absolute;
+  top: 10%; left: 20%;
+  width: 26%; height: 20%;
+  border-radius: 50%;
+  background: rgba(255,255,255,.22);
+  filter: blur(1.5px);
+}
+[data-theme="nebula"] #scoreGauge_recovery  .score-gauge__liquid { --fill-color: var(--purple); }
+[data-theme="nebula"] #scoreGauge_sleep     .score-gauge__liquid { --fill-color: var(--blue); }
+[data-theme="nebula"] #scoreGauge_strain    .score-gauge__liquid { --fill-color: var(--orange); }
+[data-theme="nebula"] #scoreGauge_nutrition .score-gauge__liquid { --fill-color: var(--green); }
 
 .score-detail[hidden] { display: none; }
 .score-detail {
@@ -2065,6 +2178,12 @@ input[type="checkbox"].import-check {
   display: flex;
   flex-direction: column;
   align-items: stretch;
+  /* .chart-empty positions itself with inset:0 against the nearest
+     positioned ancestor — without this, it falls through to the
+     viewport itself and covers the whole page. Was invisible on the
+     old light themes (a near-white 85%-opacity overlay blends into a
+     light background) until Nebula's dark palette made it obvious. */
+  position: relative;
 }
 
 .chart-skeleton--mini {
