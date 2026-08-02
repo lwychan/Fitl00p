@@ -79,6 +79,16 @@ exports.handler = async function (event) {
     return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ received: 0, processed: 0, message: 'No metrics or workouts in payload' }) };
   }
 
+  // Grouped by date and shared between the workouts loop below (for
+  // heart-rate-recovery, the only per-workout field that feeds a daily
+  // score rather than apple_health_workouts itself) and the daily-metrics
+  // loop further down. Declared here, before either loop, so a sync call
+  // carrying only a Workouts payload (Health Auto Export's Health Data
+  // and Workouts exports are two separate automations, commonly sent as
+  // two separate calls — see the early-return fix below) can still
+  // populate and upsert it.
+  const byDate = {};
+
   // ── Discrete workout events ────────────────────────────────
   // Separate from the daily-aggregate loop below — these carry their own
   // real start/end times (the daily metrics above never do), which is
@@ -93,6 +103,7 @@ exports.handler = async function (event) {
     const start = w.start, end = w.end;
     if (!start || !end) continue;
     const externalId = w.id ? String(w.id) : `${w.name || 'workout'}_${start}`;
+    const maxHr = w.maxHeartRate?.qty != null ? round1(Number(w.maxHeartRate.qty)) : null;
     const row = {
       user_id,
       external_id: externalId,
@@ -104,7 +115,7 @@ exports.handler = async function (event) {
       total_energy_kcal: qtyToKcal(w.totalEnergy),
       distance_km: qtyToKm(w.distance),
       avg_heart_rate: w.avgHeartRate?.qty != null ? round1(Number(w.avgHeartRate.qty)) : null,
-      max_heart_rate: w.maxHeartRate?.qty != null ? round1(Number(w.maxHeartRate.qty)) : null,
+      max_heart_rate: maxHr,
       synced_at: new Date().toISOString(),
     };
     const res = await sbFetch(
@@ -113,14 +124,39 @@ exports.handler = async function (event) {
       { 'Prefer': 'resolution=merge-duplicates,return=minimal' }
     );
     if (res.ok) workoutsProcessed++;
+
+    // ── Heart Rate Recovery ────────────────────────────────
+    // HealthKit's heartRateRecoveryOneMinute (watchOS 11+/Ultra 2+) —
+    // Health Auto Export sends it as a short time-series of {date,qty}
+    // samples taken across the recovery window right after the workout
+    // ends, not a single value, so the drop is derived: peak HR during
+    // the workout (maxHeartRate, falling back to the recovery array's
+    // own first sample if that's missing) minus the lowest point reached
+    // during the sampled recovery window. A fitness marker (how fast the
+    // autonomic nervous system disengages), not a same-day readiness
+    // signal the way HRV is — deliberately kept out of the Recovery
+    // score for that reason and surfaced as its own health tile instead.
+    // Best (highest) value of the day wins if there were multiple workouts.
+    if (Array.isArray(w.heartRateRecovery) && w.heartRateRecovery.length >= 2) {
+      const samples = w.heartRateRecovery.map(p => Number(p.qty)).filter(n => Number.isFinite(n));
+      if (samples.length >= 2) {
+        const peakHr = maxHr ?? samples[0];
+        const hrr = Math.round(peakHr - Math.min(...samples));
+        if (hrr > 0) {
+          const workoutDate = row.started_at.slice(0, 10);
+          if (!byDate[workoutDate]) byDate[workoutDate] = {};
+          byDate[workoutDate].hr_recovery_bpm = Math.max(byDate[workoutDate].hr_recovery_bpm || 0, hrr);
+        }
+      }
+    }
   }
 
-  if (!metrics.length) {
+  if (!metrics.length && !Object.keys(byDate).length) {
     return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ received: 0, processed: 0, workoutsProcessed, message: 'No metrics in payload' }) };
   }
 
   // ── 3. Group all metric data points by date ───────────────
-  const byDate = {};
+  // (byDate itself declared earlier, above the workouts loop — see comment there)
 
   for (const metric of metrics) {
     const metricName  = (metric.name  || '').toLowerCase().replace(/\s+/g, '_');

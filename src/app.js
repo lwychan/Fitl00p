@@ -1077,14 +1077,14 @@ async function _loadDashboardInner() {
     // Fetch last 2 days of health data — overnight metrics (VO2, HRV, sleep)
     // come from the previous night's sync, not today's row
     db.from('health_daily')
-      .select('readiness_score, sleep_total_hrs, sleep_deep_hrs, sleep_rem_hrs, sleep_start, hrv_ms, resting_hr, active_energy_kcal, resting_energy_kcal, dietary_energy_kcal, spo2_avg, spo2_min, respiratory_rate, vo2_max, heart_rate_avg, distance_km, glucose_avg_mmol, weight_kg, steps, exercise_mins, workout_hr_avg, log_date')
+      .select('readiness_score, sleep_total_hrs, sleep_deep_hrs, sleep_rem_hrs, sleep_start, hrv_ms, resting_hr, active_energy_kcal, resting_energy_kcal, dietary_energy_kcal, spo2_avg, spo2_min, respiratory_rate, wrist_temp_dev, hr_recovery_bpm, vo2_max, heart_rate_avg, distance_km, glucose_avg_mmol, weight_kg, steps, exercise_mins, workout_hr_avg, log_date')
       .eq('user_id', currentUser.id)
       .gte('log_date', new Date(Date.now() - 1 * 86400000).toISOString().slice(0, 10))
       .order('log_date', { ascending: false })
       .limit(2),
 
     db.from('health_daily')
-      .select('log_date, spo2_avg, respiratory_rate, wrist_temp_dev, vo2_max, heart_rate_avg, glucose_avg_mmol, hrv_ms, resting_hr, active_energy_kcal, resting_energy_kcal, dietary_energy_kcal, weight_kg, sleep_total_hrs, sleep_deep_hrs, sleep_rem_hrs, sleep_start, exercise_mins, workout_hr_avg, steps')
+      .select('log_date, spo2_avg, respiratory_rate, wrist_temp_dev, hr_recovery_bpm, vo2_max, heart_rate_avg, glucose_avg_mmol, hrv_ms, resting_hr, active_energy_kcal, resting_energy_kcal, dietary_energy_kcal, weight_kg, sleep_total_hrs, sleep_deep_hrs, sleep_rem_hrs, sleep_start, exercise_mins, workout_hr_avg, steps')
       .eq('user_id', currentUser.id)
       .gte('log_date', new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10))
       .order('log_date', { ascending: true }),
@@ -1436,6 +1436,20 @@ function computeRecoveryScore(health, healthHistory) {
       totalScore += rrScore * 0.10; totalWeight += 0.10;
       factors.push({ label: 'Respiratory rate', val: `${fmt1(rr)}/min`, pct: Math.round(rrScore), cls: 'hr' });
     }
+  }
+
+  // Apple's own wrist-temperature metric is ALREADY a deviation from this
+  // person's personal baseline (computed on-device, not a raw reading),
+  // so — unlike HRV/RHR/respiratory rate above — this is scored directly
+  // against fixed tiers rather than re-baselined against our own history.
+  // Elevated wrist temp overnight is the same kind of early illness/
+  // overreach signal Oura popularized; small supporting weight, same as
+  // respiratory rate.
+  const wristTemp = health?.wrist_temp_dev;
+  if (wristTemp != null) {
+    const tempScore = wristTemp <= 0.3 ? 100 : wristTemp <= 0.6 ? 80 : wristTemp <= 1.0 ? 55 : wristTemp <= 1.5 ? 30 : 10;
+    totalScore += tempScore * 0.10; totalWeight += 0.10;
+    factors.push({ label: 'Wrist temp', val: `${fmtSigned(wristTemp, 1)}°C`, pct: tempScore, cls: 'hr' });
   }
 
   const sleep = health?.sleep_total_hrs;
@@ -1840,6 +1854,24 @@ function renderHealthTiles(today, history) {
   if (vo2Hist.length) drawSparkline('sparkVo2', vo2Hist, {
     stroke: '#7C3AED',
     fillTop: 'rgba(124,58,237,.2)', fillBottom: 'rgba(124,58,237,0)',
+  });
+
+  // ── Heart Rate Recovery ────────────────────────────────────
+  // Only exists on days with a tracked workout (watchOS 11+/Ultra 2+) —
+  // same last-known-value fallback as VO2 Max above rather than blanking
+  // out on rest days. Threshold is the actual published clinical cutoff
+  // (Cole et al., NEJM 1999): <12bpm drop at 1min is associated with
+  // meaningfully higher cardiovascular risk, not an arbitrary tier.
+  const hrrHist = hist('hr_recovery_bpm');
+  const hrr = today?.hr_recovery_bpm ?? (hrrHist.length ? hrrHist[hrrHist.length - 1] : null);
+  showTile('tileHrr', hrr != null || hrrHist.length > 0);
+  $('tileHrrVal').textContent = hrr != null ? Math.round(hrr) : '—';
+  setTileState('tileHrr',
+    hrr == null ? null : hrr >= 18 ? 'good' : hrr >= 12 ? 'warn' : 'alert'
+  );
+  if (hrrHist.length) drawSparkline('sparkHrr', hrrHist, {
+    stroke: '#F97316',
+    fillTop: 'rgba(249,115,22,.2)', fillBottom: 'rgba(249,115,22,0)',
   });
 
   // ── Average Heart Rate ─────────────────────────────────────
