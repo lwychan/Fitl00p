@@ -6173,7 +6173,10 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
   const gLo = Math.max(2, Math.min(...allVals) - 1);
   const gHi = Math.min(22, Math.max(...allVals) + 1);
 
-  const padL = 26, padR = 8, padTop = 6, xAxisH = 14, iobStripH = 26, basalStripH = 26, stripGap = 9;
+  // padTop leaves room above the main plot for the bolus/correction dose
+  // labels ("3.2u+30g"), which sit above their dashed vertical lines rather
+  // than crowding the baseline.
+  const padL = 26, padR = 8, padTop = 20, xAxisH = 14, iobStripH = 26, basalStripH = 26, stripGap = 9;
   const mainH = H - padTop - iobStripH - basalStripH - xAxisH - stripGap * 2 - 4;
   const iobTop = padTop + mainH + stripGap;
   const basalTop = iobTop + iobStripH + stripGap;
@@ -6184,6 +6187,27 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
   // Target range band
   ctx.fillStyle = 'rgba(74, 222, 128, 0.10)';
   ctx.fillRect(padL, yAt(high), W - padL - padR, Math.max(0, yAt(low) - yAt(high)));
+
+  // Activity/workout bands — a tinted strip across the activity's full
+  // timeframe (not just a point marker), drawn behind the glucose line so
+  // the curve stays legible on top of it. Icon + label + the DOM tap
+  // target get added later, once the glucose curve is drawn, so the text
+  // sits above the line rather than under it.
+  const activityBands = [];
+  (workouts || []).forEach(w => {
+    const startMs = Number(new Date(w.startTime).getTime());
+    const endMsRaw = Number(new Date(w.endTime ?? w.startTime).getTime());
+    if (!Number.isFinite(startMs)) return;
+    const endMs = Number.isFinite(endMsRaw) ? endMsRaw : startMs;
+    if (endMs < windowStart || startMs > now) return;
+    const icon = dxActivityIcon(w.workoutType, w.unplugged);
+    if (!icon) return;
+    const x0 = xAt(Math.max(startMs, windowStart));
+    const x1 = Math.max(x0 + 4, xAt(Math.min(endMs, now)));
+    activityBands.push({ x0, x1, icon, label: dxActivityLabel(w.workoutType, w.unplugged), startMs, endMs });
+  });
+  ctx.fillStyle = 'rgba(129, 140, 248, 0.14)';
+  activityBands.forEach(b => ctx.fillRect(b.x0, padTop, b.x1 - b.x0, mainH));
 
   // Y gridlines — labels repeat roughly once per screen-width of scroll so
   // they stay visible wherever the chart is scrolled to (the default view
@@ -6247,58 +6271,61 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
     ctx.fillText('Set correction factor in Settings for a projection', W - padR, padTop + 9);
   }
 
-  // Bolus / correction / activity markers — drawn on canvas as before, but
-  // each one also gets a matching entry in chartHits so a DOM overlay
-  // button can be positioned on top of it (canvas pixels have no click
-  // events of their own — see renderDxChartMarkerOverlay below).
+  // Bolus / correction dose markers — a dashed vertical line through the
+  // full plot height with the dose (and carbs, for meal boluses) labeled
+  // above it, so the dose and the curve's reaction to it read together at
+  // a glance. Each one also gets a matching entry in chartHits so a DOM
+  // overlay button can be positioned on top of it (canvas pixels have no
+  // click events of their own — see renderDxChartMarkerOverlay below).
   const chartHits = [];
-  const markerY = padTop + mainH - 3;
-  ctx.font = '8px -apple-system, sans-serif';
+  ctx.font = '9px -apple-system, sans-serif';
   ctx.textAlign = 'center';
   (data.boluses || []).forEach(b => {
     const ms = Number(b.time), units = Number(b.units);
     if (!Number.isFinite(ms) || !Number.isFinite(units) || units <= 0 || ms < windowStart || ms > now) return;
     const x = xAt(ms);
+    const carbs = Number(b.carbs) || 0;
+    ctx.strokeStyle = 'rgba(250, 204, 21, 0.5)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.moveTo(x, padTop); ctx.lineTo(x, padTop + mainH); ctx.stroke();
+    ctx.setLineDash([]);
+    const label = carbs > 0 ? `${units.toFixed(1)}u+${Math.round(carbs)}g` : `${units.toFixed(1)}u`;
     ctx.fillStyle = '#facc15';
-    ctx.beginPath();
-    ctx.moveTo(x, markerY - 5); ctx.lineTo(x - 3.5, markerY); ctx.lineTo(x + 3.5, markerY);
-    ctx.closePath(); ctx.fill();
-    ctx.fillStyle = 'rgba(250, 204, 21, 0.9)';
-    ctx.fillText(units.toFixed(1), x, markerY - 8);
-    chartHits.push({ x, y: markerY - 4, title: 'Bolus', body: `${units.toFixed(1)}u · ${dxFormatMarkerTime(ms)}` });
+    ctx.fillText(label, x, 12);
+    const body = carbs > 0
+      ? `${units.toFixed(1)}u + ${Math.round(carbs)}g carbs · ${dxFormatMarkerTime(ms)}`
+      : `${units.toFixed(1)}u · ${dxFormatMarkerTime(ms)}`;
+    chartHits.push({ x, y: 12, title: 'Bolus', body });
   });
   (data.corrections || []).forEach(c => {
     const ms = Number(c.time), units = Number(c.units);
     if (!Number.isFinite(ms) || !Number.isFinite(units) || units <= 0 || ms < windowStart || ms > now) return;
     const x = xAt(ms);
+    ctx.strokeStyle = 'rgba(251, 146, 60, 0.5)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.moveTo(x, padTop); ctx.lineTo(x, padTop + mainH); ctx.stroke();
+    ctx.setLineDash([]);
     ctx.fillStyle = '#fb923c';
-    ctx.beginPath();
-    ctx.moveTo(x, markerY - 6); ctx.lineTo(x - 3, markerY - 3); ctx.lineTo(x, markerY); ctx.lineTo(x + 3, markerY - 3);
-    ctx.closePath(); ctx.fill();
-    ctx.fillStyle = 'rgba(251, 146, 60, 0.9)';
-    ctx.fillText(units.toFixed(1), x, markerY - 9);
-    chartHits.push({ x, y: markerY - 4, title: 'Correction', body: `${units.toFixed(1)}u · ${dxFormatMarkerTime(ms)}` });
+    ctx.fillText(`${units.toFixed(1)}u`, x, 12);
+    chartHits.push({ x, y: 12, title: 'Correction', body: `${units.toFixed(1)}u · ${dxFormatMarkerTime(ms)}` });
   });
 
-  // Activity markers — small emoji near the top of the main chart, well
-  // clear of the bolus/correction markers on the baseline below.
-  ctx.font = '12px -apple-system, sans-serif';
+  // Activity band labels — icon + name centered in the tinted band drawn
+  // earlier, sitting near the bottom of the plot so they don't collide
+  // with the bolus/correction labels up top.
+  ctx.font = '11px -apple-system, sans-serif';
   ctx.textAlign = 'center';
-  (workouts || []).forEach(w => {
-    const startMs = Number(new Date(w.startTime).getTime());
-    const endMs = Number(new Date(w.endTime ?? w.startTime).getTime());
-    if (!Number.isFinite(startMs)) return;
-    const midMs = Number.isFinite(endMs) ? (startMs + endMs) / 2 : startMs;
-    if (midMs < windowStart || midMs > now) return;
-    const icon = dxActivityIcon(w.workoutType, w.unplugged);
-    if (!icon) return;
-    const x = xAt(midMs), y = padTop + 9;
-    ctx.fillText(icon, x, y);
-    const label = dxActivityLabel(w.workoutType, w.unplugged);
-    const body = Number.isFinite(endMs) && endMs !== startMs
-      ? `${dxFormatMarkerTime(startMs)} – ${new Date(endMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} (${Math.round((endMs - startMs) / 60000)} min)`
-      : dxFormatMarkerTime(startMs);
-    chartHits.push({ x, y, title: label, body });
+  ctx.fillStyle = 'rgba(199, 210, 254, 0.95)';
+  activityBands.forEach(band => {
+    const midX = (band.x0 + band.x1) / 2;
+    const y = padTop + mainH - 6;
+    ctx.fillText(`${band.icon} ${band.label}`, midX, y);
+    const body = band.endMs !== band.startMs
+      ? `${dxFormatMarkerTime(band.startMs)} – ${new Date(band.endMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} (${Math.round((band.endMs - band.startMs) / 60000)} min)`
+      : dxFormatMarkerTime(band.startMs);
+    chartHits.push({ x: midX, y, title: band.label, body });
   });
 
   // IOB strip (own 0..max scale)
