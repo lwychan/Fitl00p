@@ -9730,7 +9730,7 @@ el.btnLfSave?.addEventListener('click', async () => {
     const loggedAtInput = el.lfLoggedAt?.value ? new Date(el.lfLoggedAt.value) : null;
     const loggedAt = loggedAtInput && !Number.isNaN(loggedAtInput.getTime()) ? loggedAtInput : new Date();
     const logDate = loggedAt.toISOString().slice(0, 10);
-    const { error } = await db.from('food_log').insert({
+    const { data: savedFoodLog, error } = await db.from('food_log').insert({
       user_id: currentUser.id,
       log_date: logDate,
       logged_at: loggedAt.toISOString(),
@@ -9746,7 +9746,7 @@ el.btnLfSave?.addEventListener('click', async () => {
       estimate_note: el.lfEstimateNote?.textContent || null,
       custom_food_id: customFoodId,
       hypo_treatment: hypoTreatment,
-    });
+    }).select('id').single();
     if (error) {
       if (el.lfSaveStatus) el.lfSaveStatus.textContent = "Couldn't save: " + error.message;
       return;
@@ -9756,9 +9756,13 @@ el.btnLfSave?.addEventListener('click', async () => {
     // so meal-dose personalization keeps learning from real logged
     // meals regardless of which UI logged them. Same recordMacroMeal
     // shape the Diabetes tab's own meal-dose calculator already uses.
+    // food_log_id links back to the row just saved above so a later time
+    // edit (see the "Logged today" list) can find and update this row's
+    // eaten_at too, instead of the two silently drifting apart.
     if (profile?.diabetes_enabled !== false && baseCarbs * quantity > 0) {
       await db.from('diabetes_meals').insert({
         user_id: currentUser.id,
+        food_log_id: savedFoodLog?.id || null,
         eaten_at: loggedAt.toISOString(),
         meal_name: name,
         carbs_g: Math.round(baseCarbs * quantity * 10) / 10,
@@ -9860,22 +9864,93 @@ async function renderLfTodayList() {
   if (!el.lfTodayList) return;
   const rows = await fetchTodayFoodLog();
   if (!rows.length) { el.lfTodayList.innerHTML = '<p class="empty-state">Nothing logged yet.</p>'; return; }
-  el.lfTodayList.innerHTML = rows.map(r => `
+  el.lfTodayList.innerHTML = rows.map(r => {
+    const loggedAt = new Date(r.logged_at);
+    const timeStr = `${String(loggedAt.getHours()).padStart(2, '0')}:${String(loggedAt.getMinutes()).padStart(2, '0')}`;
+    return `
     <div class="dx-workout-history__row">
       <div class="dx-workout-history__when">
         <span>${LF_SOURCE_ICON[r.source] || ''} ${escapeHtml(r.food_name)}${r.brand ? ` <span class="lf-search-result__brand">${escapeHtml(r.brand)}</span>` : ''} · ${r.meal_slot}${r.hypo_treatment ? ' <span class="badge badge--blue" style="font-size:9px">hypo</span>' : ''}</span>
         <span class="dx-workout-history__dur">${Math.round(r.calories_kcal)} kcal</span>
       </div>
-      <button class="btn btn--ghost btn--small" data-action="food-delete" data-id="${r.id}">Delete</button>
-    </div>`).join('');
+      <div class="lf-today-actions">
+        <button type="button" class="btn btn--ghost btn--small" data-action="food-edit-time" data-id="${r.id}" data-time="${timeStr}">🕐 ${timeStr}</button>
+        <button class="btn btn--ghost btn--small" data-action="food-delete" data-id="${r.id}">Delete</button>
+      </div>
+    </div>`;
+  }).join('');
 }
 el.lfTodayList?.addEventListener('click', async e => {
-  const btn = e.target.closest('[data-action="food-delete"]');
-  if (!btn) return;
-  const { error } = await db.from('food_log').delete().eq('id', btn.dataset.id);
-  if (error) { showToast("Couldn't delete: " + error.message, true); return; }
-  await Promise.all([renderLfTodayTotals(), renderLfTodayList()]);
+  const delBtn = e.target.closest('[data-action="food-delete"]');
+  if (delBtn) {
+    const { error } = await db.from('food_log').delete().eq('id', delBtn.dataset.id);
+    if (error) { showToast("Couldn't delete: " + error.message, true); return; }
+    await Promise.all([renderLfTodayTotals(), renderLfTodayList()]);
+    return;
+  }
+
+  // Tapping the time chip swaps it for an inline <input type="time"> +
+  // Save right there in the row — editing when a meal actually happened
+  // shouldn't require reopening the whole log form.
+  const editBtn = e.target.closest('[data-action="food-edit-time"]');
+  if (editBtn) {
+    const wrap = document.createElement('span');
+    wrap.className = 'lf-time-edit';
+    wrap.innerHTML = `<input type="time" class="lf-time-input" value="${editBtn.dataset.time}"><button type="button" class="btn btn--primary btn--small" data-action="food-save-time" data-id="${editBtn.dataset.id}">Save</button>`;
+    editBtn.replaceWith(wrap);
+    wrap.querySelector('input')?.focus();
+    return;
+  }
+
+  const saveBtn = e.target.closest('[data-action="food-save-time"]');
+  if (saveBtn) {
+    const timeVal = saveBtn.previousElementSibling?.value;
+    if (!timeVal) return;
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving…';
+    await saveLfLoggedTime(saveBtn.dataset.id, timeVal);
+    await Promise.all([renderLfTodayTotals(), renderLfTodayList()]);
+  }
 });
+
+// Updates a food_log entry's time in place, then keeps the diabetes
+// chart's meal marker in sync — the reliable food_log_id link (every row
+// saved since that column shipped) is tried first, falling back to a
+// best-effort meal-name + carbs + nearby-time match for rows logged
+// before the link existed, so an old entry's chart marker can still move
+// when its time is corrected.
+async function saveLfLoggedTime(foodLogId, timeVal) {
+  const { data: foodRow, error: fetchErr } = await db.from('food_log').select('logged_at, food_name, carbs_g').eq('id', foodLogId).single();
+  if (fetchErr || !foodRow) { showToast("Couldn't load that entry", true); return; }
+
+  const oldLoggedAt = new Date(foodRow.logged_at);
+  const [h, m] = timeVal.split(':').map(Number);
+  const newLoggedAt = new Date(oldLoggedAt.getFullYear(), oldLoggedAt.getMonth(), oldLoggedAt.getDate(), h, m);
+  const newIso = newLoggedAt.toISOString();
+  const newLogDate = newIso.slice(0, 10);
+
+  const { error: updErr } = await db.from('food_log').update({ logged_at: newIso, log_date: newLogDate }).eq('id', foodLogId);
+  if (updErr) { showToast("Couldn't update time: " + updErr.message, true); return; }
+
+  const { data: linked } = await db.from('diabetes_meals').select('id').eq('food_log_id', foodLogId).limit(1);
+  if (linked?.length) {
+    await db.from('diabetes_meals').update({ eaten_at: newIso }).eq('id', linked[0].id);
+  } else if (currentUser) {
+    const dayMs = 24 * 3600000;
+    const { data: candidates } = await db.from('diabetes_meals')
+      .select('id')
+      .eq('user_id', currentUser.id)
+      .is('food_log_id', null)
+      .eq('meal_name', foodRow.food_name)
+      .eq('carbs_g', foodRow.carbs_g)
+      .gte('eaten_at', new Date(oldLoggedAt.getTime() - dayMs).toISOString())
+      .lte('eaten_at', new Date(oldLoggedAt.getTime() + dayMs).toISOString());
+    if (candidates?.length === 1) {
+      await db.from('diabetes_meals').update({ eaten_at: newIso, food_log_id: foodLogId }).eq('id', candidates[0].id);
+    }
+  }
+  showToast('Time updated.');
+}
 
 /* ── Favourites — ⭐-toggled quick-add shortcuts (see btnLfFavToggle) ── */
 async function fetchFavoriteMeals() {

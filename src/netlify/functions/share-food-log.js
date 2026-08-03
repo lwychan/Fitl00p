@@ -88,13 +88,15 @@ exports.handler = async function (event) {
 
   const insertRes = await fetch(`${SB_URL}/rest/v1/food_log`, {
     method: 'POST',
-    headers: { apikey: SB_SERVICE, Authorization: `Bearer ${SB_SERVICE}`, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+    headers: { apikey: SB_SERVICE, Authorization: `Bearer ${SB_SERVICE}`, 'Content-Type': 'application/json', Prefer: 'return=representation' },
     body: JSON.stringify(foodLogRow),
   });
   if (!insertRes.ok) {
     const errText = await insertRes.text().catch(() => '');
     return { statusCode: 502, headers: HEADERS, body: JSON.stringify({ error: `Couldn't save to partner's log: ${errText.slice(0, 300)}` }) };
   }
+  const insertedFoodLog = await insertRes.json().catch(() => []);
+  const partnerFoodLogId = insertedFoodLog?.[0]?.id || null;
 
   // Bridge into the partner's own diabetes tracking too, when relevant —
   // same shape the app's own Log Food save already inserts for whoever's
@@ -112,6 +114,7 @@ exports.handler = async function (event) {
         headers: { apikey: SB_SERVICE, Authorization: `Bearer ${SB_SERVICE}`, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
         body: JSON.stringify({
           user_id: partnerId,
+          food_log_id: partnerFoodLogId,
           eaten_at: foodLogRow.logged_at,
           meal_name: foodLogRow.food_name,
           carbs_g: foodLogRow.carbs_g,

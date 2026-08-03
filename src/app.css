@@ -3840,6 +3840,16 @@ body { font-size: 15px; }
   font-weight: 600;
   color: var(--ink-3);
 }
+.lf-today-actions { display: flex; gap: 8px; margin-top: 2px; }
+.lf-time-edit { display: inline-flex; align-items: center; gap: 6px; }
+.lf-time-input {
+  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border-2);
+  background: var(--surface-2);
+  color: var(--ink);
+}
 .dx-workout-history__stats {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
