@@ -203,7 +203,8 @@ const el = {
   lfSearchInput:    $('lfSearchInput'),
   lfSearchResults:  $('lfSearchResults'),
   lfPhotoPanel:     $('lfPhotoPanel'),
-  lfPhotoInput:     $('lfPhotoInput'),
+  lfPhotoInputCamera:  $('lfPhotoInputCamera'),
+  lfPhotoInputLibrary: $('lfPhotoInputLibrary'),
   lfPhotoPreview:   $('lfPhotoPreview'),
   lfPhotoDesc:      $('lfPhotoDesc'),
   btnLfEstimate:    $('btnLfEstimate'),
@@ -8829,7 +8830,8 @@ function resetLfForm() {
   if (el.btnLfFavToggle) { el.btnLfFavToggle.classList.remove('is-active'); el.btnLfFavToggle.setAttribute('aria-pressed', 'false'); }
   if (el.lfPhotoPreview) { el.lfPhotoPreview.hidden = true; el.lfPhotoPreview.src = ''; }
   if (el.lfPhotoDesc) el.lfPhotoDesc.value = '';
-  if (el.lfPhotoInput) el.lfPhotoInput.value = '';
+  if (el.lfPhotoInputCamera) el.lfPhotoInputCamera.value = '';
+  if (el.lfPhotoInputLibrary) el.lfPhotoInputLibrary.value = '';
   if (el.btnLfEstimate) el.btnLfEstimate.disabled = true;
 }
 el.btnLfFavToggle?.addEventListener('click', () => {
@@ -9002,9 +9004,12 @@ async function runLfSearch(query) {
   });
 }
 
-/* ── Photo mode ──────────────────────────────────────────── */
-el.lfPhotoInput?.addEventListener('change', async () => {
-  const file = el.lfPhotoInput.files?.[0];
+/* ── Photo mode — two separate inputs share this handler: the camera
+   one (capture="environment") for a photo taken right now, the library
+   one (no capture attribute) for picking an existing photo — e.g.
+   logging a meal after the fact from a photo taken earlier. ────────── */
+async function handleLfPhotoInputChange(inputEl) {
+  const file = inputEl.files?.[0];
   if (!file) return;
   try {
     const { base64, mediaType, dataUrl } = await resizeImageToBase64(file);
@@ -9015,7 +9020,9 @@ el.lfPhotoInput?.addEventListener('change', async () => {
   } catch (err) {
     showToast("Couldn't read that photo: " + err.message, true);
   }
-});
+}
+el.lfPhotoInputCamera?.addEventListener('change', () => handleLfPhotoInputChange(el.lfPhotoInputCamera));
+el.lfPhotoInputLibrary?.addEventListener('change', () => handleLfPhotoInputChange(el.lfPhotoInputLibrary));
 
 // Downscales to a max 1024px side and re-encodes as JPEG — keeps the
 // upload small/cheap regardless of the original photo's resolution,

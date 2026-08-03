@@ -1767,9 +1767,24 @@
           <div id="lfSearchResults"></div>
         </div>
 
-        <!-- Photo mode -->
+        <!-- Photo mode — two explicit buttons rather than one input with
+             capture="environment": that attribute forces mobile browsers
+             straight into the live camera, and the in-camera "switch to
+             library" control it leaves behind is unreliable (especially
+             installed-as-PWA) — lfPhotoInputLibrary (no capture attribute)
+             opens the normal photo picker, for logging a meal from an
+             existing photo after the fact. -->
         <div id="lfPhotoPanel" hidden style="margin-top:12px">
-          <input type="file" id="lfPhotoInput" accept="image/*" capture="environment">
+          <div style="display:flex;gap:10px">
+            <label class="btn btn--ghost" style="flex:1;justify-content:center">
+              📷 Take photo
+              <input type="file" id="lfPhotoInputCamera" accept="image/*" capture="environment" style="display:none">
+            </label>
+            <label class="btn btn--ghost" style="flex:1;justify-content:center">
+              🖼️ Choose photo
+              <input type="file" id="lfPhotoInputLibrary" accept="image/*" style="display:none">
+            </label>
+          </div>
           <img id="lfPhotoPreview" hidden style="max-width:100%;border-radius:var(--r-md);margin-top:8px">
           <div class="field" style="margin-top:8px">
             <label for="lfPhotoDesc">Description <span class="field-hint">helps the estimate — portion size, ingredients</span></label>
