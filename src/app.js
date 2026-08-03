@@ -5870,6 +5870,31 @@ let diabetesData = null;       // adapted {glucoseHistory, boluses, corrections,
 let diabetesFetchedAt = null;
 let dxWorkoutTypesPopulated = false; // first populate always defaults to most-recently-done type
 let dxMealPresets = []; // populated by loadDiabetes(); looked up by name when the "Previous meals" dropdown changes
+let dxLatestWeightKg = null; // populated by loadDiabetes(); feeds dxSettings()'s dose-per-kg/BMI calc
+
+// Latest known weight in true kg, checked across both possible sources:
+// health_daily.weight_kg (Apple Health sync — always metric internally
+// regardless of display unit) and daily_logs.weight (manual entry,
+// stored in whatever profile.weight_unit was at the time — converted
+// here since dose-per-kg/BMI need real kg regardless of how it's
+// displayed elsewhere). Whichever source has the more recent log_date
+// wins.
+const LB_TO_KG = 0.45359237;
+async function fetchLatestWeightKg() {
+  if (!currentUser) return null;
+  const [{ data: healthRows }, { data: logRows }] = await Promise.all([
+    db.from('health_daily').select('weight_kg, log_date').eq('user_id', currentUser.id)
+      .not('weight_kg', 'is', null).order('log_date', { ascending: false }).limit(1),
+    db.from('daily_logs').select('weight, log_date').eq('user_id', currentUser.id)
+      .not('weight', 'is', null).order('log_date', { ascending: false }).limit(1),
+  ]);
+  const h = healthRows?.[0];
+  const l = logRows?.[0];
+  const logKg = l ? (profile?.weight_unit === 'lb' ? Number(l.weight) * LB_TO_KG : Number(l.weight)) : null;
+  if (h && (!l || h.log_date >= l.log_date)) return Number(h.weight_kg) || null;
+  if (logKg != null) return logKg;
+  return h ? Number(h.weight_kg) || null : null;
+}
 const DIABETES_CACHE_MS = 4 * 60000; // avoid re-hitting Nightscout on every tab switch
 
 async function fetchDiabetesData(force = false) {
@@ -5930,6 +5955,10 @@ function dxSettings() {
     correctionFactor:       profile?.diabetes_correction_factor,
     insulinPeakMinutes:     profile?.diabetes_insulin_peak_min ?? 57,
     insulinDurationMinutes: profile?.diabetes_insulin_duration_min ?? 240,
+    // Feeds insulinHealthCheck's dose-per-kg/BMI — see fetchLatestWeightKg
+    // and loadDiabetes() for how/when dxLatestWeightKg gets populated.
+    weightKg: dxLatestWeightKg,
+    heightCm: profile?.height_cm ? Number(profile.height_cm) : null,
   };
 }
 
@@ -5942,6 +5971,13 @@ async function loadDiabetes() {
   }
   el.dxNotConnected.hidden = true;
   el.dxConnected.hidden = false;
+
+  // Awaited (unlike the meal-presets fetch below, a separate dropdown
+  // that isn't render-blocking) — dxSettings() reads dxLatestWeightKg
+  // synchronously, and the Weekly Insulin Health Check card has no
+  // other trigger to re-render once a fire-and-forget fetch resolved
+  // after the first paint.
+  dxLatestWeightKg = await fetchLatestWeightKg();
 
   fetchMealPresets().then(presets => {
     dxMealPresets = presets;
