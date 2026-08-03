@@ -6,6 +6,27 @@
 
 const CACHE_NAME    = 'fitl00p-v3';
 const NEVER_CACHE   = ['/app.js', '/app.css', '/index.html', '/', '/diabetes-engine.js', '/nightscout-adapter.js'];
+
+// Absolute last-resort shell for a failed navigation with nothing cached
+// yet — self-contained (no dependency on app.js/app.css, which are
+// likely also failing in this exact scenario) so a reload always has
+// something to actually click, instead of a bare browser error page.
+const OFFLINE_SHELL_HTML = `<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>fitl00p</title></head>
+<body style="display:flex;align-items:center;justify-content:center;min-height:100dvh;margin:0;
+             font-family:-apple-system,BlinkMacSystemFont,sans-serif;padding:24px;text-align:center;
+             background:#111318;color:#F0F2F7">
+  <div>
+    <div style="font-size:32px;margin-bottom:12px">📡</div>
+    <p style="font-size:17px;font-weight:600;margin-bottom:8px">fitl00p couldn't connect</p>
+    <p style="font-size:14px;color:#888;max-width:320px;line-height:1.5">
+      Couldn't reach the server on this first attempt. Check your connection and try again.
+    </p>
+    <button onclick="location.reload()" style="margin-top:16px;padding:10px 22px;border:none;
+            border-radius:10px;background:#C6FF00;color:#111318;font-weight:700;font-size:15px">Retry</button>
+  </div>
+</body></html>`;
 const STATIC_ASSETS = [
   '/sw.js',
   '/manifest.json',
@@ -13,13 +34,23 @@ const STATIC_ASSETS = [
   '/icon-512.png',
   '/apple-touch-icon.png',
 ];
-
-/* ── INSTALL: pre-cache static assets only ──────────────── */
+// index.html is deliberately excluded from NEVER_CACHE's fetch routing
+// (always network-first, never served cache-first) — but it's still
+// pre-cached here so the navigate-fallback below has something real to
+// serve. Without this, a timed-out/offline navigation would call
+// caches.match('/index.html') against an entry that was never written,
+// getting back `undefined` — an invalid respondWith() value that the
+// browser treats as an outright network error for the whole page load.
+// That skips index.html's own static #screenBoot markup and every bit
+// of app.js's boot-retry/connectivity-error UI, since none of it ever
+// gets a chance to run — exactly the "app just won't open, no error
+// shown" failure mode, as opposed to the boot screen's own (working)
+// "couldn't connect" retry path.
 self.addEventListener('install', event => {
   event.waitUntil(
     caches.open(CACHE_NAME).then(cache => {
       return Promise.allSettled(
-        STATIC_ASSETS.map(url => cache.add(url).catch(() => {}))
+        [...STATIC_ASSETS, '/index.html'].map(url => cache.add(url).catch(() => {}))
       );
     }).then(() => self.skipWaiting())
   );
@@ -67,9 +98,20 @@ self.addEventListener('fetch', event => {
   if (alwaysNetwork) {
     event.respondWith(
       fetchBounded(request, 8000).catch(() => {
-        // Offline fallback for navigation
+        // Offline fallback for navigation — cached index.html first (see
+        // the install handler above for why it's cached at all despite
+        // being network-first), but never allowed to resolve to
+        // `undefined` even if that cache lookup itself comes up empty
+        // (e.g. the very first visit, mid-install). An invalid
+        // respondWith() value is a hard navigation failure with zero
+        // page content — this inline fallback guarantees something
+        // real always renders, with its own reload button independent
+        // of app.js in case that's failing to load too.
         if (request.mode === 'navigate') {
-          return caches.match('/index.html');
+          return caches.match('/index.html').then(cached => cached || new Response(OFFLINE_SHELL_HTML, {
+            status: 200,
+            headers: { 'Content-Type': 'text/html' },
+          }));
         }
         return new Response('Offline', { status: 503 });
       })
