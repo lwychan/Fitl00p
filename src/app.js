@@ -6320,7 +6320,7 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
   ctx.fillStyle = 'rgba(199, 210, 254, 0.95)';
   activityBands.forEach(band => {
     const midX = (band.x0 + band.x1) / 2;
-    const y = padTop + mainH - 6;
+    const y = padTop + mainH - 18;
     ctx.fillText(`${band.icon} ${band.label}`, midX, y);
     const body = band.endMs !== band.startMs
       ? `${dxFormatMarkerTime(band.startMs)} – ${new Date(band.endMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} (${Math.round((band.endMs - band.startMs) / 60000)} min)`
