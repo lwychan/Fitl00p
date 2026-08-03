@@ -2910,6 +2910,48 @@ body { font-size: 15px; }
 }
 .metric-sheet-table-wrap .data-table { min-width: 0; }
 
+/* ── LOG WEIGHT REMINDER CARD ────────────────────────────── */
+.card--weight-reminder {
+  border-color: var(--red-light);
+  box-shadow: 0 0 0 1px var(--red-light);
+  transition: border-color .2s, box-shadow .2s;
+}
+.card--weight-reminder--done {
+  border-color: var(--border-2);
+  box-shadow: var(--shadow-sm);
+}
+.weight-reminder__badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--red-light);
+  color: var(--red);
+}
+.card--weight-reminder--done .weight-reminder__badge {
+  background: var(--green-light);
+  color: var(--green);
+}
+.weight-reminder__hint {
+  font-size: 13px;
+  color: var(--ink-3);
+  margin: 8px 0 12px;
+}
+.weight-reminder__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.weight-reminder__row input[type="number"] {
+  flex: 1;
+  min-width: 0;
+}
+.weight-reminder__unit {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-3);
+}
+
 /* ── NET CALORIES CARD ───────────────────────────────────── */
 .card--net-cals { grid-column: 1 / -1; }
 

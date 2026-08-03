@@ -242,6 +242,13 @@ const el = {
   dTodayCals:     $('dTodayCals'),
   dTodayBurn:     $('dTodayBurn'),
   dLogTodayBtn:   $('dLogTodayBtn'),
+  weightReminderCard: $('weightReminderCard'),
+  wrBadge:        $('wrBadge'),
+  wrHint:         $('wrHint'),
+  wrWeight:       $('wrWeight'),
+  wrUnit:         $('wrUnit'),
+  btnWrSave:      $('btnWrSave'),
+  wrStatus:       $('wrStatus'),
   rSteps:         $('rSteps'),
   rStepsPct:      $('rStepsPct'),
   rCal:           $('rCal'),
@@ -463,13 +470,19 @@ const clamp01 = (v, g) => Math.min(100, Math.max(0, (v / (g || 1)) * 100));
 const escapeHtml = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
 
 // Consumed-calories precedence, shared by every place that displays
-// "Eaten" for a given day. cal_mfp (scraped straight from MFP's own
-// diary totals row each sync) wins over dietary_energy_kcal (summed
-// from individual HealthKit samples via Health Auto Export — vulnerable
-// to running high if MFP ever leaves a stale duplicate sample behind
-// after an edited entry, since nothing dedupes those). Manual-entry
-// fields are the last resort for anyone not using either sync.
+// "Eaten" for a given day. Native fitl00p food logging (cal_fitl00p, a
+// per-day total summed from food_log) wins whenever anything was logged
+// that way — it's the exact food actually eaten, not an estimate. Below
+// that, cal_mfp (scraped straight from MFP's own diary totals row) wins
+// over dietary_energy_kcal (summed from individual HealthKit samples via
+// Health Auto Export — vulnerable to running high if MFP ever leaves a
+// stale duplicate sample behind after an edited entry, since nothing
+// dedupes those). MFP is being retired in favour of native logging, so
+// these two are now just a graceful fallback for days without a
+// fitl00p entry. Manual-entry fields are the last resort for anyone not
+// using any sync.
 function pickConsumedCalories(log, health) {
+  if (log?.cal_fitl00p != null) return Number(log.cal_fitl00p);
   if (log?.cal_mfp != null) return Number(log.cal_mfp);
   if (health?.dietary_energy_kcal != null) return Number(health.dietary_energy_kcal);
   if (log?.cal_apple != null) return Number(log.cal_apple);
@@ -1108,7 +1121,7 @@ async function _loadDashboardInner() {
   }
 
   // ── Fetch all data in parallel ────────────────────────────
-  const [logRes, healthRes, healthHistRes, logsRes, lastSessionRes, lastSyncRes, mfpCalRes, todayWorkoutsRes] = await Promise.all([
+  const [logRes, healthRes, healthHistRes, logsRes, lastSessionRes, lastSyncRes, mfpCalRes, todayWorkoutsRes, foodLogRes] = await Promise.all([
     db.from('daily_logs')
       .select('*, cal_apple')
       .eq('user_id', currentUser.id)
@@ -1171,9 +1184,16 @@ async function _loadDashboardInner() {
       .eq('user_id', currentUser.id)
       .gte('started_at', new Date(new Date().setHours(0, 0, 0, 0)).toISOString())
       .order('started_at', { ascending: true }),
+
+    // Native fitl00p food log, same 30-day window as healthHistRes/mfpCalRes —
+    // this is now the top of pickConsumedCalories' precedence (see there).
+    db.from('food_log')
+      .select('log_date, calories_kcal')
+      .eq('user_id', currentUser.id)
+      .gte('log_date', new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10)),
   ]);
 
-  const log           = logRes.data;
+  const log           = { ...(logRes.data || {}) };
   const rawHealthRows = healthRes.data || [];
   const todayHealth   = rawHealthRows.find(r => r.log_date === todayISO()) || {};
   const yestHealth    = rawHealthRows.find(r => r.log_date !== todayISO()) || {};
@@ -1210,7 +1230,20 @@ async function _loadDashboardInner() {
   const mfpCalByDate = Object.fromEntries(
     (mfpCalRes.data || []).filter(r => r.cal_mfp != null).map(r => [r.log_date, Number(r.cal_mfp)])
   );
-  const healthHistory = (healthHistRes.data || []).map(h => ({ ...h, cal_mfp: mfpCalByDate[h.log_date] ?? null }));
+  // food_log has one row per item logged — sum per day, and only set a
+  // date's total when at least one row exists that day (an empty/zero
+  // day should fall through to cal_mfp/dietary_energy_kcal, not read as
+  // "0 eaten").
+  const foodCalByDate = {};
+  (foodLogRes.data || []).forEach(r => {
+    foodCalByDate[r.log_date] = (foodCalByDate[r.log_date] || 0) + (Number(r.calories_kcal) || 0);
+  });
+  const healthHistory = (healthHistRes.data || []).map(h => ({
+    ...h,
+    cal_mfp:     mfpCalByDate[h.log_date]  ?? null,
+    cal_fitl00p: foodCalByDate[h.log_date] ?? null,
+  }));
+  log.cal_fitl00p = foodCalByDate[todayISO()] ?? null;
   const logs          = logsRes.data || [];
   const lastSession   = lastSessionRes.data;
   const lastSync      = lastSyncRes.data;
@@ -1307,7 +1340,55 @@ async function _loadDashboardInner() {
 
   // ── Last workout ──────────────────────────────────────────
   renderLastWorkout(lastSession);
+
+  renderWeightReminder(log, unit);
 }
+
+// Only shown for an account with manual weight logging turned on
+// (Settings > Weight logging) — that flag also makes health-sync.js skip
+// writing Apple-Health-synced weight entirely, so this dashboard card is
+// the only nudge to actually get a value in for today.
+function renderWeightReminder(log, unit) {
+  if (!el.weightReminderCard) return;
+  el.weightReminderCard.hidden = !profile?.manual_weight_logging;
+  if (!profile?.manual_weight_logging) return;
+
+  if (el.wrUnit) el.wrUnit.textContent = unit;
+
+  const loggedToday = log?.weight != null;
+  el.weightReminderCard.classList.toggle('card--weight-reminder--done', loggedToday);
+  if (el.wrBadge)  el.wrBadge.textContent = loggedToday ? 'Logged' : 'Not logged';
+  if (el.wrHint)   el.wrHint.textContent  = loggedToday
+    ? `Today's weight: ${fmt1(log.weight)} ${unit}. You can update it below.`
+    : "No weight logged today yet — a quick entry keeps your trend accurate.";
+  // Pre-fill with today's value if there is one, so re-saving is an edit
+  // rather than starting from blank; leave user-typed input alone otherwise.
+  if (el.wrWeight && document.activeElement !== el.wrWeight) {
+    el.wrWeight.value = loggedToday ? log.weight : '';
+  }
+}
+
+el.btnWrSave?.addEventListener('click', async () => {
+  if (!currentUser) return;
+  const weight = parseFloat(el.wrWeight?.value);
+  if (!Number.isFinite(weight) || weight <= 0) {
+    flash(el.wrStatus, 'Enter a weight.', true);
+    return;
+  }
+  setBtn(el.btnWrSave, true, 'Log', 'Saving…');
+  const { error } = await db
+    .from('daily_logs')
+    .upsert({ user_id: currentUser.id, log_date: todayISO(), weight }, { onConflict: 'user_id,log_date' });
+  setBtn(el.btnWrSave, false, 'Log');
+  if (error) {
+    flash(el.wrStatus, 'Error: ' + error.message, true);
+    return;
+  }
+  flash(el.wrStatus, 'Saved.');
+  todayLog = { ...(todayLog || {}), weight };
+  renderWeightReminder(todayLog, profile?.weight_unit || 'kg');
+  if (el.dTodayWeight) el.dTodayWeight.textContent = fmt1(weight);
+});
 
 function renderPlanCard(logs, smartTarget) {
   const unit = profile?.weight_unit || 'kg';
@@ -2045,7 +2126,7 @@ function renderNetCalories(today, history, log, bmrFallback) {
     const hBurned   = (hActive != null && hResting != null) ? hActive + hResting
                     : (hActive != null)                     ? hActive
                     : null;
-    const hConsumed = h.cal_mfp ?? h.dietary_energy_kcal;
+    const hConsumed = h.cal_fitl00p ?? h.cal_mfp ?? h.dietary_energy_kcal;
     if (hConsumed != null && hBurned != null) {
       weeklyNet += (hConsumed - hBurned);
       weekDays++;
@@ -3831,8 +3912,20 @@ async function loadHistory() {
                            : null;
   });
 
+  // Native fitl00p food log for the same range — top of pickConsumedCalories'
+  // precedence (see there).
+  const { data: foodRows } = await db
+    .from('food_log')
+    .select('log_date, calories_kcal')
+    .eq('user_id', currentUser.id)
+    .gte('log_date', oldestDate);
+  const foodByDate = {};
+  (foodRows || []).forEach(r => {
+    foodByDate[r.log_date] = (foodByDate[r.log_date] || 0) + (Number(r.calories_kcal) || 0);
+  });
+
   el.historyTableBody.innerHTML = rows.map(r => {
-    const cals    = pickConsumedCalories(r, null);
+    const cals    = pickConsumedCalories({ ...r, cal_fitl00p: foodByDate[r.log_date] ?? null }, null);
     const burned  = burnByDate[r.log_date] ?? null;
     return `
     <tr>
@@ -7866,13 +7959,17 @@ async function computeSmartEatTarget() {
 
   // ── Last 7 days Apple Health data ─────────────────────────
   const sevenDaysAgoStr = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
-  const [{ data: recentHealth }, { data: recentMfpCals }] = await Promise.all([
+  const [{ data: recentHealth }, { data: recentMfpCals }, { data: recentFoodLog }] = await Promise.all([
     db.from('health_daily')
       .select('active_energy_kcal, dietary_energy_kcal, log_date')
       .eq('user_id', currentUser.id)
       .gte('log_date', sevenDaysAgoStr),
     db.from('daily_logs')
       .select('log_date, cal_mfp')
+      .eq('user_id', currentUser.id)
+      .gte('log_date', sevenDaysAgoStr),
+    db.from('food_log')
+      .select('log_date, calories_kcal')
       .eq('user_id', currentUser.id)
       .gte('log_date', sevenDaysAgoStr),
   ]);
@@ -7884,13 +7981,17 @@ async function computeSmartEatTarget() {
     ? Math.round(activeVals.reduce((a, b) => a + b, 0) / activeVals.length)
     : 800;
 
-  // cal_mfp (scraped from MFP's own diary total) wins over dietary_energy_kcal
-  // per day — same precedence as pickConsumedCalories elsewhere.
+  // Native fitl00p food log wins over cal_mfp, which wins over
+  // dietary_energy_kcal — same precedence as pickConsumedCalories elsewhere.
   const mfpByDate = Object.fromEntries(
     (recentMfpCals || []).filter(r => r.cal_mfp != null).map(r => [r.log_date, Number(r.cal_mfp)])
   );
+  const foodByDate = {};
+  (recentFoodLog || []).forEach(r => {
+    foodByDate[r.log_date] = (foodByDate[r.log_date] || 0) + (Number(r.calories_kcal) || 0);
+  });
   const dietVals = (recentHealth || [])
-    .map(r => mfpByDate[r.log_date] ?? (r.dietary_energy_kcal != null ? Number(r.dietary_energy_kcal) : null))
+    .map(r => foodByDate[r.log_date] ?? mfpByDate[r.log_date] ?? (r.dietary_energy_kcal != null ? Number(r.dietary_energy_kcal) : null))
     .filter(v => v != null && v > 800); // only days with realistic complete totals
   const avgIntake = dietVals.length
     ? Math.round(dietVals.reduce((a, b) => a + b, 0) / dietVals.length)

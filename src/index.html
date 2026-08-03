@@ -541,6 +541,25 @@
           </div>
         </div>
 
+        <!-- Log weight reminder card — only shown when Settings > Weight
+             logging is turned on (profile.manual_weight_logging), since
+             Apple Health sync is skipped entirely for that account and
+             this is the only way weight gets recorded. Highlights until
+             today's weight is actually logged (see renderWeightReminder). -->
+        <div class="card card--weight-reminder" id="weightReminderCard" hidden>
+          <div class="card-eyebrow">
+            <span>⚖️ Weight</span>
+            <span class="weight-reminder__badge" id="wrBadge"></span>
+          </div>
+          <p class="weight-reminder__hint" id="wrHint">No weight logged today yet.</p>
+          <div class="weight-reminder__row">
+            <input type="number" id="wrWeight" step="0.1" min="0" max="1000" placeholder="0.0" inputmode="decimal">
+            <span class="weight-reminder__unit" id="wrUnit">kg</span>
+            <button class="btn btn--primary btn--small" id="btnWrSave">Log</button>
+          </div>
+          <span class="save-status" id="wrStatus"></span>
+        </div>
+
         <!-- Last workout card -->
         <div class="card card--last-workout">
           <div class="card-eyebrow">Last workout</div>
