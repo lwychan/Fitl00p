@@ -774,6 +774,12 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
 }
 
 /* Log-food macro totals — same visual language as .today-metrics */
+/* An inline display:block here would beat the [hidden] UA rule (inline
+   style always outranks a stylesheet selector), leaving the camera
+   preview showing as a solid black box even while genuinely hidden —
+   e.g. on browsers without BarcodeDetector, which never unhides it. */
+#lfScanVideo:not([hidden]) { display: block; }
+
 .macro-totals { display: grid; grid-template-columns: repeat(4,1fr); gap: 8px; text-align: center; }
 .macro-total__val {
   display: block;
