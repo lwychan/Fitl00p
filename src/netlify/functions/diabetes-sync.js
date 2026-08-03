@@ -48,9 +48,10 @@ exports.handler = async function (event) {
   const tokenQS = qs.token ? `&token=${encodeURIComponent(qs.token)}` : '';
 
   try {
-    const [entries, treatments] = await Promise.all([
+    const [entries, treatments, profileDocs] = await Promise.all([
       nsFetch(`${baseUrl}/api/v1/entries.json?count=20000&find[date][$gte]=${sinceMs}${tokenQS}`, reqHeaders),
       nsFetch(`${baseUrl}/api/v1/treatments.json?count=5000&find[created_at][$gte]=${new Date(sinceMs).toISOString()}${tokenQS}`, reqHeaders),
+      nsFetch(`${baseUrl}/api/v1/profile.json?count=1${tokenQS}`, reqHeaders),
     ]);
 
     if (!entries.ok) {
@@ -67,6 +68,13 @@ exports.handler = async function (event) {
       headers: HEADERS,
       body: JSON.stringify({
         ...adapted,
+        // Control-IQ only logs a Temp Basal treatment when it actually
+        // overrides the scheduled rate — a stretch where it just holds the
+        // profile default (or tconnectsync misses a poll) leaves a real
+        // hole in Nightscout's own data, not a fitl00p sync-lag artifact.
+        // The chart uses this to fill those holes with the *scheduled*
+        // rate, visually distinct from a confirmed delivered dose.
+        basalSchedule: extractBasalSchedule(profileDocs.ok ? profileDocs.data : null),
         meta: {
           days,
           entriesFetched: (entries.data || []).length,
@@ -81,6 +89,30 @@ exports.handler = async function (event) {
     return { statusCode: 502, headers: HEADERS, body: JSON.stringify({ error: 'Nightscout fetch failed: ' + err.message }) };
   }
 };
+
+// Nightscout's profile.json returns an array of profile-switch documents
+// (most recent first); pull the scheduled basal segments out of whichever
+// one is currently active. Returns null on anything unexpected — the
+// chart just skips gap-filling rather than failing the whole sync.
+function extractBasalSchedule(profileDocs) {
+  if (!Array.isArray(profileDocs) || !profileDocs.length) return null;
+  const doc = profileDocs[0];
+  const store = doc.store || {};
+  const active = store[doc.defaultProfile] || Object.values(store)[0];
+  const basalArr = active?.basal;
+  if (!Array.isArray(basalArr) || !basalArr.length) return null;
+
+  const segments = basalArr
+    .map(b => {
+      const [hh, mm] = String(b.time || '00:00').split(':').map(Number);
+      return { startMin: (Number(hh) || 0) * 60 + (Number(mm) || 0), rate: Number(b.value) || 0 };
+    })
+    .filter(s => Number.isFinite(s.startMin) && s.rate > 0)
+    .sort((a, b) => a.startMin - b.startMin);
+  if (!segments.length) return null;
+
+  return { timezone: active.timezone || doc.timezone || 'UTC', segments };
+}
 
 async function nsFetch(url, headers) {
   try {

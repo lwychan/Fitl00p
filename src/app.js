@@ -6096,6 +6096,59 @@ function dxFormatMarkerTime(ms) {
   return `${dayLabel} at ${time}`;
 }
 
+/* ── Scheduled-basal gap fill ──────────────────────────────────
+   Control-IQ only logs a Temp Basal treatment when it actually overrides
+   the profile's scheduled rate — a stretch where it just holds the
+   default (or tconnectsync misses a poll) leaves a real hole in
+   Nightscout's own data, not a fitl00p sync-lag artifact. These read the
+   Nightscout profile's basal schedule (fetched server-side by
+   diabetes-sync, see extractBasalSchedule) to fill those holes with the
+   *scheduled* rate — drawn visually distinct from a confirmed dose, since
+   it's an assumption, not a recorded fact. */
+function dxMinuteOfDayInTz(ms, timeZone) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone, hour12: false, hour: '2-digit', minute: '2-digit',
+  }).formatToParts(new Date(ms));
+  const hour = Number(parts.find(p => p.type === 'hour')?.value);
+  const minute = Number(parts.find(p => p.type === 'minute')?.value);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+  return (hour % 24) * 60 + minute; // Intl's 'hour12:false' can format midnight as "24"
+}
+
+function dxScheduledBasalRate(ms, schedule) {
+  if (!schedule?.segments?.length) return null;
+  const minute = dxMinuteOfDayInTz(ms, schedule.timezone || 'UTC');
+  if (minute == null) return null;
+  let rate = schedule.segments[schedule.segments.length - 1].rate; // wraps from before midnight
+  for (const s of schedule.segments) {
+    if (s.startMin <= minute) rate = s.rate; else break;
+  }
+  return rate;
+}
+
+// Samples the schedule every 5 minutes across [fromMs, toMs] and merges
+// consecutive equal-rate samples into rectangles — avoids needing exact
+// timezone-aware day-boundary reconstruction (DST etc.) since each sample
+// independently asks Intl for the correct local time.
+function dxExpandScheduleGap(schedule, fromMs, toMs) {
+  if (!schedule?.segments?.length || toMs <= fromMs) return [];
+  const STEP = 5 * 60000;
+  const out = [];
+  let cur = null;
+  for (let t = fromMs; t < toMs; t += STEP) {
+    const rate = dxScheduledBasalRate(t, schedule);
+    if (rate == null) continue;
+    const segEnd = Math.min(t + STEP, toMs);
+    if (cur && cur.rate === rate && cur.end === t) {
+      cur.end = segEnd;
+    } else {
+      cur = { start: t, end: segEnd, rate };
+      out.push(cur);
+    }
+  }
+  return out;
+}
+
 /* ── Glucose/IOB/projection chart (canvas, no deps) ──────────
    Past ~6h of real glucose, active IOB along the bottom on its own
    scale, and a dashed near-term projection from the same model
@@ -6172,6 +6225,20 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
     .filter(s => Number.isFinite(s.start) && Number.isFinite(s.end) && Number.isFinite(s.rate) && s.end > windowStart && s.start < now)
     .map(s => ({ start: Math.max(s.start, windowStart), end: Math.min(s.end, now), rate: s.rate }))
     .sort((a, b) => a.start - b.start);
+
+  // Fill the stretches basalSegments doesn't cover with the Nightscout
+  // profile's scheduled rate (see dxExpandScheduleGap) — Control-IQ only
+  // logs an override, so a gap here is a real hole in Nightscout's data,
+  // not evidence basal wasn't running.
+  const basalScheduleFill = [];
+  if (data.basalSchedule) {
+    let cursor = windowStart;
+    for (const s of basalSegments) {
+      if (s.start > cursor) basalScheduleFill.push(...dxExpandScheduleGap(data.basalSchedule, cursor, s.start));
+      cursor = Math.max(cursor, s.end);
+    }
+    if (cursor < now) basalScheduleFill.push(...dxExpandScheduleGap(data.basalSchedule, cursor, now));
+  }
 
   const low = Number(settings.targetLow) || 4.5;
   const high = Number(settings.targetHigh) || 8.5;
@@ -6370,9 +6437,24 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
 
   // Basal strip (own 0..max scale) — drawn as step rectangles since
   // Control-IQ delivers as a continuously varying rate, not a flat line.
-  if (basalSegments.length) {
-    const maxRate = Math.max(0.1, ...basalSegments.map(s => s.rate));
+  // Scheduled-fill segments (profile default, no override logged) draw
+  // lighter/hollow with a dashed top edge so they read as an assumption,
+  // not a confirmed delivered dose — real segments always draw on top.
+  if (basalSegments.length || basalScheduleFill.length) {
+    const maxRate = Math.max(0.1, ...basalSegments.map(s => s.rate), ...basalScheduleFill.map(s => s.rate));
     const basalY = v => basalTop + basalStripH - (v / maxRate) * basalStripH;
+    ctx.fillStyle = 'rgba(45, 212, 191, 0.12)';
+    ctx.strokeStyle = 'rgba(45, 212, 191, 0.45)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([2, 2]);
+    basalScheduleFill.forEach(s => {
+      const x0 = xAt(s.start), x1 = xAt(s.end);
+      const y = basalY(s.rate);
+      const w = Math.max(1, x1 - x0);
+      ctx.fillRect(x0, y, w, basalTop + basalStripH - y);
+      ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x0 + w, y); ctx.stroke();
+    });
+    ctx.setLineDash([]);
     ctx.fillStyle = 'rgba(45, 212, 191, 0.35)';
     basalSegments.forEach(s => {
       const x0 = xAt(s.start), x1 = xAt(s.end);
@@ -6383,7 +6465,9 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
   ctx.fillStyle = 'rgba(255,255,255,0.3)';
   ctx.font = '8px -apple-system, sans-serif';
   ctx.textAlign = 'left';
-  const basalLabel = basalSegments.length ? 'Basal u/hr' : 'Basal u/hr (no data)';
+  const basalLabel = basalSegments.length
+    ? (basalScheduleFill.length ? 'Basal u/hr (some scheduled)' : 'Basal u/hr')
+    : (basalScheduleFill.length ? 'Basal u/hr (scheduled, no overrides)' : 'Basal u/hr (no data)');
   for (let lx = padL; lx < W - padR; lx += yLabelStep) ctx.fillText(basalLabel, lx, basalTop - 1);
 
   // X-axis — real clock times every 2h, plus an explicit "now" tick.
