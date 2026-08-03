@@ -1794,6 +1794,7 @@
             </label>
           </div>
           <img id="lfPhotoPreview" hidden style="max-width:100%;border-radius:var(--r-md);margin-top:8px">
+          <p class="field-hint" id="lfPhotoTimeNote" hidden></p>
 
           <!-- Optional second photo of the leftovers — when present, the
                estimate is of what was actually eaten (before minus
@@ -1831,6 +1832,10 @@
           <div class="field">
             <label for="lfBrand">Brand <span class="field-hint">optional</span></label>
             <input type="text" id="lfBrand" placeholder="">
+          </div>
+          <div class="field">
+            <label for="lfLoggedAt">Logged at <span class="field-hint">defaults to now — set from a photo's timestamp when available</span></label>
+            <input type="datetime-local" id="lfLoggedAt">
           </div>
           <div style="display:flex;gap:10px">
             <div class="field" style="flex:1;margin-bottom:0">

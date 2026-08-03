@@ -58,15 +58,21 @@ exports.handler = async function (event) {
     return { statusCode: 400, headers: HEADERS, body: JSON.stringify({ error: 'Invalid JSON: ' + e.message }) };
   }
 
-  const { log_date, meal_slot, food_name, brand, serving_desc, quantity, calories_kcal, protein_g, carbs_g, fat_g, barcode } = body;
+  const { log_date, logged_at, meal_slot, food_name, brand, serving_desc, quantity, calories_kcal, protein_g, carbs_g, fat_g, barcode } = body;
   if (!log_date || !meal_slot || !food_name || !(Number(calories_kcal) > 0)) {
     return { statusCode: 400, headers: HEADERS, body: JSON.stringify({ error: 'Missing required food fields' }) };
   }
+  // Same logged time the sharer's own entry got (their photo's EXIF time,
+  // or whatever they set/left as "now") — a backfilled meal shared to a
+  // partner should land at the same real time in both logs, not whenever
+  // this request happened to reach the server.
+  const loggedAtParsed = logged_at ? new Date(logged_at) : null;
+  const loggedAtIso = loggedAtParsed && !Number.isNaN(loggedAtParsed.getTime()) ? loggedAtParsed.toISOString() : new Date().toISOString();
 
   const foodLogRow = {
     user_id: partnerId,
     log_date,
-    logged_at: new Date().toISOString(),
+    logged_at: loggedAtIso,
     meal_slot,
     source: 'shared',
     food_name: String(food_name).slice(0, 200),

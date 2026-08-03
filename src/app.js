@@ -206,6 +206,8 @@ const el = {
   lfPhotoInputCamera:  $('lfPhotoInputCamera'),
   lfPhotoInputLibrary: $('lfPhotoInputLibrary'),
   lfPhotoPreview:   $('lfPhotoPreview'),
+  lfPhotoTimeNote:  $('lfPhotoTimeNote'),
+  lfLoggedAt:       $('lfLoggedAt'),
   lfPhotoAfterInputCamera:  $('lfPhotoAfterInputCamera'),
   lfPhotoAfterInputLibrary: $('lfPhotoAfterInputLibrary'),
   lfPhotoAfterPreview:      $('lfPhotoAfterPreview'),
@@ -9243,6 +9245,8 @@ function resetLfForm() {
   lfPendingBarcode = null;
   if (el.lfFoodName) el.lfFoodName.value = '';
   if (el.lfBrand) el.lfBrand.value = '';
+  if (el.lfLoggedAt) el.lfLoggedAt.value = toDatetimeLocalValue(new Date());
+  if (el.lfPhotoTimeNote) el.lfPhotoTimeNote.hidden = true;
   if (el.lfQuantity) el.lfQuantity.value = '1';
   if (el.lfServingDesc) el.lfServingDesc.value = '';
   if (el.lfCals) el.lfCals.value = '';
@@ -9441,19 +9445,147 @@ async function runLfSearch(query) {
   });
 }
 
+/* ── EXIF capture-time extraction ────────────────────────────
+   Reads DateTimeOriginal straight out of the JPEG's own EXIF bytes — no
+   library, just walking the APP1/TIFF segment structure by hand (same
+   "no external deps" approach as the rest of this app). Has to run on
+   the ORIGINAL file, before resizeImageToBase64's canvas round-trip,
+   since re-encoding through <canvas> always strips EXIF entirely. Only
+   reads the first 256KB (EXIF always lives right after the JPEG SOI
+   marker, long before any actual image data) so this stays cheap even
+   on a full-resolution photo. */
+function readExifDateTaken(file) {
+  return new Promise(resolve => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const view = new DataView(reader.result);
+        if (view.byteLength < 4 || view.getUint16(0, false) !== 0xFFD8) return resolve(null); // not a JPEG
+        let offset = 2;
+        while (offset + 4 <= view.byteLength) {
+          const marker = view.getUint16(offset, false);
+          if ((marker & 0xFF00) !== 0xFF00) break;
+          if (marker === 0xFFDA) break; // start of scan — no more metadata segments follow
+          const segLen = view.getUint16(offset + 2, false);
+          if (marker === 0xFFE1 && offset + 4 + 6 <= view.byteLength) {
+            const exifStart = offset + 4;
+            if (view.getUint32(exifStart, false) === 0x45786966 && view.getUint16(exifStart + 4, false) === 0x0000) {
+              return resolve(readExifDateFromTiff(view, exifStart + 6));
+            }
+          }
+          offset += 2 + segLen;
+        }
+        resolve(null);
+      } catch {
+        resolve(null); // malformed/truncated segment — just skip the prefill, never block logging
+      }
+    };
+    reader.onerror = () => resolve(null);
+    reader.readAsArrayBuffer(file.slice(0, 256 * 1024));
+  });
+}
+
+function readExifDateFromTiff(view, tiffStart) {
+  const bom = view.getUint16(tiffStart, false);
+  if (bom !== 0x4949 && bom !== 0x4D4D) return null;
+  const little = bom === 0x4949;
+  const get16 = o => view.getUint16(o, little);
+  const get32 = o => view.getUint32(o, little);
+  const readAscii = (offset, count) => {
+    let s = '';
+    for (let i = 0; i < count - 1; i++) s += String.fromCharCode(view.getUint8(offset + i));
+    return s;
+  };
+  const readIFD = ifdOffset => {
+    const entries = [];
+    const count = get16(ifdOffset);
+    for (let i = 0; i < count; i++) {
+      const entryOffset = ifdOffset + 2 + i * 12;
+      const tag = get16(entryOffset);
+      const type = get16(entryOffset + 2);
+      const valCount = get32(entryOffset + 4);
+      const valueOffset = entryOffset + 8;
+      entries.push({ tag, type, count: valCount, valueOffset });
+    }
+    return entries;
+  };
+  const stringTag = (entries, tag) => {
+    const e = entries.find(x => x.tag === tag && x.type === 2);
+    if (!e) return null;
+    const strOffset = e.count <= 4 ? e.valueOffset : tiffStart + get32(e.valueOffset);
+    return readAscii(strOffset, e.count);
+  };
+
+  const ifd0 = readIFD(tiffStart + get32(tiffStart + 4));
+  const exifPtr = ifd0.find(x => x.tag === 0x8769);
+  if (exifPtr) {
+    const subEntries = readIFD(tiffStart + get32(exifPtr.valueOffset));
+    const original = stringTag(subEntries, 0x9003); // DateTimeOriginal
+    if (original) return original;
+  }
+  return stringTag(ifd0, 0x0132); // DateTime — IFD0 fallback
+}
+
+// EXIF dates are "YYYY:MM:DD HH:MM:SS", the camera's own local wall-clock
+// time with no reliable timezone info attached — treated as local time
+// here, same as reading it off the camera's own clock display would be.
+function parseExifDateTime(str) {
+  if (!str) return null;
+  const m = /^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(str.trim());
+  if (!m) return null;
+  const [, y, mo, d, h, mi, s] = m.map(Number);
+  const dt = new Date(y, mo - 1, d, h, mi, s);
+  if (Number.isNaN(dt.getTime())) return null;
+  // An unset/wrong camera clock is common enough to guard against —
+  // silently skip the prefill rather than set a nonsense logged time.
+  const now = Date.now();
+  if (dt.getTime() > now + 5 * 60000 || dt.getTime() < now - 5 * 365 * 24 * 3600000) return null;
+  return dt;
+}
+
+function toDatetimeLocalValue(d) {
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function lfFormatPhotoTime(d) {
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const isToday = d.toDateString() === new Date().toDateString();
+  const dayLabel = isToday ? 'today' : d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+  return `${dayLabel} at ${time}`;
+}
+
 /* ── Photo mode — two separate inputs share this handler: the camera
    one (capture="environment") for a photo taken right now, the library
    one (no capture attribute) for picking an existing photo — e.g.
-   logging a meal after the fact from a photo taken earlier. ────────── */
+   logging a meal after the fact from a photo taken earlier. Either way,
+   the photo's own EXIF capture time (when present) prefills "Logged at"
+   in the review form — the point of the whole feature: what the pump/
+   Nightscout timeline lines this meal up against should be when it was
+   actually eaten, not whenever the user got around to logging it. ── */
 async function handleLfPhotoInputChange(inputEl) {
   const file = inputEl.files?.[0];
   if (!file) return;
   try {
-    const { base64, mediaType, dataUrl } = await resizeImageToBase64(file);
+    const [{ base64, mediaType, dataUrl }, exifDateStr] = await Promise.all([
+      resizeImageToBase64(file),
+      readExifDateTaken(file),
+    ]);
     lfPhotoBase64 = base64;
     lfPhotoMediaType = mediaType;
     if (el.lfPhotoPreview) { el.lfPhotoPreview.src = dataUrl; el.lfPhotoPreview.hidden = false; }
     if (el.btnLfEstimate) el.btnLfEstimate.disabled = false;
+
+    const takenAt = parseExifDateTime(exifDateStr);
+    if (takenAt) {
+      if (el.lfLoggedAt) el.lfLoggedAt.value = toDatetimeLocalValue(takenAt);
+      if (el.lfPhotoTimeNote) {
+        el.lfPhotoTimeNote.hidden = false;
+        el.lfPhotoTimeNote.textContent = `📷 Photo taken ${lfFormatPhotoTime(takenAt)} — set as the logged time (adjust above if needed)`;
+      }
+    } else if (el.lfPhotoTimeNote) {
+      el.lfPhotoTimeNote.hidden = true;
+    }
   } catch (err) {
     showToast("Couldn't read that photo: " + err.message, true);
   }
@@ -9591,11 +9723,17 @@ el.btnLfSave?.addEventListener('click', async () => {
       if (!saveErr) customFoodId = saved?.id || null;
     }
 
-    const logDate = todayISO();
+    // datetime-local's value parses as local wall-clock time, which is
+    // exactly what we want whether it came from the user typing it or
+    // from a photo's EXIF capture time — falls back to now for a blank/
+    // unparseable value rather than blocking the save over it.
+    const loggedAtInput = el.lfLoggedAt?.value ? new Date(el.lfLoggedAt.value) : null;
+    const loggedAt = loggedAtInput && !Number.isNaN(loggedAtInput.getTime()) ? loggedAtInput : new Date();
+    const logDate = loggedAt.toISOString().slice(0, 10);
     const { error } = await db.from('food_log').insert({
       user_id: currentUser.id,
       log_date: logDate,
-      logged_at: new Date().toISOString(),
+      logged_at: loggedAt.toISOString(),
       meal_slot: mealSlot,
       source: lfSelectedCustomFoodId ? (lfSelectedMode === 'search' ? 'search' : 'scan') : (lfPhotoBase64 ? 'photo' : (lfPendingBarcode ? 'scan' : 'manual')),
       food_name: name, brand, serving_desc: servingDesc,
@@ -9621,7 +9759,7 @@ el.btnLfSave?.addEventListener('click', async () => {
     if (profile?.diabetes_enabled !== false && baseCarbs * quantity > 0) {
       await db.from('diabetes_meals').insert({
         user_id: currentUser.id,
-        eaten_at: new Date().toISOString(),
+        eaten_at: loggedAt.toISOString(),
         meal_name: name,
         carbs_g: Math.round(baseCarbs * quantity * 10) / 10,
         fat_g: Math.round(baseFat * quantity * 10) / 10,
@@ -9658,7 +9796,7 @@ el.btnLfSave?.addEventListener('click', async () => {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token}` },
           body: JSON.stringify({
-            log_date: logDate, meal_slot: mealSlot, food_name: name, brand, serving_desc: servingDesc,
+            log_date: logDate, logged_at: loggedAt.toISOString(), meal_slot: mealSlot, food_name: name, brand, serving_desc: servingDesc,
             quantity,
             calories_kcal: Math.round(baseCals * quantity),
             protein_g: Math.round(baseProtein * quantity * 10) / 10,
