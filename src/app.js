@@ -222,6 +222,9 @@ const el = {
   lfHypoTreatmentWrap: $('lfHypoTreatmentWrap'),
   lfSaveAsCustom:   $('lfSaveAsCustom'),
   lfSaveAsCustomWrap: $('lfSaveAsCustomWrap'),
+  btnLfFavToggle:   $('btnLfFavToggle'),
+  lfFavoritesCard:  $('lfFavoritesCard'),
+  lfFavoritesRow:   $('lfFavoritesRow'),
   btnLfSave:        $('btnLfSave'),
   btnLfCancel:      $('btnLfCancel'),
   lfSaveStatus:     $('lfSaveStatus'),
@@ -8751,12 +8754,14 @@ let lfPhotoBase64 = null;
 let lfPhotoMediaType = null;
 let lfSelectedCustomFoodId = null; // set when the review form was populated from an existing custom_foods row (scan/search) — avoids re-saving a duplicate
 let lfPendingBarcode = null; // carries a scanned (found-or-not) barcode into save, so a not-found product is still remembered for next time
+let lfFavToggleActive = false; // ⭐ toggle in the review form — save this entry to favorite_meals too, alongside logging it
+let lfFavoritesData = []; // last-rendered favorite_meals rows, so a chip click can look itself up by id without a refetch
 
 async function loadLogFood() {
   if (el.lfMealSlot) el.lfMealSlot.value = defaultMealSlot();
   resetLfForm();
   selectLfMode(null);
-  await Promise.all([renderLfTodayTotals(), renderLfTodayList()]);
+  await Promise.all([renderLfTodayTotals(), renderLfTodayList(), renderLfFavorites()]);
 }
 
 el.btnOpenLogFood?.addEventListener('click', () => navigateTo('logFood'));
@@ -8801,11 +8806,18 @@ function resetLfForm() {
   if (el.lfHypoTreatmentWrap) el.lfHypoTreatmentWrap.hidden = profile?.diabetes_enabled === false;
   if (el.lfSaveAsCustom) el.lfSaveAsCustom.checked = true;
   if (el.lfSaveAsCustomWrap) el.lfSaveAsCustomWrap.hidden = false; // may have been hidden by a scan/search selection — a fresh entry should always offer it
+  lfFavToggleActive = false;
+  if (el.btnLfFavToggle) { el.btnLfFavToggle.classList.remove('is-active'); el.btnLfFavToggle.setAttribute('aria-pressed', 'false'); }
   if (el.lfPhotoPreview) { el.lfPhotoPreview.hidden = true; el.lfPhotoPreview.src = ''; }
   if (el.lfPhotoDesc) el.lfPhotoDesc.value = '';
   if (el.lfPhotoInput) el.lfPhotoInput.value = '';
   if (el.btnLfEstimate) el.btnLfEstimate.disabled = true;
 }
+el.btnLfFavToggle?.addEventListener('click', () => {
+  lfFavToggleActive = !lfFavToggleActive;
+  el.btnLfFavToggle.classList.toggle('is-active', lfFavToggleActive);
+  el.btnLfFavToggle.setAttribute('aria-pressed', String(lfFavToggleActive));
+});
 function showLfReviewForm() {
   if (el.lfReviewForm) el.lfReviewForm.hidden = false;
   el.lfFoodName?.focus();
@@ -9121,9 +9133,22 @@ el.btnLfSave?.addEventListener('click', async () => {
       });
     }
 
+    // Save as a favourite too, when the ⭐ toggle is on — base per-serving
+    // values (not multiplied by quantity), same as the shared custom_foods
+    // insert above, since a favourite is a reusable template to pick a
+    // quantity against again, not a record of what was eaten this time.
+    if (lfFavToggleActive) {
+      const { error: favErr } = await db.from('favorite_meals').insert({
+        user_id: currentUser.id, name, brand, serving_desc: servingDesc,
+        calories_kcal: baseCals, protein_g: baseProtein, carbs_g: baseCarbs, fat_g: baseFat,
+        barcode: lfPendingBarcode,
+      });
+      if (favErr) showToast("Couldn't save as favourite: " + favErr.message, true);
+    }
+
     resetLfForm();
     selectLfMode(null);
-    await Promise.all([renderLfTodayTotals(), renderLfTodayList()]);
+    await Promise.all([renderLfTodayTotals(), renderLfTodayList(), renderLfFavorites()]);
     showToast(`Logged ${name}.`);
   } finally {
     setBtn(el.btnLfSave, false, 'Log it');
@@ -9176,6 +9201,47 @@ el.lfTodayList?.addEventListener('click', async e => {
   const { error } = await db.from('food_log').delete().eq('id', btn.dataset.id);
   if (error) { showToast("Couldn't delete: " + error.message, true); return; }
   await Promise.all([renderLfTodayTotals(), renderLfTodayList()]);
+});
+
+/* ── Favourites — ⭐-toggled quick-add shortcuts (see btnLfFavToggle) ── */
+async function fetchFavoriteMeals() {
+  if (!currentUser) return [];
+  const { data, error } = await db.from('favorite_meals')
+    .select('id, name, brand, serving_desc, calories_kcal, protein_g, carbs_g, fat_g, barcode')
+    .eq('user_id', currentUser.id)
+    .order('created_at', { ascending: false })
+    .limit(20);
+  if (error) { console.error('fetchFavoriteMeals error:', error.message); return []; }
+  return data || [];
+}
+
+async function renderLfFavorites() {
+  if (!el.lfFavoritesCard || !el.lfFavoritesRow) return;
+  lfFavoritesData = await fetchFavoriteMeals();
+  el.lfFavoritesCard.hidden = !lfFavoritesData.length;
+  if (!lfFavoritesData.length) return;
+  el.lfFavoritesRow.innerHTML = lfFavoritesData.map(f => `
+    <button type="button" class="lf-favorite-chip" data-id="${f.id}">
+      <span>⭐ ${escapeHtml(f.name)}</span>
+      <span class="lf-favorite-chip__cals">${Math.round(f.calories_kcal)} kcal</span>
+      <span class="lf-favorite-chip__del" data-action="fav-delete" data-id="${f.id}" title="Remove favourite">✕</span>
+    </button>`).join('');
+}
+el.lfFavoritesRow?.addEventListener('click', async e => {
+  const del = e.target.closest('[data-action="fav-delete"]');
+  if (del) {
+    const { error } = await db.from('favorite_meals').delete().eq('id', del.dataset.id);
+    if (error) { showToast("Couldn't remove favourite: " + error.message, true); return; }
+    await renderLfFavorites();
+    return;
+  }
+  const chip = e.target.closest('.lf-favorite-chip');
+  if (!chip) return;
+  const fav = lfFavoritesData.find(f => f.id === chip.dataset.id);
+  if (!fav) return;
+  selectLfMode(null);
+  populateLfFormFromFood(fav, { barcode: fav.barcode || null });
+  showLfReviewForm();
 });
 
 /* ═══════════════════════════════════════════════════════════

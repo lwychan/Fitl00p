@@ -1727,6 +1727,14 @@
         </div>
       </div>
 
+      <!-- Personal quick-add shortcuts (see the ⭐ toggle in the review
+           form below) — tap one to pre-fill the review form instead of
+           starting from scratch. -->
+      <div class="card" id="lfFavoritesCard" hidden>
+        <div class="card-eyebrow">Favourites</div>
+        <div id="lfFavoritesRow" class="lf-favorites-row"></div>
+      </div>
+
       <div class="card">
         <div class="field">
           <label for="lfMealSlot">Meal</label>
@@ -1823,6 +1831,7 @@
             <span>Save to shared food list for next time</span>
           </label>
           <div style="display:flex;gap:10px;margin-top:10px">
+            <button type="button" class="btn btn--icon" id="btnLfFavToggle" aria-label="Save as favourite" aria-pressed="false" title="Save as a favourite for quick logging next time">⭐</button>
             <button class="btn btn--primary" id="btnLfSave" style="flex:1">Log it</button>
             <button class="btn btn--ghost" id="btnLfCancel" style="flex:1">Cancel</button>
           </div>

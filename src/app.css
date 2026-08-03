@@ -805,6 +805,53 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
 .lf-search-result__brand { font-size: 11px; font-weight: 500; color: var(--ink-3); }
 .lf-search-result__cals { font-size: 12px; font-weight: 700; color: var(--ink-3); white-space: nowrap; margin-left: 8px; }
 
+/* Log-food favourites — horizontal quick-add chip row, tap one to
+   pre-fill the review form (see btnLfFavToggle for how a food gets
+   favourited in the first place). */
+.lf-favorites-row {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  -webkit-overflow-scrolling: touch;
+}
+.lf-favorite-chip {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 12px;
+  border-radius: 999px;
+  border: 1.5px solid var(--border);
+  background: var(--surface-2);
+  font-family: var(--ui);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-2);
+  white-space: nowrap;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.lf-favorite-chip:active { background: var(--border); }
+.lf-favorite-chip__cals { font-size: 11px; font-weight: 500; color: var(--ink-4); }
+.lf-favorite-chip__del {
+  font-size: 13px;
+  line-height: 1;
+  color: var(--ink-4);
+  padding: 2px;
+  margin: -2px;
+}
+.lf-favorite-chip__del:hover { color: var(--red); }
+
+/* Star-toggle "save as favourite" button in the Log food review form —
+   filled amber once active, same amber both themes since it's a
+   semantic star color rather than a themed accent. */
+#btnLfFavToggle.is-active {
+  color: #F5A623;
+  border-color: #F5A623;
+  background: rgba(245, 166, 35, .14);
+}
+
 /* Chart card */
 .chart-wrap {
   position: relative;
