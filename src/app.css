@@ -3927,6 +3927,7 @@ body { font-size: 15px; }
   text-align: center;
   margin-top: 4px;
 }
+.dx-chart-hint--warn { color: var(--orange); font-weight: 600; }
 .dx-chart-legend {
   display: flex;
   flex-wrap: wrap;

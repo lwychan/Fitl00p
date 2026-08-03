@@ -409,6 +409,7 @@ const el = {
   dxGlucoseChartEmpty: $('dxGlucoseChartEmpty'),
   dxChartScroll:       $('dxChartScroll'),
   dxChartMarkers:      $('dxChartMarkers'),
+  dxBasalFreshness:    $('dxBasalFreshness'),
   dxMarkerModal:       $('dxMarkerModal'),
   dxMarkerModalTitle:  $('dxMarkerModalTitle'),
   dxMarkerModalBody:   $('dxMarkerModalBody'),
@@ -6486,6 +6487,8 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
   // markers just painted above (canvas pixels have no click events).
   renderDxChartMarkerOverlay(markersEl, chartHits);
 
+  dxUpdateBasalFreshness(basalSegments, now);
+
   // Horizontal scroll: default to the last 4h + 2h projected, but track
   // the user's chosen left-edge time (not raw scrollLeft pixels) so an
   // auto-refresh redraw doesn't yank their scroll position around as
@@ -6513,6 +6516,34 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
         });
       }, { passive: true });
     }
+  }
+}
+
+// Surfaces exactly how stale the basal data actually is — Control-IQ only
+// logs a Temp Basal treatment on an override, so "no bars for the last
+// 40min" could mean either "held the schedule the whole time" (fine) or
+// "tconnectsync hasn't uploaded anything in 40min" (worth checking) — the
+// chart alone can't tell those apart, but a real elapsed-time number can
+// at least tell the user which one is more likely, rather than fitl00p's
+// own ~60s refresh cadence being mistaken for the actual data's age.
+const DX_BASAL_STALE_MIN = 30;
+function dxUpdateBasalFreshness(basalSegments, now) {
+  const el2 = el.dxBasalFreshness;
+  if (!el2) return;
+  if (!basalSegments.length) {
+    el2.textContent = 'No confirmed basal dose in the last 24h — check tconnectsync is running.';
+    el2.classList.add('dx-chart-hint--warn');
+    return;
+  }
+  const lastEnd = Math.max(...basalSegments.map(s => s.end));
+  const ageMin = Math.max(0, Math.round((now - lastEnd) / 60000));
+  const ageText = ageMin < 60 ? `${ageMin}m ago` : `${Math.floor(ageMin / 60)}h ${ageMin % 60}m ago`;
+  if (ageMin > DX_BASAL_STALE_MIN) {
+    el2.textContent = `⚠️ Basal last confirmed ${ageText} — check tconnectsync is running`;
+    el2.classList.add('dx-chart-hint--warn');
+  } else {
+    el2.textContent = `Basal last confirmed ${ageText}`;
+    el2.classList.remove('dx-chart-hint--warn');
   }
 }
 
