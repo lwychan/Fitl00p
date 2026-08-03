@@ -1775,6 +1775,7 @@
              opens the normal photo picker, for logging a meal from an
              existing photo after the fact. -->
         <div id="lfPhotoPanel" hidden style="margin-top:12px">
+          <p class="field-hint">Before eating</p>
           <div style="display:flex;gap:10px">
             <label class="btn btn--ghost" style="flex:1;justify-content:center">
               📷 Take photo
@@ -1786,6 +1787,26 @@
             </label>
           </div>
           <img id="lfPhotoPreview" hidden style="max-width:100%;border-radius:var(--r-md);margin-top:8px">
+
+          <!-- Optional second photo of the leftovers — when present, the
+               estimate is of what was actually eaten (before minus
+               after) rather than the whole plate as served. -->
+          <p class="field-hint" style="margin-top:14px">After eating <span style="text-transform:none;letter-spacing:0;font-weight:400">— optional, add for a more accurate estimate of what was actually eaten</span></p>
+          <div id="lfPhotoAfterButtons" style="display:flex;gap:10px">
+            <label class="btn btn--ghost" style="flex:1;justify-content:center">
+              📷 Take photo
+              <input type="file" id="lfPhotoAfterInputCamera" accept="image/*" capture="environment" style="display:none">
+            </label>
+            <label class="btn btn--ghost" style="flex:1;justify-content:center">
+              🖼️ Choose photo
+              <input type="file" id="lfPhotoAfterInputLibrary" accept="image/*" style="display:none">
+            </label>
+          </div>
+          <div id="lfPhotoAfterPreviewWrap" hidden style="margin-top:8px">
+            <img id="lfPhotoAfterPreview" style="max-width:100%;border-radius:var(--r-md)">
+            <button type="button" class="btn btn--ghost btn--small" id="btnLfPhotoAfterClear" style="margin-top:6px">✕ Remove leftovers photo</button>
+          </div>
+
           <div class="field" style="margin-top:8px">
             <label for="lfPhotoDesc">Description <span class="field-hint">helps the estimate — portion size, ingredients</span></label>
             <textarea id="lfPhotoDesc" placeholder="e.g. grilled chicken, rice, side salad, medium portion" rows="2"></textarea>

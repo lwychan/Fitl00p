@@ -206,6 +206,11 @@ const el = {
   lfPhotoInputCamera:  $('lfPhotoInputCamera'),
   lfPhotoInputLibrary: $('lfPhotoInputLibrary'),
   lfPhotoPreview:   $('lfPhotoPreview'),
+  lfPhotoAfterInputCamera:  $('lfPhotoAfterInputCamera'),
+  lfPhotoAfterInputLibrary: $('lfPhotoAfterInputLibrary'),
+  lfPhotoAfterPreview:      $('lfPhotoAfterPreview'),
+  lfPhotoAfterPreviewWrap:  $('lfPhotoAfterPreviewWrap'),
+  btnLfPhotoAfterClear:     $('btnLfPhotoAfterClear'),
   lfPhotoDesc:      $('lfPhotoDesc'),
   btnLfEstimate:    $('btnLfEstimate'),
   lfEstimateStatus: $('lfEstimateStatus'),
@@ -8768,6 +8773,8 @@ let lfBarcodeDetector = null;
 let lfBarcodeScanRAF = null;
 let lfPhotoBase64 = null;
 let lfPhotoMediaType = null;
+let lfPhotoAfterBase64 = null; // optional "leftovers" photo — when set, the estimate is before-minus-after
+let lfPhotoAfterMediaType = null;
 let lfSelectedCustomFoodId = null; // set when the review form was populated from an existing custom_foods row (scan/search) — avoids re-saving a duplicate
 let lfPendingBarcode = null; // carries a scanned (found-or-not) barcode into save, so a not-found product is still remembered for next time
 let lfFavToggleActive = false; // ⭐ toggle in the review form — save this entry to favorite_meals too, alongside logging it
@@ -8806,6 +8813,8 @@ el.lfModePills?.addEventListener('click', e => {
 function resetLfForm() {
   lfPhotoBase64 = null;
   lfPhotoMediaType = null;
+  lfPhotoAfterBase64 = null;
+  lfPhotoAfterMediaType = null;
   lfSelectedCustomFoodId = null;
   lfPendingBarcode = null;
   if (el.lfFoodName) el.lfFoodName.value = '';
@@ -8832,6 +8841,10 @@ function resetLfForm() {
   if (el.lfPhotoDesc) el.lfPhotoDesc.value = '';
   if (el.lfPhotoInputCamera) el.lfPhotoInputCamera.value = '';
   if (el.lfPhotoInputLibrary) el.lfPhotoInputLibrary.value = '';
+  if (el.lfPhotoAfterPreviewWrap) el.lfPhotoAfterPreviewWrap.hidden = true;
+  if (el.lfPhotoAfterPreview) el.lfPhotoAfterPreview.src = '';
+  if (el.lfPhotoAfterInputCamera) el.lfPhotoAfterInputCamera.value = '';
+  if (el.lfPhotoAfterInputLibrary) el.lfPhotoAfterInputLibrary.value = '';
   if (el.btnLfEstimate) el.btnLfEstimate.disabled = true;
 }
 el.btnLfFavToggle?.addEventListener('click', () => {
@@ -9024,6 +9037,34 @@ async function handleLfPhotoInputChange(inputEl) {
 el.lfPhotoInputCamera?.addEventListener('change', () => handleLfPhotoInputChange(el.lfPhotoInputCamera));
 el.lfPhotoInputLibrary?.addEventListener('change', () => handleLfPhotoInputChange(el.lfPhotoInputLibrary));
 
+// Optional "after eating" photo of the leftovers — same resize/read
+// path as the main photo, but stored separately and only sent to the
+// estimator when present (see btnLfEstimate below), so a before/after
+// pair estimates what was actually eaten rather than the whole plate.
+async function handleLfPhotoAfterInputChange(inputEl) {
+  const file = inputEl.files?.[0];
+  if (!file) return;
+  try {
+    const { base64, mediaType, dataUrl } = await resizeImageToBase64(file);
+    lfPhotoAfterBase64 = base64;
+    lfPhotoAfterMediaType = mediaType;
+    if (el.lfPhotoAfterPreview) el.lfPhotoAfterPreview.src = dataUrl;
+    if (el.lfPhotoAfterPreviewWrap) el.lfPhotoAfterPreviewWrap.hidden = false;
+  } catch (err) {
+    showToast("Couldn't read that photo: " + err.message, true);
+  }
+}
+el.lfPhotoAfterInputCamera?.addEventListener('change', () => handleLfPhotoAfterInputChange(el.lfPhotoAfterInputCamera));
+el.lfPhotoAfterInputLibrary?.addEventListener('change', () => handleLfPhotoAfterInputChange(el.lfPhotoAfterInputLibrary));
+el.btnLfPhotoAfterClear?.addEventListener('click', () => {
+  lfPhotoAfterBase64 = null;
+  lfPhotoAfterMediaType = null;
+  if (el.lfPhotoAfterPreviewWrap) el.lfPhotoAfterPreviewWrap.hidden = true;
+  if (el.lfPhotoAfterPreview) el.lfPhotoAfterPreview.src = '';
+  if (el.lfPhotoAfterInputCamera) el.lfPhotoAfterInputCamera.value = '';
+  if (el.lfPhotoAfterInputLibrary) el.lfPhotoAfterInputLibrary.value = '';
+});
+
 // Downscales to a max 1024px side and re-encodes as JPEG — keeps the
 // upload small/cheap regardless of the original photo's resolution,
 // comfortably under the function's own size cap.
@@ -9057,7 +9098,14 @@ el.btnLfEstimate?.addEventListener('click', async () => {
     const res = await fetch('/.netlify/functions/food-photo-estimate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
-      body: JSON.stringify({ image_base64: lfPhotoBase64, media_type: lfPhotoMediaType, description: el.lfPhotoDesc?.value || '' }),
+      body: JSON.stringify({
+        image_base64: lfPhotoBase64, media_type: lfPhotoMediaType, description: el.lfPhotoDesc?.value || '',
+        // Optional leftovers photo — when present, the server estimates
+        // what was actually eaten (before minus after) instead of the
+        // whole plate as served.
+        image_base64_after: lfPhotoAfterBase64 || undefined,
+        media_type_after: lfPhotoAfterMediaType || undefined,
+      }),
     });
     const data = await res.json();
     if (!res.ok) {
