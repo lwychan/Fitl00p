@@ -5464,7 +5464,7 @@ async function fetchMacroMealLog() {
   if (!currentUser) return [];
   const { data, error } = await db
     .from('diabetes_meals')
-    .select('eaten_at, meal_name, carbs_g, fat_g, protein_g, suggested_units, matched_bolus_units, match_status')
+    .select('eaten_at, meal_name, carbs_g, fat_g, protein_g, suggested_units, matched_bolus_units, matched_bolus_time, match_status')
     .eq('user_id', currentUser.id)
     .order('eaten_at', { ascending: false })
     .limit(200);
@@ -5478,6 +5478,12 @@ async function fetchMacroMealLog() {
     carbs: Number(r.carbs_g),
     fat: Number(r.fat_g),
     protein: Number(r.protein_g),
+    // Without this, mergeMealCarbsIntoBoluses can never find the bolus
+    // this meal was already matched to, and pushes a duplicate carbs-only
+    // entry instead of correcting the real one in place — double-counting
+    // carbs in every COB-driven calc downstream for any meal that already
+    // has a linked bolus.
+    matched_bolus_time: r.matched_bolus_time || null,
     // The confirmed real dose once linked to a Nightscout bolus, else
     // the suggestion it was recorded with — manual entries assume the
     // suggestion was followed (recordMacroMeal), MFP 'suggested' rows
@@ -6282,21 +6288,40 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
   ctx.textAlign = 'center';
   (data.boluses || []).forEach(b => {
     const ms = Number(b.time), units = Number(b.units);
-    if (!Number.isFinite(ms) || !Number.isFinite(units) || units <= 0 || ms < windowStart || ms > now) return;
-    const x = xAt(ms);
     const carbs = Number(b.carbs) || 0;
-    ctx.strokeStyle = 'rgba(250, 204, 21, 0.5)';
-    ctx.lineWidth = 1;
-    ctx.setLineDash([3, 3]);
-    ctx.beginPath(); ctx.moveTo(x, padTop); ctx.lineTo(x, padTop + mainH); ctx.stroke();
-    ctx.setLineDash([]);
-    const label = carbs > 0 ? `${units.toFixed(1)}u+${Math.round(carbs)}g` : `${units.toFixed(1)}u`;
-    ctx.fillStyle = '#facc15';
-    ctx.fillText(label, x, 12);
-    const body = carbs > 0
-      ? `${units.toFixed(1)}u + ${Math.round(carbs)}g carbs · ${dxFormatMarkerTime(ms)}`
-      : `${units.toFixed(1)}u · ${dxFormatMarkerTime(ms)}`;
-    chartHits.push({ x, y: 12, title: 'Bolus', body });
+    if (!Number.isFinite(ms) || ms < windowStart || ms > now) return;
+    const x = xAt(ms);
+    const mealSuffix = b.mealName ? ` (${b.mealName})` : '';
+    if (units > 0) {
+      // A real insulin dose — carbs (if any) come from mergeMealCarbsIntoBoluses,
+      // which prefers the fitl00p-logged meal's figure over Nightscout's own
+      // (Control-IQ can suppress/alter it on a low-BG bolus), so this is
+      // "what was actually eaten", not just what the pump recorded.
+      ctx.strokeStyle = 'rgba(250, 204, 21, 0.5)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.moveTo(x, padTop); ctx.lineTo(x, padTop + mainH); ctx.stroke();
+      ctx.setLineDash([]);
+      const label = carbs > 0 ? `${units.toFixed(1)}u+${Math.round(carbs)}g` : `${units.toFixed(1)}u`;
+      ctx.fillStyle = '#facc15';
+      ctx.fillText(label, x, 12);
+      const body = carbs > 0
+        ? `${units.toFixed(1)}u + ${Math.round(carbs)}g carbs${mealSuffix} · ${dxFormatMarkerTime(ms)}`
+        : `${units.toFixed(1)}u · ${dxFormatMarkerTime(ms)}`;
+      chartHits.push({ x, y: 12, title: 'Bolus', body });
+    } else if (carbs > 0) {
+      // A meal logged in fitl00p with no bolus lined up close enough in
+      // time to match against — exactly the "ate but didn't (fully) dose
+      // for it" gap this chart should make visible, not hide.
+      ctx.strokeStyle = 'rgba(244, 114, 182, 0.5)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([1, 3]);
+      ctx.beginPath(); ctx.moveTo(x, padTop); ctx.lineTo(x, padTop + mainH); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#f472b6';
+      ctx.fillText(`🍽${Math.round(carbs)}g`, x, 12);
+      chartHits.push({ x, y: 12, title: 'Meal, no bolus matched', body: `${Math.round(carbs)}g carbs${mealSuffix} · ${dxFormatMarkerTime(ms)}` });
+    }
   });
   (data.corrections || []).forEach(c => {
     const ms = Number(c.time), units = Number(c.units);
@@ -6441,15 +6466,16 @@ async function renderDiabetesTab(data) {
   // current BG is low, so Nightscout's own carbs figure for that meal
   // can be missing or wrong — the MFP-logged entry's own timestamp
   // supersedes it for every COB-driven calculation below (dosingContext,
-  // forecast, correction, patterns, etc.). Deliberately NOT used for the
-  // MFP-import matching UI just below or the raw chart, which both need
-  // the true, unmodified Nightscout treatment list — carbBoluses is a
-  // separate array, data.boluses itself is untouched.
+  // forecast, correction, patterns, etc.) AND the chart, so a bolus's
+  // carbs label reflects what was actually logged in fitl00p, not a
+  // stale/missing Nightscout figure. The MFP-import matching UI just
+  // below is the one place that still needs the true, unmodified
+  // Nightscout treatment list — it keeps using data.boluses directly.
   const carbBoluses = DiabetesEngine.mergeMealCarbsIntoBoluses(data.boluses, macroMealLog);
   const input = { ...data, boluses: carbBoluses, settings, activities: { workouts }, macroMealLog };
   const now = Date.now();
 
-  drawDxGlucoseChart(el.dxGlucoseChart, el.dxGlucoseChartEmpty, data, settings, now, workouts);
+  drawDxGlucoseChart(el.dxGlucoseChart, el.dxGlucoseChartEmpty, input, settings, now, workouts);
 
   const ctx = DiabetesEngine.dosingContext(input, now);
   renderDxNow(ctx);
@@ -6532,9 +6558,10 @@ function renderDxActivityLog(rows) {
 }
 
 async function refreshDxActivityMarkers() {
-  const [data, workouts] = await Promise.all([fetchDiabetesData(), fetchDxWorkouts()]);
+  const [data, macroMealLog, workouts] = await Promise.all([fetchDiabetesData(), fetchMacroMealLog(), fetchDxWorkouts()]);
   if (!data) return;
-  drawDxGlucoseChart(el.dxGlucoseChart, el.dxGlucoseChartEmpty, data, dxSettings(), Date.now(), workouts);
+  const carbBoluses = DiabetesEngine.mergeMealCarbsIntoBoluses(data.boluses, macroMealLog);
+  drawDxGlucoseChart(el.dxGlucoseChart, el.dxGlucoseChartEmpty, { ...data, boluses: carbBoluses }, dxSettings(), Date.now(), workouts);
   renderDxActivityLog(await fetchManualActivities());
 }
 
@@ -6695,7 +6722,7 @@ async function refreshDxLive() {
 
     const ctx = DiabetesEngine.dosingContext(input, now);
     renderDxNow(ctx);
-    drawDxGlucoseChart(el.dxGlucoseChart, el.dxGlucoseChartEmpty, data, settings, now, workouts);
+    drawDxGlucoseChart(el.dxGlucoseChart, el.dxGlucoseChartEmpty, input, settings, now, workouts);
 
     const resolved = DiabetesEngine.resolveCorrections(data.corrections, data.glucoseHistory, carbBoluses, now);
     const factor = DiabetesEngine.personalCorrectionFactor(resolved);

@@ -154,8 +154,9 @@ function mergeMealCarbsIntoBoluses(boluses, macroMealLog) {
 
     if (match) {
       match.carbs = carbs;
+      if (meal.mealName) match.mealName = meal.mealName;
     } else {
-      list.push({ time: eatenAt, units: 0, carbs });
+      list.push({ time: eatenAt, units: 0, carbs, mealName: meal.mealName || null });
     }
   }
   return list;
