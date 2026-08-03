@@ -97,7 +97,7 @@ self.addEventListener('fetch', event => {
 
   if (alwaysNetwork) {
     event.respondWith(
-      fetchBounded(request, 8000).catch(() => {
+      fetchBounded(request, 8000).catch(err => {
         // Offline fallback for navigation — cached index.html first (see
         // the install handler above for why it's cached at all despite
         // being network-first), but never allowed to resolve to
@@ -113,7 +113,15 @@ self.addEventListener('fetch', event => {
             headers: { 'Content-Type': 'text/html' },
           }));
         }
-        return new Response('Offline', { status: 503 });
+        // Everything else — Supabase API calls, Netlify functions, JS/CSS —
+        // re-throws the real fetch failure instead of synthesizing a flat
+        // "Offline" 503. supabase-js surfaces that response body directly
+        // as error.message, so a save that failed only because this 8s
+        // bound tripped (e.g. a slow connection, not a truly offline
+        // device) showed up as "Couldn't save: Offline" — misleading the
+        // user into thinking their device had no connection at all, and
+        // masking whatever the actual network error was.
+        throw err;
       })
     );
     return;
