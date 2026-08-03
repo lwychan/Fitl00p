@@ -667,6 +667,10 @@
               <div class="health-tile__label">Glucose</div>
               <div class="health-tile__val" id="tileGlucoseVal">—</div>
               <div class="health-tile__unit">mmol/L</div>
+              <!-- Estimated HbA1c from the last 14 days of observed BG
+                   (ADAG mean-glucose formula) — hidden until there's
+                   enough recent data to make it a reasonable estimate. -->
+              <div class="health-tile__sub" id="tileGlucoseA1c" hidden></div>
               <canvas class="health-tile__spark" id="sparkGlucose" width="80" height="28"></canvas>
             </div>
             <div class="health-tile" id="tileFitnessAge">

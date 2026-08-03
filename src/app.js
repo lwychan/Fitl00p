@@ -1185,12 +1185,13 @@ async function _loadDashboardInner() {
       .gte('started_at', new Date(new Date().setHours(0, 0, 0, 0)).toISOString())
       .order('started_at', { ascending: true }),
 
-    // Native fitl00p food log, same 30-day window as healthHistRes/mfpCalRes —
-    // this is now the top of pickConsumedCalories' precedence (see there).
+    // Native fitl00p food log — top of pickConsumedCalories' precedence
+    // (see there), but only from today onward; native logging only just
+    // started, so anything before today keeps reading cal_mfp/dietary_energy.
     db.from('food_log')
       .select('log_date, calories_kcal')
       .eq('user_id', currentUser.id)
-      .gte('log_date', new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10)),
+      .gte('log_date', todayISO()),
   ]);
 
   const log           = { ...(logRes.data || {}) };
@@ -1233,7 +1234,7 @@ async function _loadDashboardInner() {
   // food_log has one row per item logged — sum per day, and only set a
   // date's total when at least one row exists that day (an empty/zero
   // day should fall through to cal_mfp/dietary_energy_kcal, not read as
-  // "0 eaten").
+  // "0 eaten"). Query above already restricts to today onward.
   const foodCalByDate = {};
   (foodLogRes.data || []).forEach(r => {
     foodCalByDate[r.log_date] = (foodCalByDate[r.log_date] || 0) + (Number(r.calories_kcal) || 0);
@@ -2028,6 +2029,26 @@ function renderHealthTiles(today, history) {
     stroke: '#DC2626',
     fillTop: 'rgba(220,38,38,.2)', fillBottom: 'rgba(220,38,38,0)',
   });
+
+  // ── Estimated HbA1c — from the last 14 days of observed blood glucose,
+  // via the ADAG study's mean-glucose formula (mean mg/dL = 28.7×A1c −
+  // 46.7, rearranged to solve for A1c). An estimate, not a lab result —
+  // needs a handful of days of readings before it's worth showing at all.
+  const a1cTile = $('tileGlucoseA1c');
+  if (a1cTile) {
+    const twoWeeksAgoISO = new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10);
+    const glucose14d = history
+      .filter(h => h.log_date >= twoWeeksAgoISO && h.glucose_avg_mmol != null)
+      .map(h => Number(h.glucose_avg_mmol));
+    if (diabetesOn && glucose14d.length >= 3) {
+      const avgMmol = glucose14d.reduce((a, b) => a + b, 0) / glucose14d.length;
+      const estA1c  = (avgMmol * 18.0182 + 46.7) / 28.7;
+      a1cTile.textContent = `Est. A1c ${estA1c.toFixed(1)}% (${glucose14d.length}d)`;
+      a1cTile.hidden = false;
+    } else {
+      a1cTile.hidden = true;
+    }
+  }
 
   // ── Fitness Age — derived from VO2 Max ────────────────────
   // Uses the same resolved vo2 value (today's reading, or the last known
@@ -3913,12 +3934,13 @@ async function loadHistory() {
   });
 
   // Native fitl00p food log for the same range — top of pickConsumedCalories'
-  // precedence (see there).
+  // precedence (see there), but only from today onward; anything before
+  // today keeps reading cal_mfp since native logging only just started.
   const { data: foodRows } = await db
     .from('food_log')
     .select('log_date, calories_kcal')
     .eq('user_id', currentUser.id)
-    .gte('log_date', oldestDate);
+    .gte('log_date', todayISO());
   const foodByDate = {};
   (foodRows || []).forEach(r => {
     foodByDate[r.log_date] = (foodByDate[r.log_date] || 0) + (Number(r.calories_kcal) || 0);
@@ -7971,7 +7993,7 @@ async function computeSmartEatTarget() {
     db.from('food_log')
       .select('log_date, calories_kcal')
       .eq('user_id', currentUser.id)
-      .gte('log_date', sevenDaysAgoStr),
+      .gte('log_date', todayISO()),
   ]);
 
   const activeVals = (recentHealth || [])
