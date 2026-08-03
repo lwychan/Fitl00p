@@ -433,6 +433,13 @@ const el = {
   mfpHasToken:       $('mfpHasToken'),
   mfpBookmarklet:    $('mfpBookmarklet'),
   mfpTokenStatus:    $('mfpTokenStatus'),
+  // detected activity
+  detectedActivityModal:     $('detectedActivityModal'),
+  detectedActivityClose:     $('detectedActivityClose'),
+  detectedActivityDesc:      $('detectedActivityDesc'),
+  detectedActivityQueueNote: $('detectedActivityQueueNote'),
+  btnDetectedActivityConfirm: $('btnDetectedActivityConfirm'),
+  btnDetectedActivityIgnore:  $('btnDetectedActivityIgnore'),
   // global
   toast:         $('toast'),
 };
@@ -861,6 +868,7 @@ function initApp() {
             hideBootScreen();
 
             requestNotificationPermission();
+            checkDetectedActivities();
           }
         } else if (role === 'rejected') {
           showScreen('pending');
@@ -7465,6 +7473,96 @@ async function requestNotificationPermission() {
 }
 
 /* ═══════════════════════════════════════════════════════════
+   DETECTED ACTIVITY — health-sync.js flags a burst of elevated heart
+   rate + dense steps Apple Health never logged as a Workout (see
+   detectUndetectedActivity() there) as a pending row here. Checked on
+   every app open; confirming writes a real apple_health_workouts row
+   (workout_type "Walking"), indistinguishable downstream from a real
+   Apple Watch-detected workout — feeds Strain, the Diabetes tab's
+   workout-impact analysis, "Last workout", all of it. Never auto-
+   logged — this popup is the only path a detection can actually land.
+   ═══════════════════════════════════════════════════════════ */
+let dxDetectedQueue = [];
+
+async function checkDetectedActivities() {
+  if (!currentUser) return;
+  const { data, error } = await db.from('detected_activities')
+    .select('id, started_at, ended_at, duration_min, avg_heart_rate, max_heart_rate, steps')
+    .eq('user_id', currentUser.id)
+    .eq('status', 'pending')
+    .order('started_at', { ascending: true });
+  if (error) { console.error('checkDetectedActivities error:', error.message); return; }
+  dxDetectedQueue = data || [];
+  if (dxDetectedQueue.length) showDetectedActivityPopup();
+}
+
+function showDetectedActivityPopup() {
+  const activity = dxDetectedQueue[0];
+  if (!activity || !el.detectedActivityModal) return;
+  const start = new Date(activity.started_at);
+  const when = start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const dayLabel = start.toDateString() === new Date().toDateString() ? 'Today' : start.toLocaleDateString(undefined, { weekday: 'long' });
+  const bits = [`${dayLabel} at ${when}`, `~${Math.round(activity.duration_min)} min`];
+  if (activity.avg_heart_rate != null) bits.push(`avg ${Math.round(activity.avg_heart_rate)}bpm`);
+  if (activity.steps != null) bits.push(`~${activity.steps.toLocaleString()} steps`);
+  if (el.detectedActivityDesc) {
+    el.detectedActivityDesc.textContent = `Looks like a walk — ${bits.join(', ')}. Apple Health didn't log this as a workout. Add it?`;
+  }
+  if (el.detectedActivityQueueNote) {
+    const more = dxDetectedQueue.length - 1;
+    el.detectedActivityQueueNote.hidden = more <= 0;
+    el.detectedActivityQueueNote.textContent = more > 0 ? `${more} more waiting after this one.` : '';
+  }
+  el.detectedActivityModal.hidden = false;
+}
+
+function closeDetectedActivityPopup() {
+  if (el.detectedActivityModal) el.detectedActivityModal.hidden = true;
+}
+
+function advanceDetectedActivityQueue() {
+  dxDetectedQueue.shift();
+  if (dxDetectedQueue.length) showDetectedActivityPopup();
+  else closeDetectedActivityPopup();
+}
+
+el.btnDetectedActivityConfirm?.addEventListener('click', async () => {
+  const activity = dxDetectedQueue[0];
+  if (!activity || !currentUser) return;
+  setBtn(el.btnDetectedActivityConfirm, true, 'Log as workout', 'Saving…');
+  try {
+    const { error: insertErr } = await db.from('apple_health_workouts').insert({
+      user_id: currentUser.id,
+      external_id: `detected-${activity.id}`,
+      workout_type: 'Walking',
+      started_at: activity.started_at,
+      ended_at: activity.ended_at,
+      duration_min: activity.duration_min,
+      avg_heart_rate: activity.avg_heart_rate,
+      max_heart_rate: activity.max_heart_rate,
+    });
+    if (insertErr) { showToast("Couldn't log it: " + insertErr.message, true); return; }
+    await db.from('detected_activities').update({ status: 'confirmed' }).eq('id', activity.id);
+    showToast('Logged as a walk.');
+    advanceDetectedActivityQueue();
+    // Refresh anything already on screen that a new workout would affect
+    // (Strain, "Last workout") — harmless no-op if some other tab is open.
+    if (el.viewDashboard && !el.viewDashboard.hidden) loadDashboard();
+  } finally {
+    setBtn(el.btnDetectedActivityConfirm, false, 'Log as workout');
+  }
+});
+
+async function ignoreDetectedActivity() {
+  const activity = dxDetectedQueue[0];
+  if (!activity || !currentUser) return;
+  await db.from('detected_activities').update({ status: 'dismissed' }).eq('id', activity.id);
+  advanceDetectedActivityQueue();
+}
+el.btnDetectedActivityIgnore?.addEventListener('click', ignoreDetectedActivity);
+el.detectedActivityClose?.addEventListener('click', ignoreDetectedActivity);
+
+/* ═══════════════════════════════════════════════════════════
    METRIC DETAIL SHEET
 ═══════════════════════════════════════════════════════════ */
 /* ── VO2 Max → Fitness Age conversion (ACSM male norms) ─── */
@@ -8770,6 +8868,7 @@ function initOnboarding() {
     showScreen('app');
     navigateTo('dashboard');
     requestNotificationPermission();
+    checkDetectedActivities();
   }
 }
 

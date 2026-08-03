@@ -1997,6 +1997,28 @@
   </div>
 </div>
 
+<!-- Detected-activity confirmation popup — see checkDetectedActivities()
+     in app.js, checked on every app open (plus whenever a push
+     notification for one arrives while the app's already open). A
+     centered modal rather than a bottom sheet since this needs an
+     actual decision, not just browsing. -->
+<div class="modal-backdrop" id="detectedActivityModal" hidden>
+  <div class="modal">
+    <div class="modal__head">
+      <span class="modal__title">🚶 Possible activity detected</span>
+      <button class="modal__close" id="detectedActivityClose">×</button>
+    </div>
+    <div class="modal__body">
+      <p id="detectedActivityDesc">—</p>
+      <p class="field-hint" id="detectedActivityQueueNote" hidden></p>
+    </div>
+    <div class="modal__foot">
+      <button class="btn btn--ghost" id="btnDetectedActivityIgnore" style="flex:1">Ignore</button>
+      <button class="btn btn--primary" id="btnDetectedActivityConfirm" style="flex:1">Log as workout</button>
+    </div>
+  </div>
+</div>
+
 <!-- Metric Detail Bottom Sheet -->
 <div class="bottom-sheet-backdrop" id="metricSheet" hidden>
   <div class="bottom-sheet">

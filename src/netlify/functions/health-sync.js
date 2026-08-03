@@ -14,6 +14,7 @@
 // removed now that the root cause is confirmed and fixed.
 
 const crypto = require('crypto');
+const { sendWebPush } = require('./_lib/webpush');
 
 const SB_URL     = process.env.SUPABASE_URL;
 const SB_SERVICE = process.env.SUPABASE_SERVICE_KEY;
@@ -88,6 +89,15 @@ exports.handler = async function (event) {
   // two separate calls — see the early-return fix below) can still
   // populate and upsert it.
   const byDate = {};
+
+  // Raw timestamped samples for step count + heart rate, collected
+  // alongside the per-date sums below — feeds detectUndetectedActivity()
+  // further down, which needs the actual time series (not just a daily
+  // total) to find a burst of elevated HR + dense steps that Apple
+  // Health itself never logged as a Workout. Dateless/absolute-time on
+  // purpose: binning by absolute ms sidesteps day-boundary edge cases
+  // (a walk spanning midnight) that a per-calendar-day bucket would hit.
+  const activitySamples = { steps: [], hr: [] };
 
   // ── Discrete workout events ────────────────────────────────
   // Separate from the daily-aggregate loop below — these carry their own
@@ -215,7 +225,11 @@ exports.handler = async function (event) {
       // Name: "Step Count", fields: qty (count)
       if (metricName === 'step_count' || metricName === 'steps') {
         const steps = parseInt(item.qty);
-        if (!isNaN(steps)) d.steps = (d.steps || 0) + steps;
+        if (!isNaN(steps)) {
+          d.steps = (d.steps || 0) + steps;
+          const t = new Date(rawDate).getTime();
+          if (Number.isFinite(t)) activitySamples.steps.push({ t, qty: steps });
+        }
       }
 
       // ── Walking + Running Distance ───────────────────────
@@ -361,8 +375,70 @@ exports.handler = async function (event) {
           d.workout_hr_avg = round1(val);
           if (!d._hrSamples) d._hrSamples = [];
           d._hrSamples.push(Number(val));
+          const t = new Date(rawDate).getTime();
+          if (Number.isFinite(t)) activitySamples.hr.push({ t, val: Number(val) });
         }
       }
+    }
+  }
+
+  // ── Undetected-activity detection ──────────────────────────
+  // Flags a burst of elevated heart rate + dense steps that never
+  // showed up as a real Apple Health Workout — HealthKit doesn't
+  // auto-detect e.g. pushing a stroller the way it does a run or ride.
+  // Never auto-logged: a match becomes a pending row the user confirms
+  // or dismisses from an in-app popup, surfaced via a push notification.
+  let detectedCount = 0;
+  if (activitySamples.hr.length >= 3 && activitySamples.steps.length) {
+    try {
+      const restingHrFallback = Object.values(byDate).map(d => d.resting_hr).find(v => v != null)
+        ?? await fetchRecentRestingHr(user_id);
+      const windows = detectUndetectedActivity(activitySamples.steps, activitySamples.hr, restingHrFallback);
+
+      if (windows.length) {
+        const minMs = Math.min(...windows.map(w => w.startMs));
+        const maxMs = Math.max(...windows.map(w => w.endMs));
+        const padMs = 3 * 3600000; // wide enough that a workout logged just before/after a window still counts as "already covered"
+        const [existingWorkoutsRes, existingDetectedRes] = await Promise.all([
+          sbFetch(`/rest/v1/apple_health_workouts?user_id=eq.${user_id}&started_at=lte.${new Date(maxMs + padMs).toISOString()}&ended_at=gte.${new Date(minMs - padMs).toISOString()}&select=started_at,ended_at`),
+          sbFetch(`/rest/v1/detected_activities?user_id=eq.${user_id}&started_at=gte.${new Date(minMs - padMs).toISOString()}&started_at=lte.${new Date(maxMs + padMs).toISOString()}&select=started_at`),
+        ]);
+        const existingWorkouts = existingWorkoutsRes.ok ? (existingWorkoutsRes.data || []) : [];
+        const existingDetected = existingDetectedRes.ok ? (existingDetectedRes.data || []) : [];
+
+        // 30min tolerance on detected_activities — Health Auto Export
+        // resends a rolling window of recent days on every sync, so
+        // without this the same walk would re-flag (and re-notify) on
+        // every subsequent sync until the user confirms/dismisses it.
+        const DEDUP_TOLERANCE_MS = 30 * 60000;
+        const overlapsRealWorkout = w => existingWorkouts.some(rw => {
+          const rs = new Date(rw.started_at).getTime(), re = new Date(rw.ended_at).getTime();
+          return w.startMs < re && w.endMs > rs;
+        });
+        const isDuplicateDetection = w => existingDetected.some(ed =>
+          Math.abs(new Date(ed.started_at).getTime() - w.startMs) < DEDUP_TOLERANCE_MS
+        );
+
+        const newlyDetected = [];
+        for (const w of windows) {
+          if (newlyDetected.length >= 3) break; // safety cap — one sync call shouldn't ever flood the queue
+          if (overlapsRealWorkout(w) || isDuplicateDetection(w)) continue;
+          const insertRes = await sbFetch('/rest/v1/detected_activities', 'POST', {
+            user_id,
+            started_at: new Date(w.startMs).toISOString(),
+            ended_at: new Date(w.endMs).toISOString(),
+            duration_min: w.durationMin,
+            avg_heart_rate: w.avgHeartRate,
+            max_heart_rate: w.maxHeartRate,
+            steps: w.steps,
+          }, { 'Prefer': 'return=minimal' });
+          if (insertRes.ok) { newlyDetected.push(w); detectedCount++; }
+        }
+
+        if (newlyDetected.length) await notifyDetectedActivities(user_id, newlyDetected);
+      }
+    } catch (err) {
+      console.error('Activity detection error:', err.message);
     }
   }
 
@@ -465,6 +541,7 @@ exports.handler = async function (event) {
       processed: processed.length,
       workoutsReceived: workouts.length,
       workoutsProcessed,
+      detectedCount,
       errors:    errors.length,
       dates:     processed,
       unitsSeen, // shows what unit strings Health Auto Export sent
@@ -492,6 +569,108 @@ function computeReadiness(d) {
     score = score * 0.8 + rs * 0.2; factors++;
   }
   return factors > 0 ? Math.round(Math.max(0, Math.min(100, score))) : null;
+}
+
+async function fetchRecentRestingHr(user_id) {
+  const res = await sbFetch(`/rest/v1/health_daily?user_id=eq.${user_id}&resting_hr=not.is.null&select=resting_hr&order=log_date.desc&limit=1`);
+  return res.ok && res.data?.[0]?.resting_hr != null ? Number(res.data[0].resting_hr) : null;
+}
+
+// ── Undetected-activity heuristic ──────────────────────────
+// Bins step + heart-rate samples into fixed-width buckets (by absolute
+// time, not calendar day — see activitySamples in the handler above)
+// and looks for a contiguous run where BOTH heart rate is meaningfully
+// above resting AND steps are dense enough to be real ambulatory
+// movement. Either signal alone is too noisy on its own (HR alone:
+// caffeine/stress/heat; steps alone: phone-in-pocket miscounts while
+// doing chores) but together they're a reasonable proxy for "this was
+// actually a walk" — e.g. pushing a stroller, which HealthKit's own
+// workout auto-detection doesn't cover the way it does a run or ride.
+const ACTIVITY_BIN_MIN          = 10;   // minutes per bin
+const ACTIVITY_HR_ABOVE_REST    = 25;   // bpm above resting HR to count as "elevated"
+const ACTIVITY_HR_FALLBACK      = 100;  // used only when resting HR is unknown
+const ACTIVITY_STEPS_PER_BIN    = 250;  // steps needed in a bin to count as "dense" walking
+const ACTIVITY_MIN_DURATION_MIN = 15;   // shortest window worth flagging
+const ACTIVITY_MAX_GAP_BINS     = 1;    // bridges one quiet bin inside an otherwise-elevated run (e.g. stopped at a crossing)
+
+function detectUndetectedActivity(stepSamples, hrSamples, restingHr) {
+  const binMs = ACTIVITY_BIN_MIN * 60000;
+  const binOf = t => Math.floor(t / binMs);
+  const bins = new Map(); // binIndex -> { steps, hrSum, hrCount, maxHr }
+  function getBin(idx) {
+    if (!bins.has(idx)) bins.set(idx, { steps: 0, hrSum: 0, hrCount: 0, maxHr: 0 });
+    return bins.get(idx);
+  }
+  for (const s of stepSamples) getBin(binOf(s.t)).steps += s.qty;
+  for (const s of hrSamples) {
+    const b = getBin(binOf(s.t));
+    b.hrSum += s.val; b.hrCount++; b.maxHr = Math.max(b.maxHr, s.val);
+  }
+
+  const hrThreshold = restingHr ? restingHr + ACTIVITY_HR_ABOVE_REST : ACTIVITY_HR_FALLBACK;
+  const sortedIdx = [...bins.keys()].sort((a, b) => a - b);
+  const elevated = new Set();
+  for (const idx of sortedIdx) {
+    const b = bins.get(idx);
+    const avgHr = b.hrCount ? b.hrSum / b.hrCount : null;
+    if (b.steps >= ACTIVITY_STEPS_PER_BIN && avgHr != null && avgHr >= hrThreshold) elevated.add(idx);
+  }
+
+  const windows = [];
+  const visited = new Set();
+  for (const idx of sortedIdx) {
+    if (!elevated.has(idx) || visited.has(idx)) continue;
+    let start = idx, end = idx, gap = 0;
+    visited.add(idx);
+    while (true) {
+      const next = end + 1;
+      if (elevated.has(next)) { end = next; visited.add(next); gap = 0; }
+      // Bridges a non-elevated (or entirely sample-free — a real watch
+      // frequently has a gap of no readings at all for a stretch) bin,
+      // up to the gap tolerance — not gated on bins.has(next), since a
+      // missing bin is exactly the kind of gap this should bridge too.
+      else if (gap < ACTIVITY_MAX_GAP_BINS) { end = next; gap++; visited.add(next); }
+      else break;
+    }
+    while (end > start && !elevated.has(end)) end--; // trim a bridged-but-unconfirmed trailing gap
+    const durationMin = (end - start + 1) * ACTIVITY_BIN_MIN;
+    if (durationMin >= ACTIVITY_MIN_DURATION_MIN) {
+      let steps = 0, hrSum = 0, hrCount = 0, maxHr = 0;
+      for (let b = start; b <= end; b++) {
+        const bin = bins.get(b);
+        if (!bin) continue;
+        steps += bin.steps;
+        if (bin.hrCount) { hrSum += bin.hrSum; hrCount += bin.hrCount; }
+        maxHr = Math.max(maxHr, bin.maxHr);
+      }
+      windows.push({
+        startMs: start * binMs,
+        endMs: (end + 1) * binMs,
+        durationMin,
+        steps: Math.round(steps),
+        avgHeartRate: hrCount ? Math.round((hrSum / hrCount) * 10) / 10 : null,
+        maxHeartRate: maxHr || null,
+      });
+    }
+  }
+  return windows;
+}
+
+async function notifyDetectedActivities(user_id, windows) {
+  const subsRes = await sbFetch(`/rest/v1/push_subscriptions?user_id=eq.${user_id}&select=endpoint,p256dh,auth_key`);
+  const subs = subsRes.ok ? (subsRes.data || []) : [];
+  if (!subs.length) return;
+  const w = windows[0]; // one notification even if a couple were detected in the same sync call
+  const when = new Date(w.startMs).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/London' });
+  const more = windows.length > 1 ? ` (+${windows.length - 1} more)` : '';
+  const payload = {
+    title: 'Possible activity detected 🚶',
+    body: `Looks like a ~${w.durationMin}-min walk around ${when}${more} — open fitl00p to confirm or ignore.`,
+    url: '/', tag: 'detected-activity',
+  };
+  for (const s of subs) {
+    try { await sendWebPush({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth_key } }, payload); } catch {}
+  }
 }
 
 // ── Helpers ───────────────────────────────────────────────
