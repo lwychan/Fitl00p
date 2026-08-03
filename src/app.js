@@ -407,6 +407,12 @@ const el = {
   dxWorkoutHistoryList: $('dxWorkoutHistoryList'),
   dxGlucoseChart:      $('dxGlucoseChart'),
   dxGlucoseChartEmpty: $('dxGlucoseChartEmpty'),
+  dxChartScroll:       $('dxChartScroll'),
+  dxChartMarkers:      $('dxChartMarkers'),
+  dxMarkerModal:       $('dxMarkerModal'),
+  dxMarkerModalTitle:  $('dxMarkerModalTitle'),
+  dxMarkerModalBody:   $('dxMarkerModalBody'),
+  dxMarkerModalClose:  $('dxMarkerModalClose'),
   btnDxLogActivity:  $('btnDxLogActivity'),
   dxActivityLogForm: $('dxActivityLogForm'),
   dxActivityType:    $('dxActivityType'),
@@ -6067,22 +6073,55 @@ function dxActivityIcon(workoutType, unplugged) {
   return null;
 }
 
+function dxActivityLabel(workoutType, unplugged) {
+  if (unplugged) return 'Pump unplugged';
+  const t = String(workoutType || '').toLowerCase();
+  if (t.includes('walk')) return 'Walk';
+  if (t.includes('swim')) return 'Swim';
+  if (t.includes('run')) return 'Run';
+  if (['push', 'pull', 'legs', 'full body', 'strength', 'weight', 'lift', 'resistance'].some(k => t.includes(k))) return 'Strength';
+  return workoutType || 'Activity';
+}
+
+function dxFormatMarkerTime(ms) {
+  const d = new Date(ms);
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const dayLabel = d.toDateString() === new Date().toDateString() ? 'Today' : d.toLocaleDateString(undefined, { weekday: 'short' });
+  return `${dayLabel} at ${time}`;
+}
+
 /* ── Glucose/IOB/projection chart (canvas, no deps) ──────────
    Past ~6h of real glucose, active IOB along the bottom on its own
    scale, and a dashed near-term projection from the same model
    hypoForecast2h/projectedGlucoseCurve use — openly approximate, not
    a real predictive model, capped at 2h out for exactly that reason. */
+let dxChartAnchorMs = null; // preserved left-edge scroll time across auto-redraws (ms); null = not yet set
+let dxChartLastScale = null; // {msForScroll} from the most recent draw, used by the scroll listener
+let dxChartScrollWired = false;
+
 function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
   if (!canvas) return;
-  const MAX_W = 800, MAX_H = 260, MIN_W = 100;
+  const MAX_H = 260, MIN_VISIBLE_W = 100;
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
 
+  const scrollEl = canvas.closest('.dx-chart-scroll');
+  const markersEl = el.dxChartMarkers;
+
   const dpr = Math.min(window.devicePixelRatio || 1, 3);
-  const rawW = canvas.parentElement?.clientWidth || 320;
+  const visibleW = Math.max(MIN_VISIBLE_W, (scrollEl?.clientWidth || canvas.parentElement?.clientWidth || 320) - 16);
   const rawH = parseInt(canvas.getAttribute('height')) || 180;
-  const W = Math.min(MAX_W, Math.max(MIN_W, rawW));
   const H = Math.min(MAX_H, Math.max(120, rawH));
+
+  // Default visible view is the last 4h + 2h projected, but the canvas is
+  // rendered wide enough to hold a full 24h + 2h so the user can scroll
+  // back to see earlier history without a new data fetch (14 days of
+  // Nightscout history is already loaded client-side).
+  const VISIBLE_PAST_MIN = 240, FUTURE_MIN = 120, MAX_PAST_MIN = 24 * 60;
+  const VISIBLE_SPAN_MIN = VISIBLE_PAST_MIN + FUTURE_MIN;
+  const TOTAL_SPAN_MIN = MAX_PAST_MIN + FUTURE_MIN;
+  const W = Math.round(visibleW * (TOTAL_SPAN_MIN / VISIBLE_SPAN_MIN));
+
   canvas.style.width = W + 'px';
   canvas.style.height = H + 'px';
   canvas.width = Math.round(W * dpr);
@@ -6090,8 +6129,7 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, W, H);
 
-  const PAST_MIN = 360, FUTURE_MIN = 120;
-  const windowStart = now - PAST_MIN * 60000;
+  const windowStart = now - MAX_PAST_MIN * 60000;
   const windowEnd = now + FUTURE_MIN * 60000;
 
   const pastReadings = (data.glucoseHistory || [])
@@ -6102,6 +6140,7 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
   if (pastReadings.length < 2) {
     if (emptyEl) emptyEl.hidden = false;
     canvas.hidden = true;
+    if (markersEl) markersEl.innerHTML = '';
     return;
   }
   if (emptyEl) emptyEl.hidden = true;
@@ -6146,16 +6185,22 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
   ctx.fillStyle = 'rgba(74, 222, 128, 0.10)';
   ctx.fillRect(padL, yAt(high), W - padL - padR, Math.max(0, yAt(low) - yAt(high)));
 
-  // Y gridlines/labels
+  // Y gridlines — labels repeat roughly once per screen-width of scroll so
+  // they stay visible wherever the chart is scrolled to (the default view
+  // sits near the right edge, far from a label drawn only at x=padL).
+  const yTicks = [4, 8, 12, 16, 20].filter(v => v >= gLo && v <= gHi);
   ctx.strokeStyle = 'rgba(255,255,255,0.06)';
-  ctx.fillStyle = 'rgba(255,255,255,0.35)';
-  ctx.font = '9px -apple-system, sans-serif';
-  ctx.textAlign = 'right';
-  [4, 8, 12, 16, 20].filter(v => v >= gLo && v <= gHi).forEach(v => {
+  yTicks.forEach(v => {
     const y = yAt(v);
     ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
-    ctx.fillText(String(v), padL - 4, y + 3);
   });
+  ctx.fillStyle = 'rgba(255,255,255,0.35)';
+  ctx.font = '9px -apple-system, sans-serif';
+  ctx.textAlign = 'left';
+  const yLabelStep = Math.max(120, visibleW);
+  for (let lx = padL; lx < W - padR; lx += yLabelStep) {
+    yTicks.forEach(v => ctx.fillText(String(v), lx + 3, yAt(v) + 3));
+  }
 
   // "Now" marker
   const xNow = xAt(now);
@@ -6202,7 +6247,11 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
     ctx.fillText('Set correction factor in Settings for a projection', W - padR, padTop + 9);
   }
 
-  // Bolus / correction dose markers along the main chart baseline
+  // Bolus / correction / activity markers — drawn on canvas as before, but
+  // each one also gets a matching entry in chartHits so a DOM overlay
+  // button can be positioned on top of it (canvas pixels have no click
+  // events of their own — see renderDxChartMarkerOverlay below).
+  const chartHits = [];
   const markerY = padTop + mainH - 3;
   ctx.font = '8px -apple-system, sans-serif';
   ctx.textAlign = 'center';
@@ -6216,6 +6265,7 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
     ctx.closePath(); ctx.fill();
     ctx.fillStyle = 'rgba(250, 204, 21, 0.9)';
     ctx.fillText(units.toFixed(1), x, markerY - 8);
+    chartHits.push({ x, y: markerY - 4, title: 'Bolus', body: `${units.toFixed(1)}u · ${dxFormatMarkerTime(ms)}` });
   });
   (data.corrections || []).forEach(c => {
     const ms = Number(c.time), units = Number(c.units);
@@ -6227,6 +6277,7 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
     ctx.closePath(); ctx.fill();
     ctx.fillStyle = 'rgba(251, 146, 60, 0.9)';
     ctx.fillText(units.toFixed(1), x, markerY - 9);
+    chartHits.push({ x, y: markerY - 4, title: 'Correction', body: `${units.toFixed(1)}u · ${dxFormatMarkerTime(ms)}` });
   });
 
   // Activity markers — small emoji near the top of the main chart, well
@@ -6241,7 +6292,13 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
     if (midMs < windowStart || midMs > now) return;
     const icon = dxActivityIcon(w.workoutType, w.unplugged);
     if (!icon) return;
-    ctx.fillText(icon, xAt(midMs), padTop + 9);
+    const x = xAt(midMs), y = padTop + 9;
+    ctx.fillText(icon, x, y);
+    const label = dxActivityLabel(w.workoutType, w.unplugged);
+    const body = Number.isFinite(endMs) && endMs !== startMs
+      ? `${dxFormatMarkerTime(startMs)} – ${new Date(endMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} (${Math.round((endMs - startMs) / 60000)} min)`
+      : dxFormatMarkerTime(startMs);
+    chartHits.push({ x, y, title: label, body });
   });
 
   // IOB strip (own 0..max scale)
@@ -6257,7 +6314,7 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
   ctx.fillStyle = 'rgba(255,255,255,0.3)';
   ctx.font = '8px -apple-system, sans-serif';
   ctx.textAlign = 'left';
-  ctx.fillText('IOB', padL, iobTop - 1);
+  for (let lx = padL; lx < W - padR; lx += yLabelStep) ctx.fillText('IOB', lx, iobTop - 1);
 
   // Basal strip (own 0..max scale) — drawn as step rectangles since
   // Control-IQ delivers as a continuously varying rate, not a flat line.
@@ -6274,18 +6331,81 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
   ctx.fillStyle = 'rgba(255,255,255,0.3)';
   ctx.font = '8px -apple-system, sans-serif';
   ctx.textAlign = 'left';
-  ctx.fillText(basalSegments.length ? 'Basal u/hr' : 'Basal u/hr (no data)', padL, basalTop - 1);
+  const basalLabel = basalSegments.length ? 'Basal u/hr' : 'Basal u/hr (no data)';
+  for (let lx = padL; lx < W - padR; lx += yLabelStep) ctx.fillText(basalLabel, lx, basalTop - 1);
 
-  // X-axis hour labels
+  // X-axis — real clock times every 2h, plus an explicit "now" tick.
   ctx.fillStyle = 'rgba(255,255,255,0.35)';
   ctx.font = '9px -apple-system, sans-serif';
   ctx.textAlign = 'center';
-  for (let h = -6; h <= 2; h += 2) {
-    const t = now + h * 3600000;
-    if (t < windowStart || t > windowEnd) continue;
-    ctx.fillText(h === 0 ? 'now' : `${h > 0 ? '+' : ''}${h}h`, xAt(t), H - 3);
+  const tickStepMs = 2 * 3600000;
+  const firstTick = Math.ceil(windowStart / tickStepMs) * tickStepMs;
+  for (let t = firstTick; t <= windowEnd; t += tickStepMs) {
+    ctx.fillText(new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }), xAt(t), H - 3);
+  }
+  ctx.fillStyle = 'rgba(255,255,255,0.55)';
+  ctx.fillText('now', xNow, H - 3);
+
+  // DOM overlay: reposition the clickable hit-targets to match the
+  // markers just painted above (canvas pixels have no click events).
+  renderDxChartMarkerOverlay(markersEl, chartHits);
+
+  // Horizontal scroll: default to the last 4h + 2h projected, but track
+  // the user's chosen left-edge time (not raw scrollLeft pixels) so an
+  // auto-refresh redraw doesn't yank their scroll position around as
+  // `now` — and therefore windowStart/windowEnd — keeps advancing.
+  if (scrollEl) {
+    const scrollForMs = (ms) => ((ms - windowStart) / (windowEnd - windowStart)) * (W - padL - padR);
+    const msForScroll = (px) => windowStart + (px / (W - padL - padR)) * (windowEnd - windowStart);
+
+    if (dxChartAnchorMs == null) dxChartAnchorMs = now - VISIBLE_PAST_MIN * 60000;
+    const maxAnchor = Math.max(windowStart, windowEnd - VISIBLE_SPAN_MIN * 60000);
+    dxChartAnchorMs = Math.min(Math.max(dxChartAnchorMs, windowStart), maxAnchor);
+    const targetScrollLeft = Math.max(0, scrollForMs(dxChartAnchorMs));
+    requestAnimationFrame(() => { scrollEl.scrollLeft = targetScrollLeft; });
+
+    dxChartLastScale = { msForScroll };
+
+    if (!dxChartScrollWired) {
+      dxChartScrollWired = true;
+      let scrollRaf = null;
+      scrollEl.addEventListener('scroll', () => {
+        if (scrollRaf) return;
+        scrollRaf = requestAnimationFrame(() => {
+          scrollRaf = null;
+          if (dxChartLastScale) dxChartAnchorMs = dxChartLastScale.msForScroll(scrollEl.scrollLeft);
+        });
+      }, { passive: true });
+    }
   }
 }
+
+function renderDxChartMarkerOverlay(container, hits) {
+  if (!container) return;
+  container.innerHTML = '';
+  (hits || []).forEach(hit => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'dx-chart-marker-btn';
+    btn.style.left = hit.x + 'px';
+    btn.style.top = hit.y + 'px';
+    btn.setAttribute('aria-label', hit.title);
+    btn.addEventListener('click', () => showDxMarkerDetail(hit.title, hit.body));
+    container.appendChild(btn);
+  });
+}
+
+function showDxMarkerDetail(title, body) {
+  if (!el.dxMarkerModal) return;
+  if (el.dxMarkerModalTitle) el.dxMarkerModalTitle.textContent = title;
+  if (el.dxMarkerModalBody) el.dxMarkerModalBody.textContent = body;
+  el.dxMarkerModal.hidden = false;
+}
+function closeDxMarkerDetail() {
+  if (el.dxMarkerModal) el.dxMarkerModal.hidden = true;
+}
+el.dxMarkerModalClose?.addEventListener('click', closeDxMarkerDetail);
+el.dxMarkerModal?.addEventListener('click', (e) => { if (e.target === el.dxMarkerModal) closeDxMarkerDetail(); });
 
 async function renderDiabetesTab(data) {
   const settings = dxSettings();

@@ -3882,14 +3882,51 @@ body { font-size: 15px; }
 .dx-simulate-result--high .dx-simulate-result__line,
 .dx-simulate-result--medium .dx-simulate-result__line { color: var(--ink); }
 
-.dx-chart-wrap {
+.dx-chart-scroll {
   position: relative;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
   background: var(--surface-2);
   border-radius: var(--r-md);
   padding: 8px;
   border: 1px solid var(--border-2);
+  scrollbar-width: thin;
 }
-.dx-chart-wrap canvas { display: block; width: 100%; }
+.dx-chart-wrap { position: relative; }
+.dx-chart-wrap canvas {
+  display: block;
+  /* Deliberately wider than its container — the global "canvas { max-width:
+     100% }" guard elsewhere would otherwise clamp this back down and break
+     the horizontal scroll; width itself stays JS-bounded to 24h+2h of data. */
+  max-width: none;
+}
+.dx-chart-markers {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.dx-chart-marker-btn {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  transform: translate(-50%, -50%);
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  pointer-events: auto;
+  -webkit-tap-highlight-color: transparent;
+}
+.dx-chart-hint {
+  font-size: 10px;
+  color: var(--ink-3);
+  text-align: center;
+  margin-top: 4px;
+}
 .dx-chart-legend {
   display: flex;
   flex-wrap: wrap;

@@ -1533,13 +1533,17 @@
 
         <div class="card">
           <div class="card-eyebrow">
-            <span>Glucose trend <span class="card-eyebrow-sub">6h back · 2h projected</span></span>
+            <span>Glucose trend <span class="card-eyebrow-sub">4h back · 2h projected</span></span>
             <button class="btn btn--ghost btn--small" id="btnDxLogActivity" type="button">+ Activity</button>
           </div>
-          <div class="dx-chart-wrap">
-            <canvas id="dxGlucoseChart" height="240"></canvas>
-            <p class="chart-empty" id="dxGlucoseChartEmpty" hidden>Not enough recent glucose data.</p>
+          <div class="dx-chart-scroll" id="dxChartScroll">
+            <div class="dx-chart-wrap">
+              <canvas id="dxGlucoseChart" height="240"></canvas>
+              <div class="dx-chart-markers" id="dxChartMarkers"></div>
+            </div>
           </div>
+          <p class="chart-empty" id="dxGlucoseChartEmpty" hidden>Not enough recent glucose data.</p>
+          <p class="dx-chart-hint">Scroll to see earlier history · tap a bolus, correction or activity marker for details</p>
           <div class="dx-chart-legend">
             <span class="dx-chart-legend__item"><span class="dx-chart-legend__swatch" style="background:#3B9EFF"></span>Glucose</span>
             <span class="dx-chart-legend__item"><span class="dx-chart-legend__swatch dx-chart-legend__swatch--dashed"></span>Projected</span>
@@ -2015,6 +2019,22 @@
     <div class="modal__foot">
       <button class="btn btn--ghost" id="btnDetectedActivityIgnore" style="flex:1">Ignore</button>
       <button class="btn btn--primary" id="btnDetectedActivityConfirm" style="flex:1">Log as workout</button>
+    </div>
+  </div>
+</div>
+
+<!-- Glucose-chart marker detail popup — bolus/correction/activity markers
+     on the Diabetes tab chart are DOM overlay buttons positioned to match
+     the canvas-drawn markers (see renderDxChartMarkerOverlay in app.js);
+     tapping one shows its time/units/timeframe here. -->
+<div class="modal-backdrop" id="dxMarkerModal" hidden>
+  <div class="modal">
+    <div class="modal__head">
+      <span class="modal__title" id="dxMarkerModalTitle">Detail</span>
+      <button class="modal__close" id="dxMarkerModalClose">×</button>
+    </div>
+    <div class="modal__body">
+      <p id="dxMarkerModalBody">—</p>
     </div>
   </div>
 </div>
