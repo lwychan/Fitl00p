@@ -222,6 +222,9 @@ const el = {
   lfHypoTreatmentWrap: $('lfHypoTreatmentWrap'),
   lfSaveAsCustom:   $('lfSaveAsCustom'),
   lfSaveAsCustomWrap: $('lfSaveAsCustomWrap'),
+  lfShare:          $('lfShare'),
+  lfShareWrap:      $('lfShareWrap'),
+  lfShareName:      $('lfShareName'),
   btnLfFavToggle:   $('btnLfFavToggle'),
   lfFavoritesCard:  $('lfFavoritesCard'),
   lfFavoritesRow:   $('lfFavoritesRow'),
@@ -8746,6 +8749,18 @@ function defaultMealSlot() {
   return 'snack';
 }
 
+// Two-person household — same fixed Lewis<->Gemma pairing already
+// hardcoded server-side for the Gemma-specific scheduled notifications
+// (see GEMMA_USER_ID in netlify/functions/_lib/webpush.js) and now also
+// in share-food-log.js, which does the actual cross-account insert
+// (food_log's RLS is strictly own-write, so this app can't do it
+// directly). This client-side copy only decides whether to show the
+// "Also log this for X" checkbox and what name to put in it.
+const HOUSEHOLD_PARTNER = {
+  'cae63d3e-df60-4415-8a43-64748b6591c3': { id: '2c8bf000-b870-4ea1-8a67-ec00ee7d4041', name: 'Gemma' },
+  '2c8bf000-b870-4ea1-8a67-ec00ee7d4041': { id: 'cae63d3e-df60-4415-8a43-64748b6591c3', name: 'Lewis' },
+};
+
 let lfSelectedMode = null;
 let lfBarcodeStream = null;
 let lfBarcodeDetector = null;
@@ -8806,6 +8821,10 @@ function resetLfForm() {
   if (el.lfHypoTreatmentWrap) el.lfHypoTreatmentWrap.hidden = profile?.diabetes_enabled === false;
   if (el.lfSaveAsCustom) el.lfSaveAsCustom.checked = true;
   if (el.lfSaveAsCustomWrap) el.lfSaveAsCustomWrap.hidden = false; // may have been hidden by a scan/search selection — a fresh entry should always offer it
+  if (el.lfShare) el.lfShare.checked = false;
+  const householdPartner = HOUSEHOLD_PARTNER[currentUser?.id];
+  if (el.lfShareWrap) el.lfShareWrap.hidden = !householdPartner;
+  if (householdPartner && el.lfShareName) el.lfShareName.textContent = householdPartner.name;
   lfFavToggleActive = false;
   if (el.btnLfFavToggle) { el.btnLfFavToggle.classList.remove('is-active'); el.btnLfFavToggle.setAttribute('aria-pressed', 'false'); }
   if (el.lfPhotoPreview) { el.lfPhotoPreview.hidden = true; el.lfPhotoPreview.src = ''; }
@@ -9078,6 +9097,7 @@ el.btnLfSave?.addEventListener('click', async () => {
   const brand = el.lfBrand?.value.trim() || null;
   const servingDesc = el.lfServingDesc?.value.trim() || null;
   const hypoTreatment = !!el.lfHypoTreatment?.checked;
+  const wantsShare = !!el.lfShare?.checked && !!HOUSEHOLD_PARTNER[currentUser.id];
 
   setBtn(el.btnLfSave, true, 'Log it', 'Saving…');
   try {
@@ -9146,10 +9166,47 @@ el.btnLfSave?.addEventListener('click', async () => {
       if (favErr) showToast("Couldn't save as favourite: " + favErr.message, true);
     }
 
+    // Also log this exact entry into a linked household partner's own
+    // food_log, when the "Also log this for X" toggle is on — the actual
+    // cross-account insert happens server-side (RLS on food_log is
+    // strictly own-write), passing the same already-quantity-multiplied
+    // totals just saved above rather than the per-serving base values.
+    let shareError = null;
+    if (wantsShare) {
+      try {
+        const session = (await db.auth.getSession()).data.session;
+        const shareRes = await fetch('/.netlify/functions/share-food-log', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token}` },
+          body: JSON.stringify({
+            log_date: logDate, meal_slot: mealSlot, food_name: name, brand, serving_desc: servingDesc,
+            quantity,
+            calories_kcal: Math.round(baseCals * quantity),
+            protein_g: Math.round(baseProtein * quantity * 10) / 10,
+            carbs_g: Math.round(baseCarbs * quantity * 10) / 10,
+            fat_g: Math.round(baseFat * quantity * 10) / 10,
+            barcode: lfPendingBarcode,
+          }),
+        });
+        if (!shareRes.ok) {
+          const errData = await shareRes.json().catch(() => ({}));
+          shareError = errData.error || `HTTP ${shareRes.status}`;
+        }
+      } catch (err) {
+        shareError = err.message;
+      }
+    }
+
     resetLfForm();
     selectLfMode(null);
     await Promise.all([renderLfTodayTotals(), renderLfTodayList(), renderLfFavorites()]);
-    showToast(`Logged ${name}.`);
+    if (shareError) {
+      showToast(`Logged ${name}, but couldn't share: ${shareError}`, true);
+    } else if (wantsShare) {
+      showToast(`Logged ${name} — shared with ${HOUSEHOLD_PARTNER[currentUser.id].name}.`);
+    } else {
+      showToast(`Logged ${name}.`);
+    }
   } finally {
     setBtn(el.btnLfSave, false, 'Log it');
   }
@@ -9181,7 +9238,7 @@ async function renderLfTodayTotals() {
   if (el.mtFat) el.mtFat.textContent = `${Math.round(totals.fat)}g`;
 }
 
-const LF_SOURCE_ICON = { scan: '📷', search: '🔍', photo: '📸', manual: '✏️' };
+const LF_SOURCE_ICON = { scan: '📷', search: '🔍', photo: '📸', manual: '✏️', shared: '🍽️' };
 async function renderLfTodayList() {
   if (!el.lfTodayList) return;
   const rows = await fetchTodayFoodLog();
