@@ -1815,6 +1815,14 @@
             </div>
           </div>
           <p class="field-hint" id="lfEstimateNote"></p>
+          <!-- Only shown when diabetes tracking is on — mirrors the same
+               flag already used on diabetes_meals, so a hypo treatment
+               logged here skips dose suggestions the same way one
+               logged/marked from the Diabetes tab does. -->
+          <label class="checkbox-option checkbox-option--full" id="lfHypoTreatmentWrap" hidden>
+            <input type="checkbox" id="lfHypoTreatment">
+            <span>🩸 This is a hypo treatment</span>
+          </label>
           <label class="checkbox-option checkbox-option--full" id="lfSaveAsCustomWrap">
             <input type="checkbox" id="lfSaveAsCustom" checked>
             <span>Save to shared food list for next time</span>

@@ -218,6 +218,8 @@ const el = {
   lfCarbs:          $('lfCarbs'),
   lfFat:            $('lfFat'),
   lfEstimateNote:   $('lfEstimateNote'),
+  lfHypoTreatment:     $('lfHypoTreatment'),
+  lfHypoTreatmentWrap: $('lfHypoTreatmentWrap'),
   lfSaveAsCustom:   $('lfSaveAsCustom'),
   lfSaveAsCustomWrap: $('lfSaveAsCustomWrap'),
   btnLfSave:        $('btnLfSave'),
@@ -8914,6 +8916,8 @@ function resetLfForm() {
   if (el.lfFat) el.lfFat.value = '';
   if (el.lfEstimateNote) el.lfEstimateNote.textContent = '';
   if (el.lfSaveStatus) el.lfSaveStatus.textContent = '';
+  if (el.lfHypoTreatment) el.lfHypoTreatment.checked = false;
+  if (el.lfHypoTreatmentWrap) el.lfHypoTreatmentWrap.hidden = profile?.diabetes_enabled === false;
   if (el.lfSaveAsCustom) el.lfSaveAsCustom.checked = true;
   if (el.lfSaveAsCustomWrap) el.lfSaveAsCustomWrap.hidden = false; // may have been hidden by a scan/search selection — a fresh entry should always offer it
   if (el.lfPhotoPreview) { el.lfPhotoPreview.hidden = true; el.lfPhotoPreview.src = ''; }
@@ -9180,6 +9184,7 @@ el.btnLfSave?.addEventListener('click', async () => {
   const mealSlot = el.lfMealSlot?.value || defaultMealSlot();
   const brand = el.lfBrand?.value.trim() || null;
   const servingDesc = el.lfServingDesc?.value.trim() || null;
+  const hypoTreatment = !!el.lfHypoTreatment?.checked;
 
   setBtn(el.btnLfSave, true, 'Log it', 'Saving…');
   try {
@@ -9210,6 +9215,7 @@ el.btnLfSave?.addEventListener('click', async () => {
       barcode: lfPendingBarcode,
       estimate_note: el.lfEstimateNote?.textContent || null,
       custom_food_id: customFoodId,
+      hypo_treatment: hypoTreatment,
     });
     if (error) {
       if (el.lfSaveStatus) el.lfSaveStatus.textContent = "Couldn't save: " + error.message;
@@ -9229,6 +9235,8 @@ el.btnLfSave?.addEventListener('click', async () => {
         fat_g: Math.round(baseFat * quantity * 10) / 10,
         protein_g: Math.round(baseProtein * quantity * 10) / 10,
         source: 'manual',
+        hypo_treatment: hypoTreatment,
+        match_status: hypoTreatment ? 'hypo-manual' : null,
       });
     }
 
@@ -9245,7 +9253,7 @@ el.btnLfSave?.addEventListener('click', async () => {
 async function fetchTodayFoodLog() {
   if (!currentUser) return [];
   const { data, error } = await db.from('food_log')
-    .select('id, meal_slot, food_name, brand, quantity, serving_desc, calories_kcal, protein_g, carbs_g, fat_g, source, logged_at')
+    .select('id, meal_slot, food_name, brand, quantity, serving_desc, calories_kcal, protein_g, carbs_g, fat_g, source, logged_at, hypo_treatment')
     .eq('user_id', currentUser.id)
     .eq('log_date', todayISO())
     .order('logged_at', { ascending: true });
@@ -9275,7 +9283,7 @@ async function renderLfTodayList() {
   el.lfTodayList.innerHTML = rows.map(r => `
     <div class="dx-workout-history__row">
       <div class="dx-workout-history__when">
-        <span>${LF_SOURCE_ICON[r.source] || ''} ${escapeHtml(r.food_name)}${r.brand ? ` <span class="lf-search-result__brand">${escapeHtml(r.brand)}</span>` : ''} · ${r.meal_slot}</span>
+        <span>${LF_SOURCE_ICON[r.source] || ''} ${escapeHtml(r.food_name)}${r.brand ? ` <span class="lf-search-result__brand">${escapeHtml(r.brand)}</span>` : ''} · ${r.meal_slot}${r.hypo_treatment ? ' <span class="badge badge--blue" style="font-size:9px">hypo</span>' : ''}</span>
         <span class="dx-workout-history__dur">${Math.round(r.calories_kcal)} kcal</span>
       </div>
       <button class="btn btn--ghost btn--small" data-action="food-delete" data-id="${r.id}">Delete</button>
