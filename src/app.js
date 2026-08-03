@@ -381,9 +381,8 @@ const el = {
   dxPatternsBody:    $('dxPatternsBody'),
   dxHealthBody:      $('dxHealthBody'),
   dxForecastAccuracyBody: $('dxForecastAccuracyBody'),
-  dxMealMemoryBody:  $('dxMealMemoryBody'),
-  dxMfpImportsCard:  $('dxMfpImportsCard'),
-  dxMfpImportsBody:  $('dxMfpImportsBody'),
+  dxTodaysMealsCard: $('dxTodaysMealsCard'),
+  dxTodaysMealsBody: $('dxTodaysMealsBody'),
   dxSensitivityBody: $('dxSensitivityBody'),
   dxRegimenBody:     $('dxRegimenBody'),
   dxWorkoutImpactCard: $('dxWorkoutImpactCard'),
@@ -5462,23 +5461,25 @@ async function fetchMacroMealLog() {
   }));
 }
 
-// Recent MyFitnessPal-sourced entries (mfp-import.js writes these) for the
-// review card — separate from fetchMacroMealLog above because this needs
-// the match/hypo bookkeeping columns, not the engine-shaped {time, carbs,
-// fat, protein} rows suggestMacroMealDose reads.
-async function fetchMfpImports() {
+// Today's diabetes_meals entries (any source — Log Food's bridge insert,
+// the Diabetes tab's own manual calculator, or a legacy MFP import) for
+// the "link a dose" review card — separate from fetchMacroMealLog above
+// because this needs the match/hypo bookkeeping columns, not the
+// engine-shaped {time, carbs, fat, protein} rows suggestMacroMealDose
+// reads.
+async function fetchTodaysDxMeals() {
   if (!currentUser) return [];
-  const sinceIso = new Date(Date.now() - 3 * 24 * 60 * 60000).toISOString();
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
   const { data, error } = await db
     .from('diabetes_meals')
     .select('id, eaten_at, meal_name, carbs_g, fat_g, protein_g, match_status, hypo_treatment, matched_bolus_time, matched_bolus_units, suggested_units, upfront_units, delayed_units')
     .eq('user_id', currentUser.id)
-    .eq('source', 'mfp')
-    .gte('eaten_at', sinceIso)
+    .gte('eaten_at', startOfDay.toISOString())
     .order('eaten_at', { ascending: false })
     .limit(50);
   if (error) {
-    console.error('fetchMfpImports error:', error.message);
+    console.error('fetchTodaysDxMeals error:', error.message);
     return [];
   }
   return data || [];
@@ -5950,7 +5951,7 @@ async function loadDiabetes() {
   } catch (err) {
     console.error('Diabetes sync error:', err);
     el.dxCorrectionBody.innerHTML = `<p class="empty-state" style="color:var(--red)">Couldn't reach Nightscout: ${escapeHtml(err.message)}</p>`;
-    [el.dxForecastBody, el.dxPatternsBody, el.dxHealthBody, el.dxMealMemoryBody, el.dxSensitivityBody].forEach(n => { if (n) n.innerHTML = ''; });
+    [el.dxForecastBody, el.dxPatternsBody, el.dxHealthBody, el.dxSensitivityBody].forEach(n => { if (n) n.innerHTML = ''; });
   }
 }
 
@@ -6267,11 +6268,8 @@ async function renderDiabetesTab(data) {
   const accuracy = DiabetesEngine.forecastAccuracy(input, now);
   renderDxForecastAccuracy(accuracy);
 
-  const meals = DiabetesEngine.mealMemory(input, now);
-  renderDxMealMemory(meals);
-
-  const mfpImports = await fetchMfpImports();
-  renderDxMfpImports(mfpImports, data.boluses || []);
+  const todaysMeals = await fetchTodaysDxMeals();
+  renderDxTodaysMeals(todaysMeals, data.boluses || []);
 
   const prescribed = DiabetesEngine.prescribedRegimenTable(profile?.diabetes_pump_profile);
   const hasThuProfile = !!profile?.diabetes_pump_profile?.thu;
@@ -7126,20 +7124,14 @@ el.btnDxWorkoutImpact?.addEventListener('click', async () => {
   }
 });
 
-function renderDxMfpImports(items, boluses) {
-  if (!el.dxMfpImportsCard) return;
+function renderDxTodaysMeals(items, boluses) {
+  if (!el.dxTodaysMealsCard) return;
   if (!items.length) {
-    // Only show an empty state if MFP import is actually set up — otherwise
-    // keep the card hidden entirely rather than advertising an unused feature.
-    el.dxMfpImportsCard.hidden = !profile?.diabetes_mfp_import_token;
-    if (!el.dxMfpImportsCard.hidden) {
-      el.dxMfpImportsBody.innerHTML = '<p class="empty-state">Nothing imported yet — while viewing your MFP diary, tap the bookmarklet from Settings.</p>';
-    }
+    el.dxTodaysMealsBody.innerHTML = '<p class="empty-state">Nothing logged today yet — log food from the Dashboard and it\'ll show up here to link a dose.</p>';
     return;
   }
-  el.dxMfpImportsCard.hidden = false;
 
-  el.dxMfpImportsBody.innerHTML = items.map(it => {
+  el.dxTodaysMealsBody.innerHTML = items.map(it => {
     const eatenMs = new Date(it.eaten_at).getTime();
     const isMatched = it.match_status === 'auto' || it.match_status === 'manual';
     const isSuggested = it.match_status === 'suggested';
@@ -7217,7 +7209,7 @@ function renderDxMfpImports(items, boluses) {
   }).join('');
 }
 
-el.dxMfpImportsBody?.addEventListener('click', async (e) => {
+el.dxTodaysMealsBody?.addEventListener('click', async (e) => {
   const btn = e.target.closest('[data-action]');
   if (!btn || !currentUser) return;
   const id = btn.dataset.id;
@@ -7225,7 +7217,7 @@ el.dxMfpImportsBody?.addEventListener('click', async (e) => {
 
   let updates = null;
   if (action === 'link') {
-    const select = el.dxMfpImportsBody.querySelector(`select[data-id="${id}"]`);
+    const select = el.dxTodaysMealsBody.querySelector(`select[data-id="${id}"]`);
     const val = select?.value;
     if (!val) { showToast('Pick a dose first', true); return; }
     const [time, units] = val.split('|');
@@ -7247,52 +7239,17 @@ el.dxMfpImportsBody?.addEventListener('click', async (e) => {
   const { error } = await db.from('diabetes_meals').update(updates).eq('id', id).eq('user_id', currentUser.id);
   if (error) { showToast('Failed: ' + error.message, true); return; }
 
-  const [mfpImports, data] = await Promise.all([fetchMfpImports(), fetchDiabetesData()]);
-  renderDxMfpImports(mfpImports, data?.boluses || []);
+  const [todaysMeals, data] = await Promise.all([fetchTodaysDxMeals(), fetchDiabetesData()]);
+  renderDxTodaysMeals(todaysMeals, data?.boluses || []);
 });
 
-function renderDxMealMemory(meals) {
-  dxMealMemoryData = meals;
-  if (!meals.length) {
-    el.dxMealMemoryBody.innerHTML = '<p class="empty-state">Log meals with a name and carb count to build this up.</p>';
-    return;
-  }
-  const outcomeLabel = { good: 'stayed in range', high: 'ran high', low: 'ran low' };
-  const badge = (m, key, cls, label) => {
-    const n = m.doseRatingCounts[key];
-    if (!n) return '';
-    return `<button type="button" class="badge ${cls}" style="border:none;cursor:pointer" data-dx-dose-meal="${escapeHtml(m.mealName)}" data-dx-dose-outcome="${key}">${n} ${label}</button>`;
-  };
-  el.dxMealMemoryBody.innerHTML = meals.map(m => {
-    const statLines = [];
-    if (m.n != null) {
-      statLines.push(`${m.n} logged · avg rise ${fmtSigned(m.avgRise, 1)} mmol/L over ${Math.round(m.avgTimeToPeakMin)}m to peak`);
-      if (m.lowRiskPct > 0) statLines.push(`<span style="color:var(--orange)">${Math.round(m.lowRiskPct)}% went low after</span>`);
-    }
-    let doseHtml = '';
-    if (m.doseN != null) {
-      doseHtml = `
-        <div style="margin-top:${statLines.length ? 8 : 4}px">
-          <span class="field-hint">Dosed ${m.doseN} time${m.doseN === 1 ? '' : 's'}, avg ${fmt1(m.avgDoseUsed)}u — tap a badge for details</span>
-          <div style="display:flex;gap:6px;margin-top:4px;flex-wrap:wrap">
-            ${badge(m, 'good', 'badge--green', 'good')}
-            ${badge(m, 'high', 'badge--orange', 'ran high')}
-            ${badge(m, 'low', 'badge--blue', 'ran low')}
-          </div>
-          <div class="field-hint" style="margin-top:4px">Last dose: ${fmt1(m.lastDose.units)}u — ${outcomeLabel[m.lastDose.outcome]}</div>
-        </div>`;
-    }
-    return `
-      <div class="dx-mfp-item">
-        <div class="dx-mfp-item__head">
-          <strong>${escapeHtml(m.mealName)}</strong>
-          ${m.isDelayedRise ? '<span class="badge badge--purple" style="font-size:9px">delayed rise</span>' : ''}
-        </div>
-        ${statLines.length ? `<div class="field-hint" style="margin-top:4px">${statLines.join('<br>')}</div>` : ''}
-        ${doseHtml}
-      </div>`;
-  }).join('');
-}
+// Meal memory (the "stayed in range"/"ran high"/"ran low" dose-rated
+// grouped-by-meal-name card) was removed in favor of the Today's meals
+// card above — with native food logging + same-day bolus linking, a
+// running review list matters more here than a long-run per-meal-name
+// history. DiabetesEngine.mealMemory() itself is left intact in
+// diabetes-engine.js in case something else wants it later; it's just
+// no longer called or rendered from here.
 
 function renderDxSensitivity(cells, prescribed) {
   const withData = cells.filter(c => c.n > 0);
@@ -7527,82 +7484,6 @@ document.addEventListener('click', e => {
     if (sheet && !sheet.hidden && e.target.closest('.bottom-sheet')) {
       const dy = e.changedTouches[0].clientY - startY;
       if (dy > 80) closeMetricSheet(); // swiped down 80px+
-    }
-  }, { passive: true });
-})();
-
-// ── Meal dose incident sheet — click a good/high/low badge in Meal
-// memory to see the individual instances behind that count: BG before
-// the meal, the dose used, and where glucose ended up afterward. Mirrors
-// the #metricSheet bottom-sheet pattern above (same markup shape, swipe
-// to dismiss), but its content is simple enough not to need that
-// component's chart/stats-row machinery — just a filtered list.
-let dxMealMemoryData = [];
-
-const DX_OUTCOME_LABEL = { good: 'Stayed in range', high: 'Ran high', low: 'Ran low' };
-
-function closeDxDoseSheet() {
-  const sheet = $('dxDoseSheet');
-  if (sheet) sheet.hidden = true;
-}
-
-function openDxDoseSheet(mealName, outcome) {
-  const sheet = $('dxDoseSheet');
-  if (!sheet) return;
-  const meal = dxMealMemoryData.find(m => m.mealName === mealName);
-  const instances = (meal?.doseInstances || []).filter(i => i.outcome === outcome);
-  if (!instances.length) return;
-
-  $('dxDoseSheetTitle').textContent = mealName;
-  $('dxDoseSheetSub').textContent = `${DX_OUTCOME_LABEL[outcome]} — ${instances.length} instance${instances.length === 1 ? '' : 's'}`;
-
-  $('dxDoseSheetList').innerHTML = instances.map(i => {
-    const afterText = outcome === 'high' ? `peaked at ${fmt1(i.maxGlucose)}`
-      : outcome === 'low' ? `dropped to ${fmt1(i.minGlucose)}`
-      : `stayed ${fmt1(i.minGlucose)}–${fmt1(i.maxGlucose)}`;
-    const when = new Date(i.time).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-    return `
-      <div class="dx-mfp-item">
-        <div class="dx-mfp-item__head">
-          <strong>${escapeHtml(when)}</strong>
-          <span class="field-hint">${fmt1(i.dose)}u${i.carbs != null ? ` · ${fmt1(i.carbs)}g carbs` : ''}</span>
-        </div>
-        <div class="field-hint" style="margin-top:4px">
-          Before: ${i.preGlucose != null ? fmt1(i.preGlucose) + ' mmol/L' : '—'} → ${afterText} mmol/L
-        </div>
-      </div>`;
-  }).join('');
-
-  sheet.hidden = false;
-}
-
-document.addEventListener('click', e => {
-  const badge = e.target.closest('[data-dx-dose-outcome]');
-  if (badge) {
-    openDxDoseSheet(badge.dataset.dxDoseMeal, badge.dataset.dxDoseOutcome);
-    return;
-  }
-  if (e.target.closest('#dxDoseSheetClose')) {
-    closeDxDoseSheet();
-    return;
-  }
-  const backdrop = $('dxDoseSheet');
-  if (backdrop && !backdrop.hidden && e.target.closest('#dxDoseSheet') && !e.target.closest('.bottom-sheet')) {
-    closeDxDoseSheet();
-  }
-});
-
-(function() {
-  let startY = 0;
-  document.addEventListener('touchstart', e => {
-    const sheet = $('dxDoseSheet');
-    if (sheet && !sheet.hidden && e.target.closest('.bottom-sheet')) startY = e.touches[0].clientY;
-  }, { passive: true });
-  document.addEventListener('touchend', e => {
-    const sheet = $('dxDoseSheet');
-    if (sheet && !sheet.hidden && e.target.closest('.bottom-sheet')) {
-      const dy = e.changedTouches[0].clientY - startY;
-      if (dy > 80) closeDxDoseSheet();
     }
   }, { passive: true });
 })();
