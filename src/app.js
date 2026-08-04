@@ -1181,10 +1181,7 @@ async function _loadDashboardInner() {
       .order('log_date', { ascending: true }),
 
     db.from('workout_sessions')
-      .select(`id, session_date, split_type,
-               workout_exercises (id, name, sort_order,
-                 workout_sets (set_number, reps, weight, unit)
-               )`)
+      .select('id, session_date, split_type, started_at')
       .eq('user_id', currentUser.id)
       .order('session_date', { ascending: false })
       .limit(1)
@@ -1591,20 +1588,6 @@ function renderLastWorkout(session, appleWorkout) {
     el.dLastWorkout.innerHTML = '<p class="empty-state">No workouts logged yet.</p>';
     return;
   }
-  const exHtml = (session.workout_exercises || [])
-    .sort((a, b) => a.sort_order - b.sort_order)
-    .slice(0, 3)
-    .map(ex => {
-      const chips = (ex.workout_sets || [])
-        .sort((a, b) => a.set_number - b.set_number)
-        .map(s => `<span class="set-chip">${s.reps ?? '—'} × ${s.weight ?? '—'} ${s.unit}</span>`)
-        .join('');
-      return `<div class="exercise-row">
-        <div class="exercise-name">${ex.name}</div>
-        <div class="set-chips">${chips}</div>
-      </div>`;
-    }).join('');
-
   const tag = splitTag(session.split_type);
 
   const statParts = [];
@@ -1620,8 +1603,6 @@ function renderLastWorkout(session, appleWorkout) {
   el.dLastWorkout.innerHTML = `
     <div style="margin-bottom:10px">${tag} <span style="font-size:12px;color:var(--ink-soft);font-family:var(--mono);margin-left:8px">${fmtDate(session.session_date)}</span></div>
     ${statsHtml}
-    ${exHtml}
-    ${(session.workout_exercises || []).length > 3 ? `<p style="font-size:12px;color:var(--ink-faint);font-family:var(--mono);margin-top:6px">+ ${(session.workout_exercises || []).length - 3} more exercises</p>` : ''}
   `;
 }
 
