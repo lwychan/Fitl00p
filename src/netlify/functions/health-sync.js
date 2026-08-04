@@ -389,6 +389,7 @@ exports.handler = async function (event) {
   // Never auto-logged: a match becomes a pending row the user confirms
   // or dismisses from an in-app popup, surfaced via a push notification.
   let detectedCount = 0;
+  let backfilledCount = 0;
   if (activitySamples.steps.length) {
     try {
       const restingHrFallback = Object.values(byDate).map(d => d.resting_hr).find(v => v != null)
@@ -402,8 +403,8 @@ exports.handler = async function (event) {
         const maxMs = Math.max(...windows.map(w => w.endMs));
         const padMs = 3 * 3600000; // wide enough that a workout logged just before/after a window still counts as "already covered"
         const [existingWorkoutsRes, existingDetectedRes] = await Promise.all([
-          sbFetch(`/rest/v1/apple_health_workouts?user_id=eq.${user_id}&started_at=lte.${new Date(maxMs + padMs).toISOString()}&ended_at=gte.${new Date(minMs - padMs).toISOString()}&select=started_at,ended_at`),
-          sbFetch(`/rest/v1/detected_activities?user_id=eq.${user_id}&started_at=gte.${new Date(minMs - padMs).toISOString()}&started_at=lte.${new Date(maxMs + padMs).toISOString()}&select=started_at`),
+          sbFetch(`/rest/v1/apple_health_workouts?user_id=eq.${user_id}&started_at=lte.${new Date(maxMs + padMs).toISOString()}&ended_at=gte.${new Date(minMs - padMs).toISOString()}&select=id,started_at,ended_at,avg_heart_rate`),
+          sbFetch(`/rest/v1/detected_activities?user_id=eq.${user_id}&started_at=gte.${new Date(minMs - padMs).toISOString()}&started_at=lte.${new Date(maxMs + padMs).toISOString()}&select=id,started_at,avg_heart_rate`),
         ]);
         const existingWorkouts = existingWorkoutsRes.ok ? (existingWorkoutsRes.data || []) : [];
         const existingDetected = existingDetectedRes.ok ? (existingDetectedRes.data || []) : [];
@@ -413,18 +414,45 @@ exports.handler = async function (event) {
         // without this the same walk would re-flag (and re-notify) on
         // every subsequent sync until the user confirms/dismisses it.
         const DEDUP_TOLERANCE_MS = 30 * 60000;
-        const overlapsRealWorkout = w => existingWorkouts.some(rw => {
+        const findOverlappingWorkout = w => existingWorkouts.find(rw => {
           const rs = new Date(rw.started_at).getTime(), re = new Date(rw.ended_at).getTime();
           return w.startMs < re && w.endMs > rs;
         });
-        const isDuplicateDetection = w => existingDetected.some(ed =>
+        const findDuplicateDetected = w => existingDetected.find(ed =>
           Math.abs(new Date(ed.started_at).getTime() - w.startMs) < DEDUP_TOLERANCE_MS
         );
 
         const newlyDetected = [];
         for (const w of windows) {
+          // A window with real HR samples this time can retroactively fill
+          // in a row that was created (or already confirmed as a workout)
+          // steps-only, back when the Watch's HR data hadn't synced yet —
+          // rather than treating every overlap as a pure duplicate to skip.
+          const matchedWorkout = findOverlappingWorkout(w);
+          if (matchedWorkout) {
+            if (w.avgHeartRate != null && matchedWorkout.avg_heart_rate == null) {
+              const patchRes = await sbFetch(`/rest/v1/apple_health_workouts?id=eq.${matchedWorkout.id}`, 'PATCH', {
+                avg_heart_rate: w.avgHeartRate,
+                max_heart_rate: w.maxHeartRate,
+              }, { 'Prefer': 'return=minimal' });
+              if (patchRes.ok) backfilledCount++;
+            }
+            continue; // a real workout already covers this window either way
+          }
+
+          const matchedDetected = findDuplicateDetected(w);
+          if (matchedDetected) {
+            if (w.avgHeartRate != null && matchedDetected.avg_heart_rate == null) {
+              const patchRes = await sbFetch(`/rest/v1/detected_activities?id=eq.${matchedDetected.id}`, 'PATCH', {
+                avg_heart_rate: w.avgHeartRate,
+                max_heart_rate: w.maxHeartRate,
+              }, { 'Prefer': 'return=minimal' });
+              if (patchRes.ok) backfilledCount++;
+            }
+            continue; // already flagged — never re-notify/re-insert regardless of enrichment
+          }
+
           if (newlyDetected.length >= 3) break; // safety cap — one sync call shouldn't ever flood the queue
-          if (overlapsRealWorkout(w) || isDuplicateDetection(w)) continue;
           const insertRes = await sbFetch('/rest/v1/detected_activities', 'POST', {
             user_id,
             started_at: new Date(w.startMs).toISOString(),
@@ -545,6 +573,7 @@ exports.handler = async function (event) {
       workoutsReceived: workouts.length,
       workoutsProcessed,
       detectedCount,
+      backfilledCount,
       errors:    errors.length,
       dates:     processed,
       unitsSeen, // shows what unit strings Health Auto Export sent
