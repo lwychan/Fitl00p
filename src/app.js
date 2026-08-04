@@ -6288,6 +6288,15 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
 
   const scrollEl = canvas.closest('.dx-chart-scroll');
   const markersEl = el.dxChartMarkers;
+  // Read now, before this draw's own rAF-scheduled scrollLeft write below
+  // takes effect — reflects wherever the user actually has it scrolled
+  // to. Repeating labels (Y-axis values, IOB, basal) anchor a single
+  // instance here rather than tiling every yLabelStep from x=0: tiling
+  // has no guarantee a full instance lands inside the current viewport,
+  // so a long label like "Basal u/hr (some scheduled)" could show up as
+  // two different half-cut fragments at each edge instead of one whole,
+  // readable line.
+  const visibleLeft = scrollEl ? scrollEl.scrollLeft : 0;
 
   const dpr = Math.min(window.devicePixelRatio || 1, 3);
   const visibleW = Math.max(MIN_VISIBLE_W, (scrollEl?.clientWidth || canvas.parentElement?.clientWidth || 320) - 16);
@@ -6404,9 +6413,11 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
   ctx.fillStyle = 'rgba(129, 140, 248, 0.14)';
   activityBands.forEach(b => ctx.fillRect(b.x0, padTop, b.x1 - b.x0, mainH));
 
-  // Y gridlines — labels repeat roughly once per screen-width of scroll so
-  // they stay visible wherever the chart is scrolled to (the default view
-  // sits near the right edge, far from a label drawn only at x=padL).
+  // Y gridlines span the full width so they're always visible; the value
+  // labels anchor to whatever's currently scrolled into view (see
+  // visibleLeft above) so they stay visible wherever the chart is
+  // scrolled to (the default view sits near the right edge, far from a
+  // label drawn only once at x=padL).
   const yTicks = [4, 8, 12, 16, 20].filter(v => v >= gLo && v <= gHi);
   ctx.strokeStyle = 'rgba(255,255,255,0.06)';
   yTicks.forEach(v => {
@@ -6416,10 +6427,8 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
   ctx.fillStyle = 'rgba(255,255,255,0.35)';
   ctx.font = '9px -apple-system, sans-serif';
   ctx.textAlign = 'left';
-  const yLabelStep = Math.max(120, visibleW);
-  for (let lx = padL; lx < W - padR; lx += yLabelStep) {
-    yTicks.forEach(v => ctx.fillText(String(v), lx + 3, yAt(v) + 3));
-  }
+  const yLabelX = Math.max(padL, visibleLeft + 4);
+  yTicks.forEach(v => ctx.fillText(String(v), yLabelX, yAt(v) + 3));
 
   // "Now" marker
   const xNow = xAt(now);
@@ -6528,14 +6537,26 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
 
   // Activity band labels — icon + name centered in the tinted band drawn
   // earlier, sitting near the bottom of the plot so they don't collide
-  // with the bolus/correction labels up top.
+  // with the bolus/correction labels up top. Two activities close enough
+  // in time (a warm-up walk right before a lifting session, say) can have
+  // labels that would otherwise land on top of each other and become
+  // illegible — alternates a second row for whichever label's measured
+  // width would overlap the previous one instead.
   ctx.font = '11px -apple-system, sans-serif';
   ctx.textAlign = 'center';
   ctx.fillStyle = 'rgba(199, 210, 254, 0.95)';
-  activityBands.forEach(band => {
+  const sortedBands = [...activityBands].sort((a, b) => a.x0 - b.x0);
+  let prevActivityLabelRight = -Infinity;
+  let activityStaggerRow = 0;
+  sortedBands.forEach(band => {
     const midX = (band.x0 + band.x1) / 2;
-    const y = padTop + mainH - 18;
-    ctx.fillText(`${band.icon} ${band.label}`, midX, y);
+    const label = `${band.icon} ${band.label}`;
+    const textWidth = ctx.measureText(label).width;
+    const labelLeft = midX - textWidth / 2;
+    activityStaggerRow = labelLeft < prevActivityLabelRight + 6 ? 1 - activityStaggerRow : 0;
+    const y = (padTop + mainH - 18) + activityStaggerRow * 12;
+    ctx.fillText(label, midX, y);
+    prevActivityLabelRight = midX + textWidth / 2;
     const body = band.endMs !== band.startMs
       ? `${dxFormatMarkerTime(band.startMs)} – ${new Date(band.endMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} (${Math.round((band.endMs - band.startMs) / 60000)} min)`
       : dxFormatMarkerTime(band.startMs);
@@ -6555,7 +6576,7 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
   ctx.fillStyle = 'rgba(255,255,255,0.3)';
   ctx.font = '8px -apple-system, sans-serif';
   ctx.textAlign = 'left';
-  for (let lx = padL; lx < W - padR; lx += yLabelStep) ctx.fillText('IOB', lx, iobTop - 1);
+  ctx.fillText('IOB', Math.max(padL, visibleLeft + 4), iobTop - 1);
 
   // Basal strip (own 0..max scale) — drawn as step rectangles since
   // Control-IQ delivers as a continuously varying rate, not a flat line.
@@ -6590,7 +6611,7 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
   const basalLabel = basalSegments.length
     ? (basalScheduleFill.length ? 'Basal u/hr (some scheduled)' : 'Basal u/hr')
     : (basalScheduleFill.length ? 'Basal u/hr (scheduled, no overrides)' : 'Basal u/hr (no data)');
-  for (let lx = padL; lx < W - padR; lx += yLabelStep) ctx.fillText(basalLabel, lx, basalTop - 1);
+  ctx.fillText(basalLabel, Math.max(padL, visibleLeft + 4), basalTop - 1);
 
   // X-axis — real clock times every 2h, plus an explicit "now" tick.
   ctx.fillStyle = 'rgba(255,255,255,0.35)';
