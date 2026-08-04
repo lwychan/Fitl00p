@@ -1151,7 +1151,7 @@ async function _loadDashboardInner() {
   }
 
   // ── Fetch all data in parallel ────────────────────────────
-  const [logRes, healthRes, healthHistRes, logsRes, lastSessionRes, lastSyncRes, mfpCalRes, todayWorkoutsRes, foodLogRes] = await Promise.all([
+  const [logRes, healthRes, healthHistRes, logsRes, lastSessionRes, lastSyncRes, mfpCalRes, todayWorkoutsRes, foodLogRes, recentAppleWorkoutsRes] = await Promise.all([
     db.from('daily_logs')
       .select('*, cal_apple')
       .eq('user_id', currentUser.id)
@@ -1222,6 +1222,16 @@ async function _loadDashboardInner() {
       .select('log_date, calories_kcal')
       .eq('user_id', currentUser.id)
       .gte('log_date', todayISO()),
+
+    // Recent Watch-synced workouts (any day, not just today — unlike
+    // todayWorkoutsRes above) so the "Last workout" card can pair
+    // fitl00p's own logged strength session with the calories/heart-rate
+    // Apple Health actually recorded for it. See matchAppleWorkout below.
+    db.from('apple_health_workouts')
+      .select('workout_type, started_at, ended_at, avg_heart_rate, max_heart_rate, active_energy_kcal, total_energy_kcal')
+      .eq('user_id', currentUser.id)
+      .order('started_at', { ascending: false })
+      .limit(15),
   ]);
 
   const log           = { ...(logRes.data || {}) };
@@ -1279,6 +1289,11 @@ async function _loadDashboardInner() {
   const lastSession   = lastSessionRes.data;
   const lastSync      = lastSyncRes.data;
   const todayWorkouts = todayWorkoutsRes.data || [];
+  const recentAppleWorkouts = recentAppleWorkoutsRes.data || [];
+  const lastSessionAppleWorkout = matchAppleWorkout(lastSession, recentAppleWorkouts);
+  // Already sorted started_at desc from the query — first strength-type
+  // hit is the most recent one.
+  const latestStrengthAppleWorkout = recentAppleWorkouts.find(w => isStrengthWorkoutType(w.workout_type)) || null;
 
   // Broken-session detection: a stale/invalid local Supabase session can
   // return HTTP 200 with silently-empty results — Postgres RLS just
@@ -1369,8 +1384,26 @@ async function _loadDashboardInner() {
   renderHealthTiles(health, healthHistory);
   renderNetCalories(health, healthHistory, log, estimatedBmr);
 
-  // ── Last workout ──────────────────────────────────────────
-  renderLastWorkout(lastSession);
+  // ── Last workout ────────────────────────────────────────────
+  // "Last workout" should reflect whichever actually happened more
+  // recently — a fitl00p-logged session (enriched with its matched Watch
+  // stats, if any) or a Watch-tracked lifting session with no fitl00p
+  // routine logged against it at all. Only takes the Apple-only path when
+  // that workout isn't already the one matched above, and is genuinely
+  // more recent than the last logged session.
+  if (
+    latestStrengthAppleWorkout &&
+    lastSessionAppleWorkout?.started_at !== latestStrengthAppleWorkout.started_at &&
+    new Date(latestStrengthAppleWorkout.started_at).getTime() > (
+      lastSession
+        ? new Date(lastSession.started_at || `${lastSession.session_date}T12:00:00`).getTime()
+        : -Infinity
+    )
+  ) {
+    renderLastWorkoutFromApple(latestStrengthAppleWorkout);
+  } else {
+    renderLastWorkout(lastSession, lastSessionAppleWorkout);
+  }
 
   renderWeightReminder(log, unit);
 }
@@ -1479,7 +1512,81 @@ function renderPlanCard(logs, smartTarget) {
   el.dPlanStats.hidden = false;
 }
 
-function renderLastWorkout(session) {
+// Pairs fitl00p's own logged strength session with whichever Watch-synced
+// Apple Health workout actually happened alongside it, so "Last workout"
+// can show real calories/heart-rate data fitl00p's own routine tracker
+// has no way to measure itself. Matched purely on time proximity (not
+// workout_type — Apple Health's own label for a fitl00p-logged strength
+// session varies by watch/OS version, e.g. "Traditional Strength
+// Training" vs "Functional Strength Training", too unreliable to filter
+// on) against workout_sessions.started_at (recorded when the workout
+// screen was opened, not when it was saved) — falls back to noon on
+// session_date for an older session logged before started_at existed.
+// A 12h window is generous enough to absorb clock skew between the two
+// sources while still refusing to pair, say, today's push day with a run
+// from three days ago just because nothing closer exists.
+const APPLE_WORKOUT_MATCH_WINDOW_MS = 12 * 3600000;
+function matchAppleWorkout(session, appleWorkouts) {
+  if (!session) return null;
+  const anchorMs = session.started_at
+    ? new Date(session.started_at).getTime()
+    : new Date(`${session.session_date}T12:00:00`).getTime();
+  if (!Number.isFinite(anchorMs)) return null;
+
+  let best = null, bestDiff = Infinity;
+  for (const w of appleWorkouts || []) {
+    const wMs = new Date(w.started_at).getTime();
+    if (!Number.isFinite(wMs)) continue;
+    const diff = Math.abs(wMs - anchorMs);
+    if (diff < bestDiff) { bestDiff = diff; best = w; }
+  }
+  return best && bestDiff <= APPLE_WORKOUT_MATCH_WINDOW_MS ? best : null;
+}
+
+// Apple Health's own HKWorkoutActivityType label for a lifting session
+// varies by watch/OS version ("Traditional Strength Training",
+// "Functional Strength Training") and isn't the Push/Pull/Legs/Full Body
+// vocabulary fitl00p's own routine tracker uses — this is only ever used
+// as a display label for a workout with no matching fitl00p session
+// (see below), not for anything that feeds the matching logic itself.
+function appleWorkoutTypeLabel(type) {
+  const t = String(type || '').toLowerCase();
+  if (t.includes('strength')) return 'Strength Training';
+  if (t.includes('core')) return 'Core Training';
+  if (t.includes('cross training')) return 'Cross Training';
+  if (t.includes('hiit') || t.includes('high intensity')) return 'HIIT';
+  return type || 'Workout';
+}
+function isStrengthWorkoutType(type) {
+  return /strength|functional|cross training|core training|hiit|high intensity/i.test(String(type || ''));
+}
+
+// A Watch-tracked lifting session with no fitl00p routine logged against
+// it yet (e.g. it just happened, or the user only ever tracks lifts on
+// the Watch) — shown with whatever Apple Health itself calls it rather
+// than a Push/Pull/Legs split tag, since fitl00p has no exercise/set
+// detail for it to show either. Nudges toward logging it properly so a
+// later session gets the fuller card renderLastWorkout below produces.
+function renderLastWorkoutFromApple(workout) {
+  const label = appleWorkoutTypeLabel(workout.workout_type);
+  const kcal = workout.active_energy_kcal ?? workout.total_energy_kcal;
+  const durMin = Math.round((new Date(workout.ended_at) - new Date(workout.started_at)) / 60000);
+  const statParts = [];
+  if (kcal != null) statParts.push(`<span class="last-workout-stat">🔥 ${Math.round(kcal)} kcal</span>`);
+  if (workout.avg_heart_rate != null) statParts.push(`<span class="last-workout-stat">❤️ ${Math.round(workout.avg_heart_rate)} bpm avg</span>`);
+  if (Number.isFinite(durMin) && durMin > 0) statParts.push(`<span class="last-workout-stat">⏱ ${durMin} min</span>`);
+
+  el.dLastWorkout.innerHTML = `
+    <div style="margin-bottom:10px">
+      <span class="split-tag split-tag--Other">${escapeHtml(label)}</span>
+      <span style="font-size:12px;color:var(--ink-soft);font-family:var(--mono);margin-left:8px">${fmtDate(String(workout.started_at).slice(0, 10))}</span>
+    </div>
+    <div class="last-workout-stats">${statParts.join('')}</div>
+    <p class="field-hint" style="margin-top:2px">From Apple Watch — log it under Workout for exercise &amp; set detail too.</p>
+  `;
+}
+
+function renderLastWorkout(session, appleWorkout) {
   if (!session) {
     el.dLastWorkout.innerHTML = '<p class="empty-state">No workouts logged yet.</p>';
     return;
@@ -1499,8 +1606,20 @@ function renderLastWorkout(session) {
     }).join('');
 
   const tag = splitTag(session.split_type);
+
+  const statParts = [];
+  if (appleWorkout) {
+    const kcal = appleWorkout.active_energy_kcal ?? appleWorkout.total_energy_kcal;
+    if (kcal != null) statParts.push(`<span class="last-workout-stat">🔥 ${Math.round(kcal)} kcal</span>`);
+    if (appleWorkout.avg_heart_rate != null) statParts.push(`<span class="last-workout-stat">❤️ ${Math.round(appleWorkout.avg_heart_rate)} bpm avg</span>`);
+    const durMin = Math.round((new Date(appleWorkout.ended_at) - new Date(appleWorkout.started_at)) / 60000);
+    if (Number.isFinite(durMin) && durMin > 0) statParts.push(`<span class="last-workout-stat">⏱ ${durMin} min</span>`);
+  }
+  const statsHtml = statParts.length ? `<div class="last-workout-stats">${statParts.join('')}</div>` : '';
+
   el.dLastWorkout.innerHTML = `
     <div style="margin-bottom:10px">${tag} <span style="font-size:12px;color:var(--ink-soft);font-family:var(--mono);margin-left:8px">${fmtDate(session.session_date)}</span></div>
+    ${statsHtml}
     ${exHtml}
     ${(session.workout_exercises || []).length > 3 ? `<p style="font-size:12px;color:var(--ink-faint);font-family:var(--mono);margin-top:6px">+ ${(session.workout_exercises || []).length - 3} more exercises</p>` : ''}
   `;

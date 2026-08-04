@@ -871,6 +871,8 @@ canvas { width: 100%; display: block; }
 /* Last workout card */
 .last-workout-content .exercise-row { margin-bottom: 10px; }
 .last-workout-content .exercise-name { font-size: 14px; font-weight: 600; margin-bottom: 6px; color: var(--ink); }
+.last-workout-stats { display: flex; gap: 14px; margin-bottom: 10px; }
+.last-workout-stat { font-size: 12px; font-weight: 600; color: var(--ink-3); display: inline-flex; align-items: center; gap: 4px; }
 .empty-state { font-size: 14px; color: var(--ink-4); font-weight: 500; padding: 8px 0; }
 
 .goal-rings {
