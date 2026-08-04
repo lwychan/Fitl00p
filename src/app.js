@@ -9347,6 +9347,7 @@ let lfSelectedCustomFoodId = null; // set when the review form was populated fro
 let lfPendingBarcode = null; // carries a scanned (found-or-not) barcode into save, so a not-found product is still remembered for next time
 let lfFavToggleActive = false; // ⭐ toggle in the review form — save this entry to favorite_meals too, alongside logging it
 let lfFavoritesData = []; // last-rendered favorite_meals rows, so a chip click can look itself up by id without a refetch
+let lfBaseNutrition = null; // per-base-serving {qty, calories_kcal, protein_g, carbs_g, fat_g} from the selected food — lets editing Serving size live-rescale the macro fields
 
 async function loadLogFood() {
   if (el.lfMealSlot) el.lfMealSlot.value = defaultMealSlot();
@@ -9385,6 +9386,7 @@ function resetLfForm() {
   lfPhotoAfterMediaType = null;
   lfSelectedCustomFoodId = null;
   lfPendingBarcode = null;
+  lfBaseNutrition = null;
   if (el.lfFoodName) el.lfFoodName.value = '';
   if (el.lfBrand) el.lfBrand.value = '';
   if (el.lfLoggedAt) el.lfLoggedAt.value = toDatetimeLocalValue(new Date());
@@ -9577,7 +9579,35 @@ function populateLfFormFromFood(food, opts = {}) {
   if (el.lfEstimateNote) el.lfEstimateNote.textContent = '';
   if (el.lfSaveAsCustomWrap) el.lfSaveAsCustomWrap.hidden = !!opts.hideSaveAsCustom;
   lfPendingBarcode = opts.barcode || null;
+
+  const baseQty = Number(food.serving_qty);
+  lfBaseNutrition = Number.isFinite(baseQty) && baseQty > 0 ? {
+    qty: baseQty,
+    calories_kcal: Number(food.calories_kcal) || 0,
+    protein_g: Number(food.protein_g) || 0,
+    carbs_g: Number(food.carbs_g) || 0,
+    fat_g: Number(food.fat_g) || 0,
+  } : null;
 }
+
+// Editing Serving size after a scan/search selection (e.g. "100g" → "50g")
+// rescales Calories/Protein/Carbs/Fat proportionally, rather than leaving
+// them stuck at the originally-populated per-base-serving figures. Only
+// active when lfBaseNutrition is set (a numeric serving_qty was known) —
+// manual entries and favourites (no stored serving_qty) leave the fields
+// untouched, same as before.
+el.lfServingDesc?.addEventListener('input', () => {
+  if (!lfBaseNutrition) return;
+  const m = /^([\d.]+)/.exec(el.lfServingDesc.value.trim());
+  if (!m) return;
+  const amount = Number(m[1]);
+  if (!Number.isFinite(amount) || amount <= 0) return;
+  const factor = amount / lfBaseNutrition.qty;
+  if (el.lfCals) el.lfCals.value = Math.round(lfBaseNutrition.calories_kcal * factor);
+  if (el.lfProtein) el.lfProtein.value = Math.round(lfBaseNutrition.protein_g * factor * 10) / 10;
+  if (el.lfCarbs) el.lfCarbs.value = Math.round(lfBaseNutrition.carbs_g * factor * 10) / 10;
+  if (el.lfFat) el.lfFat.value = Math.round(lfBaseNutrition.fat_g * factor * 10) / 10;
+});
 
 /* ── Search mode ──────────────────────────────────────────────
    Two sources, queried in parallel: custom_foods (the household's own
