@@ -9579,35 +9579,68 @@ function populateLfFormFromFood(food, opts = {}) {
   lfPendingBarcode = opts.barcode || null;
 }
 
-/* ── Search mode ─────────────────────────────────────────── */
+/* ── Search mode ──────────────────────────────────────────────
+   Two sources, queried in parallel: custom_foods (the household's own
+   previously scanned/added items — instant, no network beyond Supabase)
+   and Open Food Facts' public product database via food-search.js (a
+   common product neither of them had ever scanned before, e.g. a
+   specific juice/smoothie, used to always come back "No matches" even
+   though OFF almost certainly has it). Shown as two labeled groups
+   rather than merged into one list, since "already in your list" vs
+   "new from Open Food Facts" changes what saving it will do. ────── */
 let lfSearchDebounce = null;
 el.lfSearchInput?.addEventListener('input', () => {
   clearTimeout(lfSearchDebounce);
   const q = el.lfSearchInput.value.trim();
   lfSearchDebounce = setTimeout(() => runLfSearch(q), 300);
 });
+
+function lfSearchResultButton(f, source, id) {
+  return `<button type="button" class="lf-search-result" data-source="${source}" data-id="${id}">
+    <span class="lf-search-result__name">${escapeHtml(f.name)}${f.brand ? ` <span class="lf-search-result__brand">${escapeHtml(f.brand)}</span>` : ''}</span>
+    <span class="lf-search-result__cals">${Math.round(f.calories_kcal)} kcal</span>
+  </button>`;
+}
+
 async function runLfSearch(query) {
   if (!el.lfSearchResults) return;
   if (query.length < 2) { el.lfSearchResults.innerHTML = ''; return; }
-  const { data, error } = await db.from('custom_foods')
-    .select('id, name, brand, serving_desc, serving_qty, serving_unit, calories_kcal, protein_g, carbs_g, fat_g')
-    .or(`name.ilike.%${query}%,brand.ilike.%${query}%`)
-    .order('name', { ascending: true })
-    .limit(20);
-  if (error || !data?.length) {
+
+  const [customRes, offRes] = await Promise.all([
+    db.from('custom_foods')
+      .select('id, name, brand, serving_desc, serving_qty, serving_unit, calories_kcal, protein_g, carbs_g, fat_g')
+      .or(`name.ilike.%${query}%,brand.ilike.%${query}%`)
+      .order('name', { ascending: true })
+      .limit(20),
+    fetch(`/.netlify/functions/food-search?q=${encodeURIComponent(query)}`)
+      .then(r => (r.ok ? r.json() : { results: [] }))
+      .catch(() => ({ results: [] })),
+  ]);
+
+  const customFoods = customRes.data || [];
+  const offFoods = offRes.results || [];
+
+  if (!customFoods.length && !offFoods.length) {
     el.lfSearchResults.innerHTML = '<p class="empty-state">No matches — try Photo or Manual instead.</p>';
     return;
   }
-  el.lfSearchResults.innerHTML = data.map(f => `
-    <button type="button" class="lf-search-result" data-id="${f.id}">
-      <span class="lf-search-result__name">${escapeHtml(f.name)}${f.brand ? ` <span class="lf-search-result__brand">${escapeHtml(f.brand)}</span>` : ''}</span>
-      <span class="lf-search-result__cals">${Math.round(f.calories_kcal)} kcal</span>
-    </button>`).join('');
+
+  el.lfSearchResults.innerHTML = [
+    customFoods.length ? `<p class="field-hint" style="margin:10px 0 4px">Your foods</p>${customFoods.map(f => lfSearchResultButton(f, 'custom', f.id)).join('')}` : '',
+    offFoods.length ? `<p class="field-hint" style="margin:10px 0 4px">Open Food Facts</p>${offFoods.map((f, i) => lfSearchResultButton(f, 'off', i)).join('')}` : '',
+  ].join('');
+
   el.lfSearchResults.querySelectorAll('.lf-search-result').forEach(btn => {
     btn.addEventListener('click', () => {
-      const food = data.find(f => f.id === btn.dataset.id);
-      if (!food) return;
-      populateLfFormFromFood(food, { custom_food_id: food.id, hideSaveAsCustom: true });
+      if (btn.dataset.source === 'custom') {
+        const food = customFoods.find(f => f.id === btn.dataset.id);
+        if (!food) return;
+        populateLfFormFromFood(food, { custom_food_id: food.id, hideSaveAsCustom: true });
+      } else {
+        const food = offFoods[Number(btn.dataset.id)];
+        if (!food) return;
+        populateLfFormFromFood(food, { barcode: food.barcode }); // not yet in custom_foods — offers "Save to shared list", same as a fresh scan
+      }
       showLfReviewForm();
     });
   });
