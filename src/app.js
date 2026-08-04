@@ -1509,6 +1509,25 @@ function renderPlanCard(logs, smartTarget) {
   el.dPlanStats.hidden = false;
 }
 
+// Shared kcal/avg-HR/duration summary row — used by the dashboard's Last
+// Workout card and every card in the Workout tab's combined activity
+// history, so all three stay visually and numerically consistent rather
+// than each hand-rolling the same three fields.
+function workoutStatParts(w) {
+  if (!w) return [];
+  const kcal = w.active_energy_kcal ?? w.total_energy_kcal;
+  const parts = [];
+  if (kcal != null) parts.push(`<span class="last-workout-stat">🔥 ${Math.round(kcal)} kcal</span>`);
+  if (w.avg_heart_rate != null) parts.push(`<span class="last-workout-stat">❤️ ${Math.round(w.avg_heart_rate)} bpm avg</span>`);
+  const durMin = Math.round((new Date(w.ended_at) - new Date(w.started_at)) / 60000);
+  if (Number.isFinite(durMin) && durMin > 0) parts.push(`<span class="last-workout-stat">⏱ ${durMin} min</span>`);
+  return parts;
+}
+function workoutStatsRowHtml(w) {
+  const parts = workoutStatParts(w);
+  return parts.length ? `<div class="last-workout-stats">${parts.join('')}</div>` : '';
+}
+
 // Pairs fitl00p's own logged strength session with whichever Watch-synced
 // Apple Health workout actually happened alongside it, so "Last workout"
 // can show real calories/heart-rate data fitl00p's own routine tracker
@@ -1566,19 +1585,13 @@ function isStrengthWorkoutType(type) {
 // later session gets the fuller card renderLastWorkout below produces.
 function renderLastWorkoutFromApple(workout) {
   const label = appleWorkoutTypeLabel(workout.workout_type);
-  const kcal = workout.active_energy_kcal ?? workout.total_energy_kcal;
-  const durMin = Math.round((new Date(workout.ended_at) - new Date(workout.started_at)) / 60000);
-  const statParts = [];
-  if (kcal != null) statParts.push(`<span class="last-workout-stat">🔥 ${Math.round(kcal)} kcal</span>`);
-  if (workout.avg_heart_rate != null) statParts.push(`<span class="last-workout-stat">❤️ ${Math.round(workout.avg_heart_rate)} bpm avg</span>`);
-  if (Number.isFinite(durMin) && durMin > 0) statParts.push(`<span class="last-workout-stat">⏱ ${durMin} min</span>`);
 
   el.dLastWorkout.innerHTML = `
     <div style="margin-bottom:10px">
       <span class="split-tag split-tag--Other">${escapeHtml(label)}</span>
       <span style="font-size:12px;color:var(--ink-soft);font-family:var(--mono);margin-left:8px">${fmtDate(String(workout.started_at).slice(0, 10))}</span>
     </div>
-    <div class="last-workout-stats">${statParts.join('')}</div>
+    ${workoutStatsRowHtml(workout)}
     <p class="field-hint" style="margin-top:2px">From Apple Watch — log it under Workout for exercise &amp; set detail too.</p>
   `;
 }
@@ -1589,16 +1602,7 @@ function renderLastWorkout(session, appleWorkout) {
     return;
   }
   const tag = splitTag(session.split_type);
-
-  const statParts = [];
-  if (appleWorkout) {
-    const kcal = appleWorkout.active_energy_kcal ?? appleWorkout.total_energy_kcal;
-    if (kcal != null) statParts.push(`<span class="last-workout-stat">🔥 ${Math.round(kcal)} kcal</span>`);
-    if (appleWorkout.avg_heart_rate != null) statParts.push(`<span class="last-workout-stat">❤️ ${Math.round(appleWorkout.avg_heart_rate)} bpm avg</span>`);
-    const durMin = Math.round((new Date(appleWorkout.ended_at) - new Date(appleWorkout.started_at)) / 60000);
-    if (Number.isFinite(durMin) && durMin > 0) statParts.push(`<span class="last-workout-stat">⏱ ${durMin} min</span>`);
-  }
-  const statsHtml = statParts.length ? `<div class="last-workout-stats">${statParts.join('')}</div>` : '';
+  const statsHtml = appleWorkout ? workoutStatsRowHtml(appleWorkout) : '';
 
   el.dLastWorkout.innerHTML = `
     <div style="margin-bottom:10px">${tag} <span style="font-size:12px;color:var(--ink-soft);font-family:var(--mono);margin-left:8px">${fmtDate(session.session_date)}</span></div>
@@ -3900,49 +3904,135 @@ elW.btnCloseHistory.addEventListener('click', () => {
 });
 elW.historyFilterSplit.addEventListener('change', loadWorkoutHistory);
 
+function renderStrengthHistoryCard(s, appleMatch) {
+  const exHtml = (s.workout_exercises || [])
+    .sort((a,b) => a.sort_order - b.sort_order)
+    .map(ex => {
+      const chips = (ex.workout_sets || [])
+        .sort((a,b) => a.set_number - b.set_number)
+        .map(st => `<span class="set-chip">${st.reps??'—'} × ${st.weight??'—'} ${st.unit}</span>`)
+        .join('');
+      return `<div class="wh-exercise">
+        <div class="wh-exercise__name">${ex.name}</div>
+        <div class="set-chips">${chips || '<span style="color:var(--ink-faint);font-size:11px">No sets logged</span>'}</div>
+      </div>`;
+    }).join('');
+
+  return `<div class="wh-card">
+    <div class="wh-card__head">
+      <span class="wh-card__date">${fmtDate(s.session_date)}</span>
+      ${splitTag(s.split_type)}
+    </div>
+    <div class="wh-card__body">
+      ${appleMatch ? workoutStatsRowHtml(appleMatch) : ''}
+      ${exHtml || '<p class="empty-state">No exercises</p>'}
+    </div>
+  </div>`;
+}
+
+// A non-strength (or Watch-only, never logged as a fitl00p routine)
+// activity — an Apple Health workout or a manual_activities row (e.g. a
+// walk Apple never recorded at all). Both use the same card shape as a
+// strength session so the combined history list reads as one continuous
+// timeline rather than two visually different systems bolted together.
+function renderActivityHistoryCard(item, isManual) {
+  const typeStr = isManual ? item.activity_type : item.workout_type;
+  const label = isManual ? (MANUAL_ACTIVITY_LABELS[typeStr] || typeStr) : appleWorkoutTypeLabel(typeStr);
+  const icon = dxActivityIcon(typeStr) || (isManual ? '📍' : '🏃');
+  const dateStr = fmtDate(String(item.started_at).slice(0, 10));
+  const timeStr = new Date(item.started_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const parts = workoutStatParts(item);
+  if (isManual && item.unplugged) parts.push('<span class="last-workout-stat">🔌 unplugged</span>');
+  const statsHtml = parts.length ? `<div class="last-workout-stats">${parts.join('')}</div>` : '<p class="empty-state">No stats recorded</p>';
+
+  return `<div class="wh-card">
+    <div class="wh-card__head">
+      <span class="wh-card__date">${dateStr} · ${timeStr}</span>
+      <span class="split-tag split-tag--Other">${escapeHtml(icon + ' ' + label)}</span>
+    </div>
+    <div class="wh-card__body">${statsHtml}</div>
+  </div>`;
+}
+
+// Combined chronological activity history: fitl00p-logged strength
+// sessions (paired with their Watch-synced stats when a match exists —
+// same matching the dashboard's Last Workout card uses), plus every
+// other Apple Health workout and manually-logged activity (walks, runs,
+// swims) that isn't already accounted for by one of those sessions.
+// Filtering by a specific split only makes sense for strength sessions —
+// showing every walk alongside a "Push only" filter would be confusing —
+// so non-strength activity is skipped entirely once a split is chosen.
 async function loadWorkoutHistory() {
   if (!currentUser) return;
   elW.workoutHistoryList.innerHTML = '<p class="empty-state">Loading…</p>';
-  let q = db.from('workout_sessions')
-    .select(`id, session_date, split_type,
+
+  let sessionsQ = db.from('workout_sessions')
+    .select(`id, session_date, split_type, started_at,
              workout_exercises (id, name, sort_order,
                workout_sets (set_number, reps, weight, unit))`)
     .eq('user_id', currentUser.id)
     .order('session_date', { ascending: false })
     .limit(40);
+  const splitFilterActive = !!elW.historyFilterSplit.value;
+  if (splitFilterActive) sessionsQ = sessionsQ.eq('split_type', elW.historyFilterSplit.value);
 
-  if (elW.historyFilterSplit.value) q = q.eq('split_type', elW.historyFilterSplit.value);
-  const { data, error } = await q;
+  const [sessionsRes, appleRes, manualRes] = await Promise.all([
+    sessionsQ,
+    splitFilterActive ? Promise.resolve({ data: [] }) : db.from('apple_health_workouts')
+      .select('id, workout_type, started_at, ended_at, active_energy_kcal, total_energy_kcal, avg_heart_rate, max_heart_rate')
+      .eq('user_id', currentUser.id)
+      .order('started_at', { ascending: false })
+      .limit(60),
+    splitFilterActive ? Promise.resolve({ data: [] }) : db.from('manual_activities')
+      .select('id, activity_type, started_at, ended_at, unplugged')
+      .eq('user_id', currentUser.id)
+      .order('started_at', { ascending: false })
+      .limit(60),
+  ]);
 
-  if (error || !data?.length) {
-    elW.workoutHistoryList.innerHTML = '<p class="empty-state">No workouts logged yet.</p>';
+  if (sessionsRes.error) console.error('loadWorkoutHistory (workout_sessions) error:', sessionsRes.error.message);
+  const sessions = sessionsRes.data || [];
+  const appleWorkouts = appleRes.data || [];
+  const manualActivities = manualRes.data || [];
+
+  if (!sessions.length && !appleWorkouts.length && !manualActivities.length) {
+    elW.workoutHistoryList.innerHTML = '<p class="empty-state">No activity logged yet.</p>';
+    renderStrengthProgress([]);
     return;
   }
 
-  elW.workoutHistoryList.innerHTML = data.map(s => {
-    const exHtml = (s.workout_exercises || [])
-      .sort((a,b) => a.sort_order - b.sort_order)
-      .map(ex => {
-        const chips = (ex.workout_sets || [])
-          .sort((a,b) => a.set_number - b.set_number)
-          .map(st => `<span class="set-chip">${st.reps??'—'} × ${st.weight??'—'} ${st.unit}</span>`)
-          .join('');
-        return `<div class="wh-exercise">
-          <div class="wh-exercise__name">${ex.name}</div>
-          <div class="set-chips">${chips || '<span style="color:var(--ink-faint);font-size:11px">No sets logged</span>'}</div>
-        </div>`;
-      }).join('');
+  const consumedAppleIds = new Set();
+  const items = sessions.map(s => {
+    const matched = matchAppleWorkout(s, appleWorkouts);
+    if (matched) consumedAppleIds.add(matched.id);
+    return {
+      sortTime: new Date(s.started_at || `${s.session_date}T12:00:00`).getTime(),
+      html: renderStrengthHistoryCard(s, matched),
+    };
+  });
 
-    return `<div class="wh-card">
-      <div class="wh-card__head">
-        <span class="wh-card__date">${fmtDate(s.session_date)}</span>
-        ${splitTag(s.split_type)}
-      </div>
-      <div class="wh-card__body">${exHtml || '<p class="empty-state">No exercises</p>'}</div>
-    </div>`;
-  }).join('');
+  appleWorkouts
+    .filter(w => !consumedAppleIds.has(w.id))
+    .forEach(w => items.push({ sortTime: new Date(w.started_at).getTime(), html: renderActivityHistoryCard(w, false) }));
 
-  renderStrengthProgress(data);
+  // A manual entry that overlaps a real Apple workout is the same
+  // real-world activity recorded twice (e.g. hand-logged, then later
+  // also auto-detected/confirmed) — show it once.
+  const overlapsAnyAppleWorkout = m => {
+    const ms = new Date(m.started_at).getTime(), me = new Date(m.ended_at).getTime();
+    return appleWorkouts.some(w => {
+      const ws = new Date(w.started_at).getTime(), we = new Date(w.ended_at).getTime();
+      return ms < we && me > ws;
+    });
+  };
+  manualActivities
+    .filter(m => !overlapsAnyAppleWorkout(m))
+    .forEach(m => items.push({ sortTime: new Date(m.started_at).getTime(), html: renderActivityHistoryCard(m, true) }));
+
+  items.sort((a, b) => b.sortTime - a.sortTime);
+  elW.workoutHistoryList.innerHTML = items.map(i => i.html).join('');
+
+  renderStrengthProgress(sessions);
 }
 
 // Estimated 1RM per exercise (Epley formula: weight × (1 + reps/30)), using
