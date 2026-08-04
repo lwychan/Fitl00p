@@ -9165,9 +9165,10 @@ function initOnboarding() {
 
 /* ═══════════════════════════════════════════════════════════
    LOG FOOD — fitl00p-native calorie/macro tracking
-   Four ways in: barcode scan (BarcodeDetector + Open Food Facts,
-   client-side, no backend needed for lookups — OFF's API is keyless
-   and CORS-open), search the shared custom-foods list, a Claude
+   Four ways in: barcode scan (native BarcodeDetector where available,
+   ZXing as a Safari fallback — see startBarcodeScan — against Open Food
+   Facts, client-side, no backend needed for lookups since OFF's API is
+   keyless and CORS-open), search the shared custom-foods list, a Claude
    vision estimate from a photo + description, or plain manual entry.
    All four funnel into the same review/save form so the numbers are
    always checked before they're logged, never saved sight-unseen.
@@ -9197,6 +9198,7 @@ let lfSelectedMode = null;
 let lfBarcodeStream = null;
 let lfBarcodeDetector = null;
 let lfBarcodeScanRAF = null;
+let lfZxingControls = null; // ZXing's IScannerControls — the Safari fallback path (see startBarcodeScan)
 let lfPhotoBase64 = null;
 let lfPhotoMediaType = null;
 let lfPhotoAfterBase64 = null; // optional "leftovers" photo — when set, the estimate is before-minus-after
@@ -9285,24 +9287,48 @@ function showLfReviewForm() {
   el.lfFoodName?.focus();
 }
 
-/* ── Barcode scanning ────────────────────────────────────── */
+/* ── Barcode scanning ────────────────────────────────────────
+   Two decode paths, tried in order:
+   1. The native Shape Detection BarcodeDetector API — fast, zero extra
+      download, but Safari (iOS and macOS) has never implemented it, so
+      this alone leaves every iPhone user stuck on "not supported".
+   2. ZXing (@zxing/browser, loaded from a CDN in index.html — see sw.js
+      for why that's exempted from the "always refetch" JS rule) — a
+      pure-JS decoder that works anywhere getUserMedia does, including
+      Safari. Only loaded/used when the native API is missing, so it
+      costs nothing on browsers that already have BarcodeDetector. ── */
 async function startBarcodeScan() {
   if (!el.lfScanVideo) return;
-  if (!('BarcodeDetector' in window)) {
+  const hasNative = 'BarcodeDetector' in window;
+  const hasZxingFallback = !hasNative && typeof window.ZXingBrowser !== 'undefined';
+  if (!hasNative && !hasZxingFallback) {
     if (el.lfScanUnsupported) el.lfScanUnsupported.hidden = false;
     if (el.lfScanStatus) el.lfScanStatus.hidden = true;
     return;
   }
   if (el.lfScanUnsupported) el.lfScanUnsupported.hidden = true;
   try {
-    lfBarcodeDetector = new window.BarcodeDetector({ formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128'] });
     lfBarcodeStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
     el.lfScanVideo.srcObject = lfBarcodeStream;
     el.lfScanVideo.hidden = false;
     await el.lfScanVideo.play();
     if (el.btnLfScanStop) el.btnLfScanStop.hidden = false;
-    if (el.lfScanStatus) el.lfScanStatus.textContent = 'Point the camera at a barcode…';
-    scanBarcodeFrame();
+    if (el.lfScanStatus) { el.lfScanStatus.hidden = false; el.lfScanStatus.textContent = 'Point the camera at a barcode…'; }
+    if (hasNative) {
+      lfBarcodeDetector = new window.BarcodeDetector({ formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128'] });
+      scanBarcodeFrame();
+    } else {
+      const reader = new window.ZXingBrowser.BrowserMultiFormatReader();
+      lfZxingControls = await reader.decodeFromStream(lfBarcodeStream, el.lfScanVideo, (result) => {
+        // Fires on every frame, found or not — a miss comes through as
+        // `error` (typically NotFoundException), which is the normal,
+        // expected case mid-scan and safe to just ignore.
+        if (!result) return;
+        const barcode = result.getText();
+        stopBarcodeScan();
+        handleScannedBarcode(barcode);
+      });
+    }
   } catch (err) {
     if (el.lfScanStatus) el.lfScanStatus.textContent = "Couldn't access the camera: " + err.message;
   }
@@ -9310,6 +9336,8 @@ async function startBarcodeScan() {
 function stopBarcodeScan() {
   if (lfBarcodeScanRAF) cancelAnimationFrame(lfBarcodeScanRAF);
   lfBarcodeScanRAF = null;
+  lfZxingControls?.stop();
+  lfZxingControls = null;
   lfBarcodeStream?.getTracks().forEach(t => t.stop());
   lfBarcodeStream = null;
   if (el.lfScanVideo) { el.lfScanVideo.srcObject = null; el.lfScanVideo.hidden = true; }

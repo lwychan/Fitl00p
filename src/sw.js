@@ -86,14 +86,20 @@ self.addEventListener('fetch', event => {
   const { request } = event;
   const url = new URL(request.url);
 
-  // Always network-first: Supabase API, Netlify functions, app JS/HTML/CSS
+  // Always network-first: Supabase API, Netlify functions, app JS/HTML/CSS.
+  // The .js/.css/.html rule is scoped to same-origin on purpose — it's
+  // there so a deploy's own updated app.js/app.css always wins over a
+  // stale cache, not to force-refetch a third-party CDN script (e.g.
+  // ZXing's barcode-scan fallback, see index.html) on every single load.
+  // Those are pinned to an exact version and effectively immutable, so
+  // they fall through to the cache-first branch below instead — cached
+  // once, instant and offline-safe after that.
+  const sameOrigin = url.origin === self.location.origin;
   const alwaysNetwork =
     url.hostname.includes('supabase.co') ||
     url.pathname.startsWith('/.netlify/') ||
     NEVER_CACHE.includes(url.pathname) ||
-    url.pathname.endsWith('.js') ||
-    url.pathname.endsWith('.css') ||
-    url.pathname.endsWith('.html');
+    (sameOrigin && (url.pathname.endsWith('.js') || url.pathname.endsWith('.css') || url.pathname.endsWith('.html')));
 
   if (alwaysNetwork) {
     event.respondWith(

@@ -2103,6 +2103,11 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.0/dist/umd/supabase.js" crossorigin="anonymous"></script>
+<!-- Safari has no native BarcodeDetector, so Log Food's barcode-scan mode
+     falls back to this pure-JS decoder there (see startBarcodeScan in
+     app.js) — deferred and only ever touched from a user-initiated "Scan"
+     tap, so it never blocks first paint on browsers that don't need it. -->
+<script src="https://cdn.jsdelivr.net/npm/@zxing/browser@0.2.1/umd/zxing-browser.min.js" defer></script>
 <script src="diabetes-engine.js"></script>
 <script src="nightscout-adapter.js"></script>
 <script src="app.js"></script>
