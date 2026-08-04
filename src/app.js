@@ -5720,7 +5720,7 @@ async function fetchMealPresets() {
   if (!currentUser) return [];
   const { data, error } = await db
     .from('diabetes_meals')
-    .select('meal_name, carbs_g, fat_g, protein_g, eaten_at')
+    .select('id, meal_name, carbs_g, fat_g, protein_g, eaten_at')
     .eq('user_id', currentUser.id)
     .not('meal_name', 'is', null)
     .order('eaten_at', { ascending: false })
@@ -5736,6 +5736,7 @@ async function fetchMealPresets() {
     if (name && !seen.has(name.toLowerCase())) {
       seen.add(name.toLowerCase());
       presets.push({
+        id: r.id,
         name,
         carbs: Number(r.carbs_g) || 0,
         fat: Number(r.fat_g) || 0,
@@ -5746,8 +5747,29 @@ async function fetchMealPresets() {
   return presets;
 }
 
-async function recordMacroMeal(entry, doseResult) {
+// existingMealId ties the dose onto the SAME diabetes_meals row the
+// "Previous meals" picker pulled it from — e.g. logging a meal by photo,
+// then separately using the calculator to work out units for that exact
+// meal — instead of inserting a second row with the same carbs, which
+// used to double the carb count the diabetes engine sees for COB/
+// forecast (a real one: 28g logged via photo, then 28g again from the
+// calculator 65 minutes later, both counted). Only ever an UPDATE — the
+// row's own eaten_at/carbs stay exactly as originally logged; only the
+// dose fields are filled in.
+async function recordMacroMeal(entry, doseResult, existingMealId) {
   if (!currentUser) return;
+  const dosePayload = {
+    suggested_units: doseResult?.suggestedUnits ?? null,
+    upfront_units: doseResult?.upfrontUnits ?? null,
+    delayed_units: doseResult?.delayedUnits ?? null,
+    delay_minutes: doseResult?.guide?.delayMinutes ?? null,
+    dose_source: doseResult?.source ?? null,
+  };
+  if (existingMealId) {
+    const { error } = await db.from('diabetes_meals').update(dosePayload).eq('id', existingMealId);
+    if (error) console.error('recordMacroMeal (update) error:', error.message);
+    return;
+  }
   const { error } = await db.from('diabetes_meals').insert({
     user_id: currentUser.id,
     eaten_at: new Date(entry.time).toISOString(),
@@ -5755,13 +5777,9 @@ async function recordMacroMeal(entry, doseResult) {
     carbs_g: entry.carbs,
     fat_g: entry.fat,
     protein_g: entry.protein,
-    suggested_units: doseResult?.suggestedUnits ?? null,
-    upfront_units: doseResult?.upfrontUnits ?? null,
-    delayed_units: doseResult?.delayedUnits ?? null,
-    delay_minutes: doseResult?.guide?.delayMinutes ?? null,
-    dose_source: doseResult?.source ?? null,
+    ...dosePayload,
   });
-  if (error) console.error('recordMacroMeal error:', error.message);
+  if (error) console.error('recordMacroMeal (insert) error:', error.message);
 }
 
 $('btnDxGoToSettings')?.addEventListener('click', () => navigateTo('settings'));
@@ -6083,6 +6101,7 @@ let diabetesData = null;       // adapted {glucoseHistory, boluses, corrections,
 let diabetesFetchedAt = null;
 let dxWorkoutTypesPopulated = false; // first populate always defaults to most-recently-done type
 let dxMealPresets = []; // populated by loadDiabetes(); looked up by name when the "Previous meals" dropdown changes
+let dxSelectedMealPresetId = null; // set when a preset is picked — ties the next dose calculation to that same diabetes_meals row instead of inserting a duplicate; cleared the moment any of the fields it populated is edited by hand
 let dxLatestWeightKg = null; // populated by loadDiabetes(); feeds dxSettings()'s dose-per-kg/BMI calc
 
 // Latest known weight in true kg, checked across both possible sources:
@@ -7244,11 +7263,19 @@ const DX_MEAL_WITHHELD_MESSAGES = {
 
 el.dxMealPreset?.addEventListener('change', () => {
   const preset = dxMealPresets.find(p => p.name === el.dxMealPreset.value);
+  dxSelectedMealPresetId = preset?.id ?? null;
   if (!preset) return;
   if (el.dxMealName)    el.dxMealName.value = preset.name;
   if (el.dxMealCarbs)   el.dxMealCarbs.value = preset.carbs || '';
   if (el.dxMealFat)     el.dxMealFat.value = preset.fat || '';
   if (el.dxMealProtein) el.dxMealProtein.value = preset.protein || '';
+});
+// Hand-editing any field after picking a preset means this is no longer
+// exactly that same logged meal (different amount, a typo fix, etc.) —
+// detach so the dose calculation below falls back to creating its own
+// new entry instead of overwriting the original preset meal's data.
+[el.dxMealName, el.dxMealCarbs, el.dxMealFat, el.dxMealProtein].forEach(input => {
+  input?.addEventListener('input', () => { dxSelectedMealPresetId = null; });
 });
 
 $('btnDxMealDose')?.addEventListener('click', async () => {
@@ -7326,7 +7353,7 @@ $('btnDxMealDose')?.addEventListener('click', async () => {
       ${situationalNote ? `<p class="dx-note">${escapeHtml(situationalNote)}</p>` : ''}
     `;
 
-    if (carbs > 0) await recordMacroMeal({ time: now, mealName: mealName || null, carbs, fat, protein }, r);
+    if (carbs > 0) await recordMacroMeal({ time: now, mealName: mealName || null, carbs, fat, protein }, r, dxSelectedMealPresetId);
   } catch (err) {
     el.dxMealDoseBody.innerHTML = `<p class="empty-state" style="color:var(--red)">${escapeHtml(err.message)}</p>`;
   }
