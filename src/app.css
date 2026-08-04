@@ -291,9 +291,18 @@ body {
 .screen--app {
   display: flex;
   flex-direction: column;
-  min-height: 100dvh;
+  height: 100dvh;
+  overflow: hidden;
   background: var(--bg);
 }
+/* height + overflow:hidden (not min-height) bounds this to exactly the
+   viewport, so .view's own overflow-y:auto below is the ONLY thing that
+   ever scrolls. Without this, tall content grows the document itself,
+   and on iOS Safari the tab-bar's position:fixed then fights the
+   dynamic address-bar's viewport resize — it visibly detaches and
+   drifts to wherever the page happened to be mid-scroll. Confining all
+   scrolling to an inner, non-document container sidesteps that class of
+   bug entirely rather than trying to out-hack it. */
 
 /* ── TOP BAR ─────────────────────────────────────────────── */
 .appbar {
