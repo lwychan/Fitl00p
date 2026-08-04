@@ -7918,7 +7918,7 @@ let dxDetectedQueue = [];
 async function checkDetectedActivities() {
   if (!currentUser) return;
   const { data, error } = await db.from('detected_activities')
-    .select('id, started_at, ended_at, duration_min, avg_heart_rate, max_heart_rate, steps')
+    .select('id, started_at, ended_at, duration_min, avg_heart_rate, max_heart_rate, steps, active_energy_kcal')
     .eq('user_id', currentUser.id)
     .eq('status', 'pending')
     .order('started_at', { ascending: true });
@@ -7936,6 +7936,7 @@ function showDetectedActivityPopup() {
   const bits = [`${dayLabel} at ${when}`, `~${Math.round(activity.duration_min)} min`];
   if (activity.avg_heart_rate != null) bits.push(`avg ${Math.round(activity.avg_heart_rate)}bpm`);
   if (activity.steps != null) bits.push(`~${activity.steps.toLocaleString()} steps`);
+  if (activity.active_energy_kcal != null) bits.push(`~${Math.round(activity.active_energy_kcal)} kcal (estimated)`);
   if (el.detectedActivityDesc) {
     el.detectedActivityDesc.textContent = `Looks like a walk — ${bits.join(', ')}. Apple Health didn't log this as a workout. Add it?`;
   }
@@ -7971,6 +7972,7 @@ el.btnDetectedActivityConfirm?.addEventListener('click', async () => {
       duration_min: activity.duration_min,
       avg_heart_rate: activity.avg_heart_rate,
       max_heart_rate: activity.max_heart_rate,
+      active_energy_kcal: activity.active_energy_kcal,
     });
     if (insertErr) { showToast("Couldn't log it: " + insertErr.message, true); return; }
     await db.from('detected_activities').update({ status: 'confirmed' }).eq('id', activity.id);

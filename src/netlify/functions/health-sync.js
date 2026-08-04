@@ -389,10 +389,12 @@ exports.handler = async function (event) {
   // Never auto-logged: a match becomes a pending row the user confirms
   // or dismisses from an in-app popup, surfaced via a push notification.
   let detectedCount = 0;
-  if (activitySamples.hr.length >= 3 && activitySamples.steps.length) {
+  if (activitySamples.steps.length) {
     try {
       const restingHrFallback = Object.values(byDate).map(d => d.resting_hr).find(v => v != null)
         ?? await fetchRecentRestingHr(user_id);
+      const weightKgFallback = Object.values(byDate).map(d => d.weight_kg).find(v => v != null)
+        ?? await fetchRecentWeightKg(user_id);
       const windows = detectUndetectedActivity(activitySamples.steps, activitySamples.hr, restingHrFallback);
 
       if (windows.length) {
@@ -431,6 +433,7 @@ exports.handler = async function (event) {
             avg_heart_rate: w.avgHeartRate,
             max_heart_rate: w.maxHeartRate,
             steps: w.steps,
+            active_energy_kcal: stepsToCalories(w.steps, weightKgFallback),
           }, { 'Prefer': 'return=minimal' });
           if (insertRes.ok) { newlyDetected.push(w); detectedCount++; }
         }
@@ -576,6 +579,11 @@ async function fetchRecentRestingHr(user_id) {
   return res.ok && res.data?.[0]?.resting_hr != null ? Number(res.data[0].resting_hr) : null;
 }
 
+async function fetchRecentWeightKg(user_id) {
+  const res = await sbFetch(`/rest/v1/health_daily?user_id=eq.${user_id}&weight_kg=not.is.null&select=weight_kg&order=log_date.desc&limit=1`);
+  return res.ok && res.data?.[0]?.weight_kg != null ? Number(res.data[0].weight_kg) : null;
+}
+
 // ── Undetected-activity heuristic ──────────────────────────
 // Bins step + heart-rate samples into fixed-width buckets (by absolute
 // time, not calendar day — see activitySamples in the handler above)
@@ -586,13 +594,26 @@ async function fetchRecentRestingHr(user_id) {
 // doing chores) but together they're a reasonable proxy for "this was
 // actually a walk" — e.g. pushing a stroller, which HealthKit's own
 // workout auto-detection doesn't cover the way it does a run or ride.
-const ACTIVITY_BIN_MIN          = 10;   // minutes per bin
-const ACTIVITY_HR_ABOVE_REST    = 25;   // bpm above resting HR to count as "elevated"
-const ACTIVITY_HR_FALLBACK      = 100;  // used only when resting HR is unknown
-const ACTIVITY_STEPS_PER_BIN    = 250;  // steps needed in a bin to count as "dense" walking
-const ACTIVITY_MIN_DURATION_MIN = 15;   // shortest window worth flagging
-const ACTIVITY_MAX_GAP_BINS     = 1;    // bridges one quiet bin inside an otherwise-elevated run (e.g. stopped at a crossing)
+const ACTIVITY_BIN_MIN                     = 10;   // minutes per bin
+const ACTIVITY_HR_ABOVE_REST               = 25;   // bpm above resting HR to count as "elevated"
+const ACTIVITY_HR_FALLBACK                 = 100;  // used only when resting HR is unknown
+const ACTIVITY_STEPS_PER_BIN               = 250;  // steps needed in a bin to count as "dense" walking, when HR corroborates it
+const ACTIVITY_STEPS_ONLY_PER_BIN          = 450;  // no HR sample to rule out phone-in-pocket miscounts during chores, so demand much denser steps
+const ACTIVITY_MIN_DURATION_MIN            = 15;   // shortest window worth flagging
+const ACTIVITY_STEPS_ONLY_MIN_DURATION_MIN = 25;   // and a longer sustained run, for the same reason
+const ACTIVITY_MAX_GAP_BINS                = 1;    // bridges one quiet bin inside an otherwise-elevated run (e.g. stopped at a crossing)
+const STEP_KCAL_PER_KG                     = 0.0005; // ≈0.04 kcal/step for an 80kg adult — standard steps × weight walking-calorie approximation, used since stride length isn't measured
 
+function stepsToCalories(steps, weightKg) {
+  if (!steps || !weightKg) return null;
+  return Math.round(steps * weightKg * STEP_KCAL_PER_KG);
+}
+
+// hrSamples can legitimately be empty — a Watch's heart-rate samples
+// sometimes land in Health a beat behind step counts, so a sync can see
+// dense steps with zero HR samples yet. Rather than skip detection for
+// that whole sync (losing the walk for good, since raw samples aren't
+// persisted), fall back to a steps-only read with a stricter bar.
 function detectUndetectedActivity(stepSamples, hrSamples, restingHr) {
   const binMs = ACTIVITY_BIN_MIN * 60000;
   const binOf = t => Math.floor(t / binMs);
@@ -607,13 +628,20 @@ function detectUndetectedActivity(stepSamples, hrSamples, restingHr) {
     b.hrSum += s.val; b.hrCount++; b.maxHr = Math.max(b.maxHr, s.val);
   }
 
+  const hasHr = hrSamples.length >= 3;
+  const stepsThreshold = hasHr ? ACTIVITY_STEPS_PER_BIN : ACTIVITY_STEPS_ONLY_PER_BIN;
+  const minDurationMin = hasHr ? ACTIVITY_MIN_DURATION_MIN : ACTIVITY_STEPS_ONLY_MIN_DURATION_MIN;
   const hrThreshold = restingHr ? restingHr + ACTIVITY_HR_ABOVE_REST : ACTIVITY_HR_FALLBACK;
   const sortedIdx = [...bins.keys()].sort((a, b) => a - b);
   const elevated = new Set();
   for (const idx of sortedIdx) {
     const b = bins.get(idx);
-    const avgHr = b.hrCount ? b.hrSum / b.hrCount : null;
-    if (b.steps >= ACTIVITY_STEPS_PER_BIN && avgHr != null && avgHr >= hrThreshold) elevated.add(idx);
+    if (b.steps < stepsThreshold) continue;
+    if (hasHr) {
+      const avgHr = b.hrCount ? b.hrSum / b.hrCount : null;
+      if (avgHr == null || avgHr < hrThreshold) continue;
+    }
+    elevated.add(idx);
   }
 
   const windows = [];
@@ -717,3 +745,8 @@ async function sbFetch(path, method = 'GET', body = null, extra = {}) {
     return { ok: false, status: 0, data: null, error: err.message };
   }
 }
+
+// Pure helpers exported alongside the handler so they can be unit-tested
+// directly rather than only indirectly through a full simulated sync payload.
+exports.detectUndetectedActivity = detectUndetectedActivity;
+exports.stepsToCalories = stepsToCalories;
