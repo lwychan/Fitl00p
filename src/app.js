@@ -9943,7 +9943,10 @@ function renderLfPhotoThumbs() {
       </div>
     `).join('');
   }
-  if (el.lfPhotoButtons) el.lfPhotoButtons.hidden = lfPhotoAngles.length >= LF_PHOTO_MAX_ANGLES;
+  // lfPhotoButtons carries an inline `style="display:flex"` (index.html),
+  // which beats the `[hidden]{display:none}` UA rule — so the `hidden`
+  // IDL property alone wouldn't actually hide it; toggle display directly.
+  if (el.lfPhotoButtons) el.lfPhotoButtons.style.display = lfPhotoAngles.length >= LF_PHOTO_MAX_ANGLES ? 'none' : 'flex';
 }
 el.lfPhotoThumbs?.addEventListener('click', e => {
   const btn = e.target.closest('.lf-photo-thumb-remove');
