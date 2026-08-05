@@ -9,7 +9,15 @@
 const SB_URL     = process.env.SUPABASE_URL;
 const SB_SERVICE = process.env.SUPABASE_SERVICE_KEY;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-const ANTHROPIC_MODEL   = 'claude-haiku-4-5-20251001'; // fast + cheap — a good fit for a small structured-JSON estimate, not a task that needs deep reasoning
+// A single-photo estimate is a good fit for Haiku — fast/cheap, no
+// cross-image reasoning needed. A before/after (leftovers) estimate
+// needs to actually count matching items across two photos and compare
+// them (e.g. "4 salami slices before, 2 still on the plate after" —
+// Haiku was observed calling that "minimal remains" and barely
+// discounting the estimate) — worth Sonnet's extra cost for the more
+// careful visual comparison that requires.
+const ANTHROPIC_MODEL_SINGLE       = 'claude-haiku-4-5-20251001';
+const ANTHROPIC_MODEL_BEFORE_AFTER = 'claude-sonnet-5';
 
 const HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -78,10 +86,17 @@ exports.handler = async function (event) {
 
 Description from the user: ${description ? JSON.stringify(String(description).slice(0, 500)) : '(none given)'}
 
-The FIRST photo shows the meal as served (before eating). The SECOND photo shows what's left on the plate afterward (leftovers, if any — it may be empty or near-empty if everything was eaten). Estimate the full plate shown in the first photo, estimate what remains in the second, and report ONLY the difference — the portion that was actually eaten. Portion size, cooking method, and visible ingredients all matter for both estimates. Never refuse to estimate; if you're unsure, give your best guess and say so in "note" with a lower "confidence".
+The FIRST photo shows the meal as served (before eating). The SECOND photo shows what's left on the plate afterward (leftovers, if any — it may be empty or near-empty if everything was eaten, or substantial if a lot was left).
+
+Work through this explicitly before answering:
+1. List each distinct food item visible in photo 1, with a count or portion size for each (e.g. "2 pork chops", "4 salami slices", "1 slice of cheese").
+2. For that SAME list of items, count or estimate how much of each is still visible in photo 2. Countable items (slices, pieces, chops) must be counted, not eyeballed as a vague fraction — if 4 slices were served and 2 whole slices remain, that is HALF of that item left, not "minimal remains". Look carefully — leftovers are frequently substantial, not just crumbs.
+3. Subtract, per item, to get what was actually eaten, then total the calories/macros for only that eaten portion.
+
+Portion size, cooking method, and visible ingredients all matter for both photos. Never refuse to estimate; if you're unsure, give your best guess and say so in "note" with a lower "confidence".
 
 Respond with ONLY a single JSON object, no markdown fences, no other text, in exactly this shape:
-{"calories_kcal": <number>, "protein_g": <number>, "carbs_g": <number>, "fat_g": <number>, "confidence": "low"|"medium"|"high", "note": "<one short sentence on your key assumptions, e.g. portion size served vs. leftover amount>"}` : `You are estimating calories and macronutrients for a food diary entry, from a photo and a short description.
+{"calories_kcal": <number>, "protein_g": <number>, "carbs_g": <number>, "fat_g": <number>, "confidence": "low"|"medium"|"high", "note": "<one short sentence naming what was left over and how much, e.g. '2 of 4 salami slices left uneaten'>"}` : `You are estimating calories and macronutrients for a food diary entry, from a photo and a short description.
 
 Description from the user: ${description ? JSON.stringify(String(description).slice(0, 500)) : '(none given)'}
 
@@ -109,7 +124,7 @@ Respond with ONLY a single JSON object, no markdown fences, no other text, in ex
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: ANTHROPIC_MODEL,
+        model: hasAfterPhoto ? ANTHROPIC_MODEL_BEFORE_AFTER : ANTHROPIC_MODEL_SINGLE,
         max_tokens: 400,
         messages: [{
           role: 'user',
