@@ -203,9 +203,10 @@ const el = {
   lfSearchInput:    $('lfSearchInput'),
   lfSearchResults:  $('lfSearchResults'),
   lfPhotoPanel:     $('lfPhotoPanel'),
+  lfPhotoButtons:      $('lfPhotoButtons'),
   lfPhotoInputCamera:  $('lfPhotoInputCamera'),
   lfPhotoInputLibrary: $('lfPhotoInputLibrary'),
-  lfPhotoPreview:   $('lfPhotoPreview'),
+  lfPhotoThumbs:    $('lfPhotoThumbs'),
   lfPhotoTimeNote:  $('lfPhotoTimeNote'),
   lfLoggedAt:       $('lfLoggedAt'),
   lfPhotoAfterInputCamera:  $('lfPhotoAfterInputCamera'),
@@ -9439,8 +9440,8 @@ let lfBarcodeStream = null;
 let lfBarcodeDetector = null;
 let lfBarcodeScanRAF = null;
 let lfZxingControls = null; // ZXing's IScannerControls — the Safari fallback path (see startBarcodeScan)
-let lfPhotoBase64 = null;
-let lfPhotoMediaType = null;
+const LF_PHOTO_MAX_ANGLES = 3;
+let lfPhotoAngles = []; // up to 3 photos of the meal as served, from different angles — [{base64, mediaType, dataUrl}]
 let lfPhotoAfterBase64 = null; // optional "leftovers" photo — when set, the estimate is before-minus-after
 let lfPhotoAfterMediaType = null;
 let lfSelectedCustomFoodId = null; // set when the review form was populated from an existing custom_foods row (scan/search) — avoids re-saving a duplicate
@@ -9480,8 +9481,7 @@ el.lfModePills?.addEventListener('click', e => {
 });
 
 function resetLfForm() {
-  lfPhotoBase64 = null;
-  lfPhotoMediaType = null;
+  lfPhotoAngles = [];
   lfPhotoAfterBase64 = null;
   lfPhotoAfterMediaType = null;
   lfSelectedCustomFoodId = null;
@@ -9509,7 +9509,7 @@ function resetLfForm() {
   if (householdPartner && el.lfShareName) el.lfShareName.textContent = householdPartner.name;
   lfFavToggleActive = false;
   if (el.btnLfFavToggle) { el.btnLfFavToggle.classList.remove('is-active'); el.btnLfFavToggle.setAttribute('aria-pressed', 'false'); }
-  if (el.lfPhotoPreview) { el.lfPhotoPreview.hidden = true; el.lfPhotoPreview.src = ''; }
+  renderLfPhotoThumbs();
   if (el.lfPhotoDesc) el.lfPhotoDesc.value = '';
   if (el.lfPhotoInputCamera) el.lfPhotoInputCamera.value = '';
   if (el.lfPhotoInputLibrary) el.lfPhotoInputLibrary.value = '';
@@ -9896,26 +9896,32 @@ function lfFormatPhotoTime(d) {
    actually eaten, not whenever the user got around to logging it. ── */
 async function handleLfPhotoInputChange(inputEl) {
   const file = inputEl.files?.[0];
+  inputEl.value = ''; // clear so picking the same file again for another angle still fires 'change'
   if (!file) return;
+  if (lfPhotoAngles.length >= LF_PHOTO_MAX_ANGLES) return;
   try {
+    const isFirstPhoto = lfPhotoAngles.length === 0;
     const [{ base64, mediaType, dataUrl }, exifDateStr] = await Promise.all([
       resizeImageToBase64(file),
-      readExifDateTaken(file),
+      isFirstPhoto ? readExifDateTaken(file) : Promise.resolve(null),
     ]);
-    lfPhotoBase64 = base64;
-    lfPhotoMediaType = mediaType;
-    if (el.lfPhotoPreview) { el.lfPhotoPreview.src = dataUrl; el.lfPhotoPreview.hidden = false; }
+    lfPhotoAngles.push({ base64, mediaType, dataUrl });
+    renderLfPhotoThumbs();
     if (el.btnLfEstimate) el.btnLfEstimate.disabled = false;
 
-    const takenAt = parseExifDateTime(exifDateStr);
-    if (takenAt) {
-      if (el.lfLoggedAt) el.lfLoggedAt.value = toDatetimeLocalValue(takenAt);
-      if (el.lfPhotoTimeNote) {
-        el.lfPhotoTimeNote.hidden = false;
-        el.lfPhotoTimeNote.textContent = `📷 Photo taken ${lfFormatPhotoTime(takenAt)} — set as the logged time (adjust above if needed)`;
+    // Only the first photo's capture time seeds "Logged at" — later
+    // angles are the same meal, not a new one.
+    if (isFirstPhoto) {
+      const takenAt = parseExifDateTime(exifDateStr);
+      if (takenAt) {
+        if (el.lfLoggedAt) el.lfLoggedAt.value = toDatetimeLocalValue(takenAt);
+        if (el.lfPhotoTimeNote) {
+          el.lfPhotoTimeNote.hidden = false;
+          el.lfPhotoTimeNote.textContent = `📷 Photo taken ${lfFormatPhotoTime(takenAt)} — set as the logged time (adjust above if needed)`;
+        }
+      } else if (el.lfPhotoTimeNote) {
+        el.lfPhotoTimeNote.hidden = true;
       }
-    } else if (el.lfPhotoTimeNote) {
-      el.lfPhotoTimeNote.hidden = true;
     }
   } catch (err) {
     showToast("Couldn't read that photo: " + err.message, true);
@@ -9923,6 +9929,29 @@ async function handleLfPhotoInputChange(inputEl) {
 }
 el.lfPhotoInputCamera?.addEventListener('change', () => handleLfPhotoInputChange(el.lfPhotoInputCamera));
 el.lfPhotoInputLibrary?.addEventListener('change', () => handleLfPhotoInputChange(el.lfPhotoInputLibrary));
+
+// Renders the thumbnail strip for the (up to 3) "before" angle photos,
+// each with a ✕ to remove it, and hides the add-photo buttons once the
+// cap is reached.
+function renderLfPhotoThumbs() {
+  if (el.lfPhotoThumbs) {
+    el.lfPhotoThumbs.hidden = lfPhotoAngles.length === 0;
+    el.lfPhotoThumbs.innerHTML = lfPhotoAngles.map((p, i) => `
+      <div style="position:relative">
+        <img src="${p.dataUrl}" style="width:72px;height:72px;object-fit:cover;border-radius:var(--r-md);display:block">
+        <button type="button" class="lf-photo-thumb-remove" data-idx="${i}" aria-label="Remove photo" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--danger,#c0392b);color:#fff;border:none;font-size:12px;line-height:1;cursor:pointer">✕</button>
+      </div>
+    `).join('');
+  }
+  if (el.lfPhotoButtons) el.lfPhotoButtons.hidden = lfPhotoAngles.length >= LF_PHOTO_MAX_ANGLES;
+}
+el.lfPhotoThumbs?.addEventListener('click', e => {
+  const btn = e.target.closest('.lf-photo-thumb-remove');
+  if (!btn) return;
+  lfPhotoAngles.splice(Number(btn.dataset.idx), 1);
+  renderLfPhotoThumbs();
+  if (el.btnLfEstimate) el.btnLfEstimate.disabled = lfPhotoAngles.length === 0;
+});
 
 // Optional "after eating" photo of the leftovers — same resize/read
 // path as the main photo, but stored separately and only sent to the
@@ -9977,7 +10006,7 @@ function resizeImageToBase64(file) {
 }
 
 el.btnLfEstimate?.addEventListener('click', async () => {
-  if (!lfPhotoBase64) return;
+  if (lfPhotoAngles.length === 0) return;
   setBtn(el.btnLfEstimate, true, 'Estimate calories & macros', 'Estimating…');
   if (el.lfEstimateStatus) el.lfEstimateStatus.textContent = '';
   try {
@@ -9986,7 +10015,9 @@ el.btnLfEstimate?.addEventListener('click', async () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
       body: JSON.stringify({
-        image_base64: lfPhotoBase64, media_type: lfPhotoMediaType, description: el.lfPhotoDesc?.value || '',
+        // Up to 3 photos of the same meal from different angles.
+        images: lfPhotoAngles.map(p => ({ base64: p.base64, media_type: p.mediaType })),
+        description: el.lfPhotoDesc?.value || '',
         // Optional leftovers photo — when present, the server estimates
         // what was actually eaten (before minus after) instead of the
         // whole plate as served.
@@ -10066,7 +10097,7 @@ el.btnLfSave?.addEventListener('click', async () => {
       log_date: logDate,
       logged_at: loggedAt.toISOString(),
       meal_slot: mealSlot,
-      source: lfSelectedCustomFoodId ? (lfSelectedMode === 'search' ? 'search' : 'scan') : (lfPhotoBase64 ? 'photo' : (lfPendingBarcode ? 'scan' : 'manual')),
+      source: lfSelectedCustomFoodId ? (lfSelectedMode === 'search' ? 'search' : 'scan') : (lfPhotoAngles.length > 0 ? 'photo' : (lfPendingBarcode ? 'scan' : 'manual')),
       food_name: name, brand, serving_desc: servingDesc,
       quantity,
       calories_kcal: Math.round(baseCals * quantity),

@@ -54,19 +54,31 @@ exports.handler = async function (event) {
     return { statusCode: 400, headers: HEADERS, body: JSON.stringify({ error: 'Invalid JSON: ' + e.message }) };
   }
 
-  const { image_base64, media_type, description, image_base64_after, media_type_after } = body;
-  if (!image_base64 || !media_type) {
-    return { statusCode: 400, headers: HEADERS, body: JSON.stringify({ error: 'image_base64 and media_type are required' }) };
-  }
+  const { images, description, image_base64_after, media_type_after } = body;
   const ALLOWED_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
-  if (!ALLOWED_MEDIA_TYPES.includes(media_type)) {
-    return { statusCode: 400, headers: HEADERS, body: JSON.stringify({ error: `media_type must be one of ${ALLOWED_MEDIA_TYPES.join(', ')}` }) };
+  // "images" is the meal as served — normally one photo, but the client
+  // may send up to 3, taken from different angles of the same plate, so
+  // Claude can see items a single angle hides (food at the back of a
+  // bowl, underneath something else) rather than just guessing at them.
+  if (!Array.isArray(images) || images.length === 0) {
+    return { statusCode: 400, headers: HEADERS, body: JSON.stringify({ error: 'images (at least one photo) is required' }) };
   }
-  // Base64 is ~4/3 the size of the decoded bytes — 7MB of base64 is
-  // roughly a 5MB image, comfortably past what a compressed food photo
-  // should ever need and a sane cap against an oversized upload.
-  if (image_base64.length > 7_000_000) {
-    return { statusCode: 400, headers: HEADERS, body: JSON.stringify({ error: 'Image too large — resize before uploading' }) };
+  if (images.length > 3) {
+    return { statusCode: 400, headers: HEADERS, body: JSON.stringify({ error: 'Up to 3 photos per meal' }) };
+  }
+  for (const img of images) {
+    if (!img || !img.base64 || !img.media_type) {
+      return { statusCode: 400, headers: HEADERS, body: JSON.stringify({ error: 'each image needs base64 and media_type' }) };
+    }
+    if (!ALLOWED_MEDIA_TYPES.includes(img.media_type)) {
+      return { statusCode: 400, headers: HEADERS, body: JSON.stringify({ error: `media_type must be one of ${ALLOWED_MEDIA_TYPES.join(', ')}` }) };
+    }
+    // Base64 is ~4/3 the size of the decoded bytes — 7MB of base64 is
+    // roughly a 5MB image, comfortably past what a compressed food photo
+    // should ever need and a sane cap against an oversized upload.
+    if (img.base64.length > 7_000_000) {
+      return { statusCode: 400, headers: HEADERS, body: JSON.stringify({ error: 'Image too large — resize before uploading' }) };
+    }
   }
 
   // "After" photo (leftovers) is optional — when present, this becomes a
@@ -82,37 +94,42 @@ exports.handler = async function (event) {
     }
   }
 
-  const prompt = hasAfterPhoto ? `You are estimating calories and macronutrients ACTUALLY CONSUMED for a food diary entry, from two photos of the same meal and a short description.
+  const multiAngle = images.length > 1;
+  const beforeLabel = multiAngle ? `the ${images.length} BEFORE photos (different angles of the same served meal)` : 'the BEFORE photo';
+  const angleNote = multiAngle ? ' Use the angles together to see the full plate — some items are only visible from certain angles (food at the back of a bowl, underneath something else). They show ONE meal, not separate meals — do not double-count an item just because it appears in more than one photo.' : '';
+
+  const prompt = hasAfterPhoto ? `You are estimating calories and macronutrients ACTUALLY CONSUMED for a food diary entry, from photos of the same meal and a short description.
 
 Description from the user: ${description ? JSON.stringify(String(description).slice(0, 500)) : '(none given)'}
 
-The FIRST photo shows the meal as served (before eating). The SECOND photo shows what's left on the plate afterward (leftovers, if any — it may be empty or near-empty if everything was eaten, or substantial if a lot was left).
+You are shown ${beforeLabel}, showing the meal as served (before eating).${angleNote} The FINAL photo shows what's left on the plate afterward (leftovers, if any — it may be empty or near-empty if everything was eaten, or substantial if a lot was left).
 
 Work through this explicitly before answering:
-1. List each distinct food item visible in photo 1, with a count or portion size for each (e.g. "2 pork chops", "4 salami slices", "1 slice of cheese").
-2. For that SAME list of items, count or estimate how much of each is still visible in photo 2. Countable items (slices, pieces, chops) must be counted, not eyeballed as a vague fraction — if 4 slices were served and 2 whole slices remain, that is HALF of that item left, not "minimal remains". Look carefully — leftovers are frequently substantial, not just crumbs.
+1. List each distinct food item visible across the BEFORE photo(s), with a count or portion size for each (e.g. "2 pork chops", "4 salami slices", "1 slice of cheese").
+2. For that SAME list of items, count or estimate how much of each is still visible in the leftovers photo. Countable items (slices, pieces, chops) must be counted, not eyeballed as a vague fraction — if 4 slices were served and 2 whole slices remain, that is HALF of that item left, not "minimal remains". Look carefully — leftovers are frequently substantial, not just crumbs.
 3. Subtract, per item, to get what was actually eaten, then total the calories/macros for only that eaten portion.
 
-Portion size, cooking method, and visible ingredients all matter for both photos. Never refuse to estimate; if you're unsure, give your best guess and say so in "note" with a lower "confidence".
+Portion size, cooking method, and visible ingredients all matter across all photos. Never refuse to estimate; if you're unsure, give your best guess and say so in "note" with a lower "confidence".
 
 Respond with ONLY a single JSON object, no markdown fences, no other text, in exactly this shape:
-{"calories_kcal": <number>, "protein_g": <number>, "carbs_g": <number>, "fat_g": <number>, "confidence": "low"|"medium"|"high", "note": "<one short sentence naming what was left over and how much, e.g. '2 of 4 salami slices left uneaten'>"}` : `You are estimating calories and macronutrients for a food diary entry, from a photo and a short description.
+{"calories_kcal": <number>, "protein_g": <number>, "carbs_g": <number>, "fat_g": <number>, "confidence": "low"|"medium"|"high", "note": "<one short sentence naming what was left over and how much, e.g. '2 of 4 salami slices left uneaten'>"}` : `You are estimating calories and macronutrients for a food diary entry, from ${multiAngle ? `${images.length} photos of the same meal` : 'a photo'} and a short description.
 
 Description from the user: ${description ? JSON.stringify(String(description).slice(0, 500)) : '(none given)'}
 
-Look at the photo and give your best-effort estimate of the TOTAL meal shown (or described, if the photo is unclear/partial) — portion size, cooking method, and visible ingredients all matter. Never refuse to estimate; if you're unsure, give your best guess and say so in "note" with a lower "confidence".
+${multiAngle ? `Look at the photos — they show the SAME meal from different angles.${angleNote}` : 'Look at the photo'} and give your best-effort estimate of the TOTAL meal shown (or described, if the photos are unclear/partial) — portion size, cooking method, and visible ingredients all matter. Never refuse to estimate; if you're unsure, give your best guess and say so in "note" with a lower "confidence".
 
 Respond with ONLY a single JSON object, no markdown fences, no other text, in exactly this shape:
 {"calories_kcal": <number>, "protein_g": <number>, "carbs_g": <number>, "fat_g": <number>, "confidence": "low"|"medium"|"high", "note": "<one short sentence on your key assumptions, e.g. portion size or ingredients guessed>"}`;
 
-  const imageContent = hasAfterPhoto ? [
-    { type: 'text', text: 'Photo 1 of 2 — before eating (as served):' },
-    { type: 'image', source: { type: 'base64', media_type, data: image_base64 } },
-    { type: 'text', text: 'Photo 2 of 2 — after eating (leftovers, if any):' },
-    { type: 'image', source: { type: 'base64', media_type: media_type_after, data: image_base64_after } },
-  ] : [
-    { type: 'image', source: { type: 'base64', media_type, data: image_base64 } },
-  ];
+  const imageContent = [];
+  images.forEach((img, i) => {
+    if (multiAngle) imageContent.push({ type: 'text', text: hasAfterPhoto ? `Before-eating photo, angle ${i + 1} of ${images.length}:` : `Photo ${i + 1} of ${images.length} — same meal, different angle:` });
+    imageContent.push({ type: 'image', source: { type: 'base64', media_type: img.media_type, data: img.base64 } });
+  });
+  if (hasAfterPhoto) {
+    imageContent.push({ type: 'text', text: 'After eating (leftovers, if any):' });
+    imageContent.push({ type: 'image', source: { type: 'base64', media_type: media_type_after, data: image_base64_after } });
+  }
 
   let anthropicRes;
   try {

@@ -1782,8 +1782,8 @@
              opens the normal photo picker, for logging a meal from an
              existing photo after the fact. -->
         <div id="lfPhotoPanel" hidden style="margin-top:12px">
-          <p class="field-hint">Before eating</p>
-          <div style="display:flex;gap:10px">
+          <p class="field-hint">Before eating <span style="text-transform:none;letter-spacing:0;font-weight:400">— add up to 3 angles for a more accurate estimate</span></p>
+          <div id="lfPhotoButtons" style="display:flex;gap:10px">
             <label class="btn btn--ghost" style="flex:1;justify-content:center">
               📷 Take photo
               <input type="file" id="lfPhotoInputCamera" accept="image/*" capture="environment" style="display:none">
@@ -1793,7 +1793,7 @@
               <input type="file" id="lfPhotoInputLibrary" accept="image/*" style="display:none">
             </label>
           </div>
-          <img id="lfPhotoPreview" hidden style="max-width:100%;border-radius:var(--r-md);margin-top:8px">
+          <div id="lfPhotoThumbs" hidden style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap"></div>
           <p class="field-hint" id="lfPhotoTimeNote" hidden></p>
 
           <!-- Optional second photo of the leftovers — when present, the
