@@ -1134,7 +1134,7 @@ async function loadProfileWithTimeout() {
 async function loadDashboard() {
   if (!currentUser) return;
   try {
-    await _loadDashboardInner();
+    await loadDashboardWithTimeout();
   } catch (err) {
     console.error('Dashboard load error:', err);
     // Don't boot the user — just show a quiet error state
@@ -1142,7 +1142,28 @@ async function loadDashboard() {
   }
 }
 
-async function _loadDashboardInner() {
+// Bounds _loadDashboardInner the same way loadProfileWithTimeout bounds
+// loadProfile (see there for the full rationale) — this is the dashboard
+// tab's own data load, fired from inside navigateTo() right after login
+// (dashboard is the default landing tab). Its ~10 parallel queries below
+// had no timeout of their own: a single one stuck on a bad connection
+// right after login left navigateTo()'s await pending forever, which
+// left the boot spinner up with nothing to resolve it except the 90s
+// absolute watchdog — a hang that looks like the app is dead, not
+// loading, and repeats identically on every relaunch attempt.
+const LOAD_DASHBOARD_TIMEOUT_MS = 20000;
+
+async function loadDashboardWithTimeout() {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), LOAD_DASHBOARD_TIMEOUT_MS);
+  try {
+    await _loadDashboardInner(controller.signal);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function _loadDashboardInner(signal) {
   const unit = profile?.weight_unit || 'kg';
 
   // Only visibly rendered under the Nebula theme (see .dash-hero__head in
@@ -1157,6 +1178,7 @@ async function _loadDashboardInner() {
       .select('*, cal_apple')
       .eq('user_id', currentUser.id)
       .eq('log_date', todayISO())
+      .abortSignal(signal)
       .maybeSingle(),
 
     // Fetch last 2 days of health data — overnight metrics (VO2, HRV, sleep)
@@ -1166,26 +1188,30 @@ async function _loadDashboardInner() {
       .eq('user_id', currentUser.id)
       .gte('log_date', new Date(Date.now() - 1 * 86400000).toISOString().slice(0, 10))
       .order('log_date', { ascending: false })
-      .limit(2),
+      .limit(2)
+      .abortSignal(signal),
 
     db.from('health_daily')
       .select('log_date, spo2_avg, respiratory_rate, wrist_temp_dev, hr_recovery_bpm, vo2_max, heart_rate_avg, glucose_avg_mmol, hrv_ms, resting_hr, active_energy_kcal, resting_energy_kcal, dietary_energy_kcal, weight_kg, sleep_total_hrs, sleep_deep_hrs, sleep_rem_hrs, sleep_start, exercise_mins, workout_hr_avg, steps')
       .eq('user_id', currentUser.id)
       .gte('log_date', new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10))
-      .order('log_date', { ascending: true }),
+      .order('log_date', { ascending: true })
+      .abortSignal(signal),
 
     db.from('daily_logs')
       .select('log_date, weight')
       .eq('user_id', currentUser.id)
       .not('weight', 'is', null)
       .gte('log_date', new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10))
-      .order('log_date', { ascending: true }),
+      .order('log_date', { ascending: true })
+      .abortSignal(signal),
 
     db.from('workout_sessions')
       .select('id, session_date, split_type, started_at')
       .eq('user_id', currentUser.id)
       .order('session_date', { ascending: false })
       .limit(1)
+      .abortSignal(signal)
       .maybeSingle(),
 
     db.from('health_daily')
@@ -1193,6 +1219,7 @@ async function _loadDashboardInner() {
       .eq('user_id', currentUser.id)
       .order('synced_at', { ascending: false })
       .limit(1)
+      .abortSignal(signal)
       .maybeSingle(),
 
     // MFP diary totals for the same 30-day window as healthHistRes, merged
@@ -1201,7 +1228,8 @@ async function _loadDashboardInner() {
     db.from('daily_logs')
       .select('log_date, cal_mfp')
       .eq('user_id', currentUser.id)
-      .gte('log_date', new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10)),
+      .gte('log_date', new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10))
+      .abortSignal(signal),
 
     // Today's real per-workout heart-rate data (Watch-synced) for the
     // TRIMP-based Strain calc below — health_daily only has a same-day
@@ -1211,7 +1239,8 @@ async function _loadDashboardInner() {
       .select('workout_type, started_at, ended_at, avg_heart_rate, active_energy_kcal')
       .eq('user_id', currentUser.id)
       .gte('started_at', new Date(new Date().setHours(0, 0, 0, 0)).toISOString())
-      .order('started_at', { ascending: true }),
+      .order('started_at', { ascending: true })
+      .abortSignal(signal),
 
     // Native fitl00p food log — top of pickConsumedCalories' precedence
     // (see there), but only from today onward; native logging only just
@@ -1219,7 +1248,8 @@ async function _loadDashboardInner() {
     db.from('food_log')
       .select('log_date, calories_kcal')
       .eq('user_id', currentUser.id)
-      .gte('log_date', todayISO()),
+      .gte('log_date', todayISO())
+      .abortSignal(signal),
 
     // Recent Watch-synced workouts (any day, not just today — unlike
     // todayWorkoutsRes above) so the "Last workout" card can pair
@@ -1229,7 +1259,8 @@ async function _loadDashboardInner() {
       .select('workout_type, started_at, ended_at, avg_heart_rate, max_heart_rate, active_energy_kcal, total_energy_kcal')
       .eq('user_id', currentUser.id)
       .order('started_at', { ascending: false })
-      .limit(15),
+      .limit(15)
+      .abortSignal(signal),
   ]);
 
   const log           = { ...(logRes.data || {}) };
