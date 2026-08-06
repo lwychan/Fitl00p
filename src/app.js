@@ -4154,14 +4154,16 @@ async function loadHistory() {
                            : null;
   });
 
-  // Native fitl00p food log for the same range — top of pickConsumedCalories'
-  // precedence (see there), but only from today onward; anything before
-  // today keeps reading cal_mfp since native logging only just started.
+  // Native fitl00p food log for the same range as the table itself — top
+  // of pickConsumedCalories' precedence (see there). Matches oldestDate
+  // (same range health_daily above queries) rather than just today, so a
+  // day logged natively but not today still shows Consumed once cal_mfp
+  // stops being populated (e.g. after MFP syncing is dropped).
   const { data: foodRows } = await db
     .from('food_log')
     .select('log_date, calories_kcal')
     .eq('user_id', currentUser.id)
-    .gte('log_date', todayISO());
+    .gte('log_date', oldestDate);
   const foodByDate = {};
   (foodRows || []).forEach(r => {
     foodByDate[r.log_date] = (foodByDate[r.log_date] || 0) + (Number(r.calories_kcal) || 0);
