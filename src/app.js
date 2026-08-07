@@ -5744,19 +5744,26 @@ async function fetchTodaysDxMeals() {
   return data || [];
 }
 
-// Distinct past meals, most-recently-used first, for the meal-dose
-// helper's "Previous meals" picker — carries each meal's last-logged
-// macros too, so selecting one repopulates Carbs/Fat/Protein instead of
-// just filling in the name. Same rows suggestMacroMealDose matches on to
-// personalize, so "what actually worked last time" for the macros lines
-// up with what the dose suggestion is itself drawing on.
+// Distinct meals logged TODAY, most-recently-used first, for the
+// meal-dose helper's "Today's meals" picker — carries each meal's
+// last-logged macros too, so selecting one repopulates Carbs/Fat/Protein
+// instead of just filling in the name. Same rows suggestMacroMealDose
+// matches on to personalize, so "what actually worked last time" for the
+// macros lines up with what the dose suggestion is itself drawing on.
+// Scoped to today only (not all-time history) — picking a meal from a
+// different day here would tie a dose calculated NOW onto that old row
+// via recordMacroMeal's existingMealId, silently rewriting its dose
+// fields instead of the meal actually being calculated for right now.
 async function fetchMealPresets() {
   if (!currentUser) return [];
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
   const { data, error } = await db
     .from('diabetes_meals')
     .select('id, meal_name, carbs_g, fat_g, protein_g, eaten_at')
     .eq('user_id', currentUser.id)
     .not('meal_name', 'is', null)
+    .gte('eaten_at', startOfDay.toISOString())
     .order('eaten_at', { ascending: false })
     .limit(200);
   if (error) {
@@ -6248,7 +6255,7 @@ async function loadDiabetes() {
   fetchMealPresets().then(presets => {
     dxMealPresets = presets;
     if (el.dxMealPreset) {
-      el.dxMealPreset.innerHTML = '<option value="">— Select a previous meal —</option>'
+      el.dxMealPreset.innerHTML = '<option value="">— Select a meal logged today —</option>'
         + presets.map(p => {
             const bits = [`${p.carbs}g carbs`];
             if (p.fat) bits.push(`${p.fat}g fat`);
@@ -10157,8 +10164,16 @@ el.btnLfSave?.addEventListener('click', async () => {
     // food_log_id links back to the row just saved above so a later time
     // edit (see the "Logged today" list) can find and update this row's
     // eaten_at too, instead of the two silently drifting apart.
+    // dxBridgeError, not thrown/returned — the food_log row above already
+    // saved successfully, so a bridge failure here shouldn't look like the
+    // whole log failed. But it was previously not checked at all: a failed
+    // insert (network blip, etc.) silently left this meal missing from the
+    // dose calculator's "Today's meals" picker with no error anywhere —
+    // seen in practice. Surfaced as a toast instead, alongside the normal
+    // "Logged X" success message below.
+    let dxBridgeError = null;
     if (profile?.diabetes_enabled !== false && baseCarbs * quantity > 0) {
-      await db.from('diabetes_meals').insert({
+      const { error: bridgeErr } = await db.from('diabetes_meals').insert({
         user_id: currentUser.id,
         food_log_id: savedFoodLog?.id || null,
         eaten_at: loggedAt.toISOString(),
@@ -10170,6 +10185,10 @@ el.btnLfSave?.addEventListener('click', async () => {
         hypo_treatment: hypoTreatment,
         match_status: hypoTreatment ? 'hypo-manual' : null,
       });
+      if (bridgeErr) {
+        console.error('diabetes_meals bridge insert failed:', bridgeErr.message);
+        dxBridgeError = bridgeErr.message;
+      }
     }
 
     // Save as a favourite too, when the ⭐ toggle is on — base per-serving
@@ -10221,6 +10240,8 @@ el.btnLfSave?.addEventListener('click', async () => {
     await Promise.all([renderLfTodayTotals(), renderLfTodayList(), renderLfFavorites()]);
     if (shareError) {
       showToast(`Logged ${name}, but couldn't share: ${shareError}`, true);
+    } else if (dxBridgeError) {
+      showToast(`Logged ${name}, but it won't show in the dose calculator: ${dxBridgeError}`, true);
     } else if (wantsShare) {
       showToast(`Logged ${name} — shared with ${HOUSEHOLD_PARTNER[currentUser.id].name}.`);
     } else {
