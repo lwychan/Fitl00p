@@ -9590,7 +9590,20 @@ async function startBarcodeScan() {
   }
   if (el.lfScanUnsupported) el.lfScanUnsupported.hidden = true;
   try {
-    lfBarcodeStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    // No resolution/focus hints previously — left the browser free to pick
+    // a low-res, general-purpose default that's fine to look at but often
+    // too soft/low-detail for a decoder to actually resolve the bars on,
+    // especially up close (the norm for scanning a barcode). `ideal` and
+    // `advanced` entries are best-effort — never fail getUserMedia just
+    // because a given camera/browser can't honour one.
+    lfBarcodeStream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: 'environment',
+        width:  { ideal: 1920 },
+        height: { ideal: 1080 },
+        advanced: [{ focusMode: 'continuous' }],
+      },
+    });
     el.lfScanVideo.srcObject = lfBarcodeStream;
     el.lfScanVideo.hidden = false;
     await el.lfScanVideo.play();
