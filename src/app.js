@@ -9480,6 +9480,7 @@ let lfBarcodeStream = null;
 let lfBarcodeDetector = null;
 let lfBarcodeScanRAF = null;
 let lfZxingControls = null; // ZXing's IScannerControls — the Safari fallback path (see startBarcodeScan)
+let lfZxingScanAttempts = 0; // frames checked so far this scan session — diagnostic only, see startBarcodeScan
 const LF_PHOTO_MAX_ANGLES = 3;
 let lfPhotoAngles = []; // up to 3 photos of the meal as served, from different angles — [{base64, mediaType, dataUrl}]
 let lfPhotoAfterBase64 = null; // optional "leftovers" photo — when set, the estimate is before-minus-after
@@ -9614,14 +9615,37 @@ async function startBarcodeScan() {
       scanBarcodeFrame();
     } else {
       const reader = new window.ZXingBrowser.BrowserMultiFormatReader();
-      lfZxingControls = await reader.decodeFromStream(lfBarcodeStream, el.lfScanVideo, (result) => {
+      lfZxingScanAttempts = 0;
+      lfZxingControls = await reader.decodeFromStream(lfBarcodeStream, el.lfScanVideo, (result, error) => {
+        if (result) {
+          const barcode = result.getText();
+          stopBarcodeScan();
+          handleScannedBarcode(barcode);
+          return;
+        }
         // Fires on every frame, found or not — a miss comes through as
-        // `error` (typically NotFoundException), which is the normal,
-        // expected case mid-scan and safe to just ignore.
-        if (!result) return;
-        const barcode = result.getText();
-        stopBarcodeScan();
-        handleScannedBarcode(barcode);
+        // `error`, typically NotFoundException, which is the normal,
+        // expected case on nearly every single frame mid-scan (no
+        // barcode in view yet) and safe to just ignore. Anything else —
+        // a genuinely unexpected decode error, not just "haven't found
+        // one yet" — was previously silently swallowed here too, along
+        // with everything else, giving zero signal to tell "the loop
+        // never started" apart from "it's running fine but the barcode
+        // itself isn't decodable" (blur, glare, distance, damage — a
+        // real-world condition, not a bug). Surfaced now so the next
+        // report has something concrete in it either way.
+        lfZxingScanAttempts++;
+        if (error && error.name !== 'NotFoundException') {
+          console.warn('Barcode scan frame error:', error.name, error.message);
+          if (el.lfScanStatus) el.lfScanStatus.textContent = `Scan error: ${error.message || error.name}`;
+        } else if (lfZxingScanAttempts % 40 === 0) {
+          // A periodic heartbeat, not every frame — proves the decode
+          // loop is genuinely alive and actively trying, distinguishing
+          // "scanning but not finding anything" from a silently dead
+          // loop, which looked identical before this (static "Point the
+          // camera…" text either way, forever).
+          console.log(`Barcode scan: ${lfZxingScanAttempts} frames checked, no match yet.`);
+        }
       });
     }
   } catch (err) {
