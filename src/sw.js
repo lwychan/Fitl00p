@@ -95,15 +95,27 @@ self.addEventListener('fetch', event => {
   // they fall through to the cache-first branch below instead — cached
   // once, instant and offline-safe after that.
   const sameOrigin = url.origin === self.location.origin;
+  const isApiCall = url.hostname.includes('supabase.co') || url.pathname.startsWith('/.netlify/');
   const alwaysNetwork =
-    url.hostname.includes('supabase.co') ||
-    url.pathname.startsWith('/.netlify/') ||
+    isApiCall ||
     NEVER_CACHE.includes(url.pathname) ||
     (sameOrigin && (url.pathname.endsWith('.js') || url.pathname.endsWith('.css') || url.pathname.endsWith('.html')));
 
+  // API calls (Supabase reads/writes, Netlify functions) get a longer
+  // bound than the app-shell files — a write like a food_log insert has
+  // no retry/cache fallback if aborted, and 8s was seen in practice
+  // killing a save that would otherwise have succeeded a moment later
+  // (surfacing as a confusing "AbortError: Fetch is aborted" instead of
+  // the save just... finishing). Same reasoning that already pushed
+  // LOAD_PROFILE_TIMEOUT_MS/LOAD_DASHBOARD_TIMEOUT_MS up on the page
+  // side. App-shell files stay tight — small, same-origin, and a
+  // genuinely stuck one should fail fast into the offline fallback
+  // below rather than block navigation for as long as an API call gets.
+  const NETWORK_TIMEOUT_MS = isApiCall ? 25000 : 8000;
+
   if (alwaysNetwork) {
     event.respondWith(
-      fetchBounded(request, 8000).catch(err => {
+      fetchBounded(request, NETWORK_TIMEOUT_MS).catch(err => {
         // Offline fallback for navigation — cached index.html first (see
         // the install handler above for why it's cached at all despite
         // being network-first), but never allowed to resolve to
