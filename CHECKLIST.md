@@ -75,6 +75,29 @@ only you can make — none of it was attempted.
 - [ ] **Once Gemma accepts her App Store Connect invite**, add her to the
       "Family" internal testing group too (TestFlight → iOS → Family →
       Testers → + → select her).
+- [x] **Fixed a runtime bug found on first install**: the app showed
+      "fitl00p couldn't start — Configuration missing" because `app.js`
+      loads Supabase config (and everything else) via relative
+      `/.netlify/functions/*` calls, which only resolve when the page is
+      actually served from `fitl00p.netlify.app` — the locally bundled
+      Capacitor build has no server behind those paths. Fixed by adding
+      `server.url: 'https://fitl00p.netlify.app'` to `capacitor.config.ts`,
+      so the app loads its pages from the live site instead of the local
+      bundle. No app.js changes needed.
+- [x] **Fixed the build-number bug that caused build #9's TestFlight
+      upload to fail** ("bundle version must be higher than previously
+      uploaded version"): `codemagic.yaml`'s `get-latest-app-store-build-number`
+      only checks production App Store submissions (none exist, TestFlight
+      only), so it always returned 0 and every build reused build number 1.
+      Now takes the higher of the App Store and TestFlight build numbers.
+- [x] **Build #10 (1.0 build 2) succeeded**, cleared Apple's processing,
+      and auto-distributed to the "Family" internal group. Confirmed
+      installed on Lewis's iPhone 15 Plus (Sep 14, 2026). Each new build
+      still needs the export-compliance question answered once in App
+      Store Connect (iOS Builds → build → Manage → "None of the
+      algorithms mentioned above") — added `ITSAppUsesNonExemptEncryption`
+      = false to `ios/App/App/Info.plist` so future builds skip that
+      question automatically.
 
 ## 4. App icon — done, but revisit before a public release
 
