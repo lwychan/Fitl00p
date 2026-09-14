@@ -389,11 +389,17 @@ body {
   position: sticky;
   top: 0;
   z-index: 100;
-  height: var(--topbar-h);
+  /* viewport-fit=cover (needed for native iOS status bar) draws page
+     content under the status bar/notch — pad the sticky bar down by the
+     safe area instead of shrinking it, so its icons stay full height and
+     tappable below the status bar / TestFlight dev banner. */
+  height: calc(var(--topbar-h) + env(safe-area-inset-top));
+  padding-top: env(safe-area-inset-top);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 20px;
+  padding-left: 20px;
+  padding-right: 20px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   box-shadow: 0 1px 0 var(--border);
