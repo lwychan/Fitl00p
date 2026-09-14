@@ -40,18 +40,20 @@ only you can make — none of it was attempted.
       standard HTTPS-only app like this typically qualifies for the usual
       exemption, but you still have to answer it each time).
 
-## 4. App icon
+## 4. App icon — done, but revisit before a public release
 
-- [ ] **Needs a real 1024×1024 source image.** The scaffolded
-      `ios/App/App/Assets.xcassets/AppIcon.appiconset/` currently still has
-      Capacitor's generic default icon (a blue "X"), not FitLoop's branding.
-      None of the existing web assets are big enough — the largest,
-      `src/icon-512.png`, is only 512×512, and Apple requires exactly
-      1024×1024 for the App Store icon. Once you have a proper 1024×1024
-      source, I can generate the full icon set for you (e.g. via
-      `npx @capacitor/assets generate --ios`) — just say the word.
-- [ ] (Optional/cosmetic) Brand the launch screen — currently Capacitor's
-      default blank storyboard.
+- [x] Replaced Capacitor's default placeholder icon. Cropped tight to just
+      the circular fitloop mark from `src/icon-512.png` (excluding the
+      baked-in wordmark/card/shadow that image has for its PWA use), then
+      upscaled to the required 1024×1024, no alpha channel.
+- [x] Also replaced the default splash screen (`Splash.imageset`, all 3
+      scale variants) with the same mark centered on white, at 2732×2732.
+- [ ] **Revisit before a public App Store release.** This was a crude
+      crop-and-upscale from a 512×512 source with no image-editing tool
+      available (done via Windows' built-in .NET `System.Drawing` through
+      PowerShell) — it's soft/slightly blurry up close. Fine for TestFlight
+      testing; a true 1024×1024+ master (or a fresh icon-only export from
+      whatever made the original logo) would look sharper for real users.
 
 ## 5. Cloud build service (no Mac needed)
 
