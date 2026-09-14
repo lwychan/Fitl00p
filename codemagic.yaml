@@ -38,6 +38,9 @@ workflows:
         XCODE_SCHEME: "App"
         APP_STORE_APPLE_ID: 6811922097
         BUNDLE_ID: com.lwychan.fitl00p
+        # Node 22 only loads capacitor.config.ts natively with this flag
+        # (Node 23.6+ does it unflagged, but 23.x isn't an LTS release).
+        NODE_OPTIONS: --experimental-strip-types
       node: 22.11.0
       xcode: latest
 
