@@ -806,6 +806,28 @@ function markBootResolved() {
 let authHandling  = false;
 let authCompleted = false;
 
+// Resolved the moment the Supabase client's own first auth event
+// (SIGNED_IN/INITIAL_SESSION/SIGNED_OUT) arrives — see the boot IIFE
+// near the bottom of this file for why something needs to race against
+// this rather than just waiting on it directly.
+let resolveFirstAuthEvent;
+const firstAuthEventPromise = new Promise(resolve => { resolveFirstAuthEvent = resolve; });
+
+// Reads supabase-js's own persisted session straight out of localStorage
+// under its default key pattern (sb-<project-ref>-auth-token), without
+// needing cfg.url first. Used only as a same-boot fallback if the real
+// client's first auth event doesn't show up promptly — see the boot IIFE.
+function readRawCachedSession() {
+  try {
+    for (const key of Object.keys(localStorage)) {
+      if (!/^sb-.+-auth-token$/.test(key)) continue;
+      const parsed = JSON.parse(localStorage.getItem(key));
+      if (parsed?.user?.id && parsed?.access_token && parsed?.refresh_token) return parsed;
+    }
+  } catch {}
+  return null;
+}
+
 function initApp() {
   // Sign in
   el.formSignin.addEventListener('submit', async e => {
@@ -930,14 +952,27 @@ function initApp() {
     if (el.sessionBrokenBanner) el.sessionBrokenBanner.hidden = true;
   });
 
-  // Auth state — single source of truth (declared at module scope above)
+  // Auth state — single source of truth (declared at module scope above).
+  // Wrapped rather than passed directly so the boot IIFE's own fallback
+  // call (see readRawCachedSession() above) can invoke the exact same
+  // logic, and so anything waiting on firstAuthEventPromise finds out the
+  // real client actually produced an event, whichever one it is.
+  db.auth.onAuthStateChange((event, session) => {
+    resolveFirstAuthEvent?.();
+    resolveFirstAuthEvent = null;
+    handleAuthStateChange(event, session);
+  });
+}
 
-  db.auth.onAuthStateChange(async (event, session) => {
+async function handleAuthStateChange(event, session) {
     if ((event === 'SIGNED_IN' || event === 'INITIAL_SESSION') && session?.user) {
 
-      // If we already loaded the app successfully this session, SIGNED_IN is a
-      // token refresh event — don't re-run the full login flow, just update user ref
-      if (authCompleted && event === 'SIGNED_IN') {
+      // If we already got into the app this session — via a real event or
+      // the boot-timeout fallback below — treat any further event as a
+      // quiet background refresh, not a full re-render. Covers both a
+      // real SIGNED_IN token refresh and a real event arriving late right
+      // after the fallback already rendered the app from cache.
+      if (authCompleted) {
         currentUser = session.user;
         return;
       }
@@ -1105,7 +1140,6 @@ function initApp() {
       showScreen('auth');
       hideBootScreen();
     }
-  });
 }
 const UI_STATE_KEY = 'fitl00p:ui_state';
 
@@ -13522,6 +13556,39 @@ async function fetchWithRetries(url, { attempts = 3, attemptTimeoutMs = 7000, ba
 
   // Wire all db-dependent listeners now that db is initialised
   initApp();
+
+  // supabase-js's own first-session check (what fires the initial
+  // SIGNED_IN/INITIAL_SESSION event handleAuthStateChange is waiting on)
+  // has no timeout of its own. It's normally near-instant — reading the
+  // persisted session from localStorage synchronously and returning
+  // immediately if the token isn't expired — but when the token IS
+  // expired it has to refresh over the network first, and a slow or
+  // hung refresh right after a cold app launch leaves the boot spinner
+  // up with nothing else bounding it until the 90s bootWatchdog finally
+  // gives up.
+  //
+  // Race it against a short, boot-only fallback: if nothing's arrived
+  // within FIRST_AUTH_EVENT_FALLBACK_MS, feed the session already
+  // sitting in localStorage through the exact same handler, which
+  // renders instantly from the cached profile exactly like a real
+  // SIGNED_IN would. Nothing here is treated as final — the authCompleted
+  // guard inside handleAuthStateChange means the real event, whenever it
+  // eventually arrives, just quietly refreshes currentUser instead of
+  // re-rendering; and if that real event turns out to be a genuine
+  // SIGNED_OUT (the cached tokens were actually dead, not just slow to
+  // check), the existing SIGNED_OUT branch bounces back to the sign-in
+  // screen exactly as it already does today.
+  const FIRST_AUTH_EVENT_FALLBACK_MS = 3000;
+  Promise.race([
+    firstAuthEventPromise.then(() => false),
+    new Promise(resolve => setTimeout(() => resolve(true), FIRST_AUTH_EVENT_FALLBACK_MS)),
+  ]).then(timedOut => {
+    if (!timedOut) return;
+    const cachedSession = readRawCachedSession();
+    if (!cachedSession) return; // nothing to fall back to — real event or bootWatchdog still covers this
+    console.warn('Initial session check is slow — rendering from cached session/profile while it resolves.');
+    handleAuthStateChange('INITIAL_SESSION', cachedSession);
+  });
 
   // autoRefreshToken handles the common case (a timer silently renewing
   // the token before it expires) with no help needed here. What it can't
