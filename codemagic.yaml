@@ -38,6 +38,13 @@ workflows:
       # step below) requires Admin access on Apple's side.
       app_store_connect: codemagic-admin
     environment:
+      groups:
+        # CERTIFICATE_PRIVATE_KEY (secret) — the CLI's "Fetch signing
+        # files" step needs its own private key to create/save a
+        # certificate; it doesn't generate one on its own even with
+        # --create. Set in Codemagic's Environment variables tab, not
+        # committed here.
+        - ios_signing
       vars:
         XCODE_PROJECT: "ios/App/App.xcodeproj"
         XCODE_SCHEME: "App"
