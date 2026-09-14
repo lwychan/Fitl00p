@@ -38,7 +38,7 @@ workflows:
         XCODE_SCHEME: "App"
         APP_STORE_APPLE_ID: 6811922097
         BUNDLE_ID: com.lwychan.fitl00p
-      node: 20.11.1
+      node: 22.11.0
       xcode: latest
 
     scripts:
