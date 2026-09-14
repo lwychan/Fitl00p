@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy Policy — fitl00p</title>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    max-width: 700px;
+    margin: 0 auto;
+    padding: 32px 20px 80px;
+    line-height: 1.6;
+    color: #1a1a1a;
+    background: #fff;
+  }
+  h1 { font-size: 26px; margin-bottom: 4px; }
+  .updated { color: #666; font-size: 14px; margin-bottom: 32px; }
+  h2 { font-size: 19px; margin-top: 36px; }
+  ul { padding-left: 22px; }
+  li { margin-bottom: 6px; }
+  a { color: #2563eb; }
+  .note {
+    background: #f4f6f8;
+    border-radius: 8px;
+    padding: 14px 16px;
+    font-size: 14px;
+    color: #444;
+    margin-top: 32px;
+  }
+</style>
+</head>
+<body>
+
+<h1>Privacy Policy</h1>
+<p class="updated">Last updated: September 2026</p>
+
+<p>fitl00p is a personal fitness, nutrition, and diabetes-tracking app built for
+the developer's own household and invited family members. It is not offered
+to the general public. This page explains what data the app collects, why,
+and how it's handled.</p>
+
+<h2>What we collect</h2>
+<ul>
+  <li><strong>Account info</strong> — name and email address, used to sign you in and identify your data.</li>
+  <li><strong>Health &amp; fitness data</strong> — steps, sleep, heart rate, HRV, weight, and workouts, synced from Apple Health/HealthKit (or entered manually), used to power your dashboard, recovery scores, and daily briefing.</li>
+  <li><strong>Diabetes/glucose data</strong> — for accounts with diabetes tracking enabled, blood glucose and insulin dosing data (via Nightscout) is used for the app's Diabetes tab and dosing suggestions.</li>
+  <li><strong>Meal photos</strong> — photos you take of meals are sent to Anthropic's Claude API to estimate calories and macros. Photos are not stored beyond what's needed to generate that estimate and show it back to you in your log.</li>
+  <li><strong>Device/notification identifiers</strong> — used only to deliver push notifications you've opted into (e.g. your morning briefing).</li>
+</ul>
+
+<h2>What we don't do</h2>
+<ul>
+  <li>We don't sell or share your data with advertisers, data brokers, or any third party for marketing purposes.</li>
+  <li>We don't use your data for tracking across other companies' apps or websites.</li>
+  <li>We don't show ads.</li>
+</ul>
+
+<h2>Where data is stored</h2>
+<p>App data is stored in a private Supabase (PostgreSQL) database, access-controlled
+so each account can only read and write its own data. Meal photos are processed
+via the Anthropic API for AI estimation and are not retained by Anthropic beyond
+that request. Push notification delivery uses Apple's APNs service.</p>
+
+<h2>Your data, your control</h2>
+<p>You can review or correct your data from within the app's Settings at any
+time. To request full deletion of your account and data, contact
+<a href="mailto:lwychndlr@gmail.com">lwychndlr@gmail.com</a>.</p>
+
+<h2>Children</h2>
+<p>fitl00p is not directed at children and is only used by invited adult family
+members.</p>
+
+<h2>Changes to this policy</h2>
+<p>If what the app collects or how it's used changes materially, this page will
+be updated and the date above revised.</p>
+
+<h2>Contact</h2>
+<p>Questions about this policy or your data: <a href="mailto:lwychndlr@gmail.com">lwychndlr@gmail.com</a>.</p>
+
+<div class="note">
+  This is a family/personal-use app distributed via TestFlight, not published
+  on the public App Store.
+</div>
+
+</body>
+</html>
