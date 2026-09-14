@@ -83,18 +83,29 @@ already written at the repo root, targeting this project's actual setup
       GitHub App, scoped to just the `lwychan/Fitl00p` repo
 - [x] Connected the repo in Codemagic — `codemagic.yaml` is detected on
       `main`
-- [x] Generated an App Store Connect API key (App Manager role, least
-      privilege needed) named **`codemagic`**, Key ID `AAYXF4YJBL`, and
-      connected it under Codemagic's Team settings → Integrations →
-      Developer Portal. Matches `integrations: app_store_connect: codemagic`
-      in `codemagic.yaml` exactly. The downloaded `.p8` file has been
-      deleted from Downloads now that it's uploaded to Codemagic (Apple
-      won't let it be re-downloaded anyway — a new key would need
-      generating if ever lost).
+- [x] Generated an App Store Connect API key named **`codemagic`**
+      (Key ID `AAYXF4YJBL`), **App Manager role** — turned out
+      insufficient (see below), kept around for reference/future use.
+- [x] **Generated a second key, `codemagic-admin`** (Key ID `FRXUX2G58F`),
+      **Admin role** — required because creating certificates/provisioning
+      profiles via the API (not just using existing ones) needs Admin
+      access on Apple's side. `codemagic.yaml`'s `integrations:` now
+      points at this one. Both `.p8` files were deleted from Downloads
+      right after uploading to Codemagic.
+- [x] Deleted the certificate Codemagic's UI had generated earlier
+      (`fitloop-distribution`) from both Codemagic's vault and revoked it
+      on Apple's side — its private key was locked in a codepath the
+      CLI-based signing flow (`fetch-signing-files`) can't reach, which
+      was the proximate cause of build #4's failure.
+- [x] Added `VERSIONING_SYSTEM = apple-generic` to the Xcode project —
+      the "Increment build number" step's `agvtool` command needs this to
+      run at all.
 - [x] `codemagic.yaml`'s `APP_STORE_APPLE_ID` is filled in: `6811922097`
       (the FitLoop app record's Apple ID)
-- [ ] **Not yet done: trigger the first build.** Everything's wired up but
-      no build has been started — say the word when you want to try one.
+- [ ] **First successful build still pending** — builds #1-5 all failed
+      (missing profile → Node version → TS config loading → wrong API key
+      role); the three fixes above target the last of those. Next build
+      attempt should confirm.
 - [ ] No `triggering:` block is set — builds only start when you trigger
       them manually from the Codemagic dashboard, so nothing consumes free
       build minutes automatically on every push. Add one later if you want
