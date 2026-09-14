@@ -4,9 +4,11 @@
 #   1. Sign up for Codemagic yourself and connect this GitHub repo
 #      (lwychan/Fitl00p) to it.
 #   2. In Codemagic's Team settings > Integrations > Apple Developer Portal,
-#      add an App Store Connect API key. Whatever name you give it there
-#      must match `app_store_connect: codemagic` under `integrations` below
-#      — rename one side or the other if you pick a different name.
+#      add an App Store Connect API key with the **Admin** role (App
+#      Manager isn't enough — creating certificates/profiles via the API
+#      needs Admin access). Whatever name you give it there must match
+#      `app_store_connect: codemagic-admin` under `integrations` below —
+#      rename one side or the other if you pick a different name.
 #   3. Register the com.lwychan.fitl00p App ID in the Apple Developer
 #      Portal with HealthKit + Push Notifications capabilities enabled,
 #      and create the app record in App Store Connect.
@@ -31,7 +33,10 @@ workflows:
     max_build_duration: 60
     instance_type: mac_mini_m2
     integrations:
-      app_store_connect: codemagic
+      # Must be an Admin-role key, not App Manager — creating certificates
+      # and provisioning profiles via the API (the "Fetch signing files"
+      # step below) requires Admin access on Apple's side.
+      app_store_connect: codemagic-admin
     environment:
       vars:
         XCODE_PROJECT: "ios/App/App.xcodeproj"
