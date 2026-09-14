@@ -57,15 +57,28 @@ only you can make — none of it was attempted.
 
 ## 5. Cloud build service (no Mac needed)
 
-You asked to hold off on choosing one. Recommendation from the research
-already done: **Codemagic** — genuine free tier (500 build min/month, not
-just a trial), most mature Capacitor → TestFlight support. Capawesome Cloud
-and Capgo are viable alternatives but have no free tier (14-day trial only).
+Chose **Codemagic** — genuine free tier (500 build min/month, not just a
+trial), most mature Capacitor → TestFlight support. `codemagic.yaml` is
+already written at the repo root, targeting this project's actual setup
+(SPM, not CocoaPods — builds `ios/App/App.xcodeproj` directly, no
+`.xcworkspace`/`pod install`).
 
-- [ ] Decide which service to use
-- [ ] Sign up for it yourself (Claude Code won't do this or spend any money)
-- [ ] Say the word and I'll generate whatever config file it needs
-      (e.g. `codemagic.yaml`) from the project as it stands now
+- [ ] Sign up for Codemagic yourself (Claude Code won't do this or spend
+      any money) and connect the `lwychan/Fitl00p` GitHub repo to it
+- [ ] In Codemagic's Team settings → Integrations → Apple Developer Portal,
+      add an App Store Connect API key. Name it **`codemagic`** exactly, or
+      edit the `integrations: app_store_connect:` line in `codemagic.yaml`
+      to match whatever name you actually give it.
+- [ ] Once the app exists in App Store Connect (see section 3), fill in its
+      numeric Apple ID in `codemagic.yaml`'s `APP_STORE_APPLE_ID` var (App
+      Store Connect → App Information → Apple ID). Not required for a
+      first build — the build-number step falls back to build 1 if it's
+      still `0` — but needed before a second build to avoid a duplicate
+      build-number rejection.
+- [ ] No `triggering:` block is set — builds only start when you trigger
+      them manually from the Codemagic dashboard, so nothing consumes free
+      build minutes automatically on every push. Add one later if you want
+      that (e.g. on git tags).
 
 ## 6. Connect the build service to GitHub
 

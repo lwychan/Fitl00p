@@ -1,0 +1,77 @@
+# Codemagic build config for the FitLoop iOS (Capacitor) wrapper.
+#
+# Before this can run a build, you need to (see CHECKLIST.md for the full list):
+#   1. Sign up for Codemagic yourself and connect this GitHub repo
+#      (lwychan/Fitl00p) to it.
+#   2. In Codemagic's Team settings > Integrations > Apple Developer Portal,
+#      add an App Store Connect API key. Whatever name you give it there
+#      must match `app_store_connect: codemagic` under `integrations` below
+#      — rename one side or the other if you pick a different name.
+#   3. Register the com.lwychan.fitl00p App ID in the Apple Developer
+#      Portal with HealthKit + Push Notifications capabilities enabled,
+#      and create the app record in App Store Connect.
+#   4. Once the app exists in App Store Connect, fill in its numeric Apple
+#      ID below (App Store Connect > App Information > Apple ID) — the
+#      build-number step works without it for a first build (falls back
+#      to build 1), but later builds need it to avoid duplicate build
+#      numbers.
+#
+# This project uses Swift Package Manager, not CocoaPods (Capacitor 8's
+# default) — there's no ios/App/App.xcworkspace to build, so this targets
+# the .xcodeproj directly and there's no `pod install` step.
+#
+# No `triggering:` block is set on purpose — builds only run when you
+# start them manually from the Codemagic dashboard, so nothing eats into
+# the free tier's monthly build minutes on every push. Add one later
+# (e.g. on git tags) once you're ready for that.
+
+workflows:
+  ios-testflight:
+    name: FitLoop iOS - TestFlight
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    integrations:
+      app_store_connect: codemagic
+    environment:
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.lwychan.fitl00p
+      vars:
+        XCODE_PROJECT: "ios/App/App.xcodeproj"
+        XCODE_SCHEME: "App"
+        APP_STORE_APPLE_ID: 0 # fill in once the app exists in App Store Connect
+      node: 20.11.1
+      xcode: latest
+
+    scripts:
+      - name: Install npm dependencies
+        script: npm ci
+
+      - name: Sync Capacitor (copies src/ into the iOS project, updates Package.swift)
+        script: npx cap sync ios
+
+      - name: Set up code signing (App Store Connect integration + automatic signing)
+        script: xcode-project use-profiles
+
+      - name: Increment build number
+        script: |
+          cd "$CM_BUILD_DIR/ios/App"
+          LATEST_BUILD_NUMBER=$(app-store-connect get-latest-app-store-build-number "$APP_STORE_APPLE_ID" || echo 0)
+          agvtool new-version -all $((LATEST_BUILD_NUMBER + 1))
+
+      - name: Build ipa for distribution
+        script: |
+          xcode-project build-ipa \
+            --project "$XCODE_PROJECT" \
+            --scheme "$XCODE_SCHEME"
+
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+      - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.dSYM
+
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
+        submit_to_app_store: false
