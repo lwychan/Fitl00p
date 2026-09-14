@@ -8,7 +8,7 @@
 // for today (from either MFP-synced health_daily or a manual log entry),
 // then goes quiet for the rest of the day.
 
-const { sendWebPush, londonNow, GEMMA_USER_ID } = require('./_lib/webpush');
+const { sendWebPush, londonNow, GEMMA_USER_ID, kgToLb } = require('./_lib/webpush');
 
 const SB_URL     = process.env.SUPABASE_URL;
 const SB_SERVICE = process.env.SUPABASE_SERVICE_KEY;
@@ -25,12 +25,11 @@ async function sbFetch(path) {
 }
 
 async function buildReminder(userId, todayDateStr) {
-  const [{ data: todayHealthRows }, { data: todayLogRows }, { data: planRows }, { data: healthRows }, { data: profileRows }] = await Promise.all([
+  const [{ data: todayHealthRows }, { data: todayLogRows }, { data: planRows }, { data: healthRows }] = await Promise.all([
     sbFetch(`/rest/v1/health_daily?user_id=eq.${userId}&log_date=eq.${todayDateStr}&weight_kg=not.is.null&select=weight_kg`),
     sbFetch(`/rest/v1/daily_logs?user_id=eq.${userId}&log_date=eq.${todayDateStr}&weight=not.is.null&select=weight`),
     sbFetch(`/rest/v1/weight_plans?user_id=eq.${userId}&is_active=eq.true&select=target_weight&order=created_at.desc&limit=1`),
     sbFetch(`/rest/v1/health_daily?user_id=eq.${userId}&weight_kg=not.is.null&select=weight_kg&order=log_date.desc&limit=1`),
-    sbFetch(`/rest/v1/profiles?id=eq.${userId}&select=weight_unit`),
   ]);
 
   const alreadyLoggedToday = (todayHealthRows?.length || 0) > 0 || (todayLogRows?.length || 0) > 0;
@@ -40,12 +39,17 @@ async function buildReminder(userId, todayDateStr) {
 
   const plan   = planRows?.[0];
   const latest = healthRows?.[0]?.weight_kg != null ? Number(healthRows[0].weight_kg) : null;
-  const unit   = profileRows?.[0]?.weight_unit || 'kg';
   if (!plan || latest == null) return base;
 
-  const toGo = latest - Number(plan.target_weight);
-  if (Math.abs(toGo) < 0.05) return `${base} You’re right at your ${plan.target_weight}${unit} goal.`;
-  return `${base} ${toGo.toFixed(1)}${unit} to your ${plan.target_weight}${unit} goal.`;
+  // Body weight always displays in lb (see app.js's BODY_WEIGHT_UNIT) — both
+  // latest and plan.target_weight are stored as canonical kg, so both need
+  // converting here rather than just labelling the raw kg number "lb".
+  const unit = 'lb';
+  const latestLb = kgToLb(latest);
+  const targetLb = kgToLb(Number(plan.target_weight));
+  const toGo = latestLb - targetLb;
+  if (Math.abs(toGo) < 0.1) return `${base} You’re right at your ${targetLb.toFixed(1)}${unit} goal.`;
+  return `${base} ${toGo.toFixed(1)}${unit} to your ${targetLb.toFixed(1)}${unit} goal.`;
 }
 
 exports.handler = async function () {

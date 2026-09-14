@@ -183,4 +183,10 @@ function londonDateStrOf(isoOrDate) {
 // than building settings UI + a schema for two people.
 const GEMMA_USER_ID = '2c8bf000-b870-4ea1-8a67-ec00ee7d4041';
 
-module.exports = { sendWebPush, londonNow, londonDateStrOf, GEMMA_USER_ID };
+// Same conversion factor as weightToKg/weightFromKg in app.js — kept in
+// sync so a kg value converted here and one converted client-side never
+// drift apart by a rounding-constant mismatch.
+const LB_TO_KG = 0.45359237;
+function kgToLb(kg) { return kg / LB_TO_KG; }
+
+module.exports = { sendWebPush, londonNow, londonDateStrOf, GEMMA_USER_ID, kgToLb };

@@ -133,20 +133,52 @@ exports.handler = async function (event) {
       'POST', row,
       { 'Prefer': 'resolution=merge-duplicates,return=minimal' }
     );
-    if (res.ok) workoutsProcessed++;
+    if (res.ok) {
+      workoutsProcessed++;
 
-    // ── Heart Rate Recovery ────────────────────────────────
-    // HealthKit's heartRateRecoveryOneMinute (watchOS 11+/Ultra 2+) —
+      // Retroactively resolve any pending "possible undetected activity"
+      // flag this real workout now covers. The detection block further
+      // down can only ever check against apple_health_workouts rows that
+      // already existed AT THAT SYNC — if Health Auto Export's separate
+      // Workouts export lags behind its Steps/Heart Rate export (they're
+      // often different automations on different schedules), a real walk
+      // can land here well after steps-only detection already flagged
+      // (and pushed a notification about) the same window as "Apple
+      // Health didn't log this." That claim was true when it fired, but
+      // stops being true the instant this row lands — without this,
+      // nothing ever goes back and clears it, so the stale flag sits
+      // there prompting the person to "confirm" a walk that was already
+      // real, and confirming it insert()s a genuine duplicate workout.
+      const overlapPadMs = 15 * 60000; // slack for rounding between the two sources' own timestamps
+      const overlapRes = await sbFetch(
+        `/rest/v1/detected_activities?user_id=eq.${user_id}&status=eq.pending` +
+        `&started_at=lt.${new Date(new Date(row.ended_at).getTime() + overlapPadMs).toISOString()}` +
+        `&ended_at=gt.${new Date(new Date(row.started_at).getTime() - overlapPadMs).toISOString()}` +
+        `&select=id`
+      );
+      if (overlapRes.ok && overlapRes.data?.length) {
+        for (const d of overlapRes.data) {
+          await sbFetch(`/rest/v1/detected_activities?id=eq.${d.id}`, 'PATCH', { status: 'auto_matched' }, { 'Prefer': 'return=minimal' });
+        }
+      }
+    }
+
+    // ── Heart Rate Recovery (legacy per-workout path) ──────
+    // HealthKit's older heartRateRecoveryOneMinute representation —
     // Health Auto Export sends it as a short time-series of {date,qty}
     // samples taken across the recovery window right after the workout
     // ends, not a single value, so the drop is derived: peak HR during
     // the workout (maxHeartRate, falling back to the recovery array's
     // own first sample if that's missing) minus the lowest point reached
-    // during the sampled recovery window. A fitness marker (how fast the
-    // autonomic nervous system disengages), not a same-day readiness
-    // signal the way HRV is — deliberately kept out of the Recovery
-    // score for that reason and surfaced as its own health tile instead.
-    // Best (highest) value of the day wins if there were multiple workouts.
+    // during the sampled recovery window. In practice this array hasn't
+    // been observed in real payloads — the "Cardio Recovery" daily metric
+    // handled in the metrics loop further down is what actually populates
+    // hr_recovery_bpm — but this stays as a fallback in case a payload
+    // ever includes it. A fitness marker (how fast the autonomic nervous
+    // system disengages), not a same-day readiness signal the way HRV is —
+    // deliberately kept out of the Recovery score for that reason and
+    // surfaced as its own health tile instead. Best (highest) value of the
+    // day wins if there were multiple workouts.
     if (Array.isArray(w.heartRateRecovery) && w.heartRateRecovery.length >= 2) {
       const samples = w.heartRateRecovery.map(p => Number(p.qty)).filter(n => Number.isFinite(n));
       if (samples.length >= 2) {
@@ -352,6 +384,21 @@ exports.handler = async function (event) {
       if (metricName.includes('vo2_max') || metricName === 'vo2max') {
         const val = item.qty;
         if (val != null) d.vo2_max = round1(val);
+      }
+
+      // ── Cardio Recovery ────────────────────────────────────
+      // Name: "Cardio Recovery" — Apple's current HealthKit metric for this
+      // (HKQuantityTypeIdentifierCardioRecoveryHeartRate, watchOS 11+),
+      // sent as a plain daily qty sample like VO2 Max above rather than
+      // nested per-workout — the actual source of what this app calls
+      // hr_recovery_bpm in practice; the older per-workout
+      // heartRateRecovery time-series handled in the workouts loop further
+      // up (a different, earlier HealthKit representation of the same
+      // idea) is kept as a fallback in case a payload ever includes it
+      // instead. Best (highest) value of the day wins either way.
+      if (metricName.includes('cardio_recovery')) {
+        const val = item.qty;
+        if (val != null) d.hr_recovery_bpm = Math.max(d.hr_recovery_bpm || 0, Math.round(Number(val)));
       }
 
       // ── Exercise Minutes ─────────────────────────────────

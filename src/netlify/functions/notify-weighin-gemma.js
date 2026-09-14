@@ -6,7 +6,7 @@
 // _lib/webpush.js for why this is a separate function rather than a
 // per-user setting.
 
-const { sendWebPush, londonNow, GEMMA_USER_ID } = require('./_lib/webpush');
+const { sendWebPush, londonNow, GEMMA_USER_ID, kgToLb } = require('./_lib/webpush');
 
 const SB_URL     = process.env.SUPABASE_URL;
 const SB_SERVICE = process.env.SUPABASE_SERVICE_KEY;
@@ -38,9 +38,14 @@ async function buildReminder(todayDateStr) {
   const unit   = profileRows?.[0]?.weight_unit || 'kg';
   if (!plan || latest == null) return base;
 
-  const toGo = latest - Number(plan.target_weight);
-  if (Math.abs(toGo) < 0.05) return `${base} You’re right at your ${plan.target_weight}${unit} goal.`;
-  return `${base} ${toGo.toFixed(1)}${unit} to your ${plan.target_weight}${unit} goal.`;
+  // latest and plan.target_weight are both stored as canonical kg — convert
+  // to her display unit rather than just labelling the raw kg number,
+  // which previously gave a wrong reading whenever unit was 'lb'.
+  const latestDisp = unit === 'lb' ? kgToLb(latest) : latest;
+  const targetDisp = unit === 'lb' ? kgToLb(Number(plan.target_weight)) : Number(plan.target_weight);
+  const toGo = latestDisp - targetDisp;
+  if (Math.abs(toGo) < 0.05) return `${base} You’re right at your ${targetDisp.toFixed(1)}${unit} goal.`;
+  return `${base} ${toGo.toFixed(1)}${unit} to your ${targetDisp.toFixed(1)}${unit} goal.`;
 }
 
 exports.handler = async function () {

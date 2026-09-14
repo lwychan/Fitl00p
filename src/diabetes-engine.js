@@ -99,15 +99,43 @@ function activeInsulin(boluses, corrections, now, opts = {}) {
 }
 
 /* ─────────────────────────────────────────────────────────
-   COB — linear carb absorption over 180 minutes
+   COB — piecewise-linear ("trapezoid") carb absorption over 180 minutes
+   Real food doesn't start absorbing at full rate the instant it's eaten
+   and then absorb at a constant rate the whole way through (the old flat
+   linear model's implicit assumption) — digestion ramps up, holds near
+   its peak rate for a while, then tails off. Ported from LoopKit's
+   PiecewiseLinearAbsorption: absorption RATE rises linearly from 0 to a
+   peak over the first percentEndOfRise of the duration, holds at that
+   peak until percentStartOfFall, then decays linearly to 0 by the end.
+   `scale` is the peak rate needed so the whole rate curve integrates to
+   exactly 100% absorbed by t=duration, regardless of the two percentages
+   chosen (same derivation LoopKit uses).
    ───────────────────────────────────────────────────────── */
+const CARB_PCT_END_OF_RISE   = 0.15; // rate ramps 0 -> peak over the first 15% of absorption time
+const CARB_PCT_START_OF_FALL = 0.5;  // holds at peak from 15% to 50%, then decays to 0 by 100%
+const CARB_ABSORPTION_SCALE  = 2 / (1 + CARB_PCT_START_OF_FALL - CARB_PCT_END_OF_RISE);
+
+// Cumulative fraction of total carbs absorbed by percentTime (0-1 of the
+// way through the absorption duration) — the integral of the trapezoid
+// rate curve described above, in closed form per segment.
+function carbPercentAbsorbedAtPercentTime(percentTime) {
+  const r1 = CARB_PCT_END_OF_RISE, r2 = CARB_PCT_START_OF_FALL, scale = CARB_ABSORPTION_SCALE;
+  if (percentTime <= 0) return 0;
+  if (percentTime < r1) return 0.5 * scale * percentTime * percentTime / r1;
+  if (percentTime < r2) return scale * (percentTime - 0.5 * r1);
+  if (percentTime < 1) {
+    return scale * (r2 - 0.5 * r1 + (percentTime - r2) * (1 - 0.5 * (percentTime - r2) / (1 - r2)));
+  }
+  return 1;
+}
 
 // Fraction of a meal's carbs still ON BOARD (unabsorbed) `t` minutes
-// after it was eaten. 1 at t<=0, straight line down to 0 at t>=duration.
+// after it was eaten. 1 at t<=0, 0 at t>=duration, trapezoid-shaped in
+// between (see carbPercentAbsorbedAtPercentTime above).
 function cobFraction(t, duration = COB_DURATION_MINUTES) {
   if (t <= 0) return 1;
   if (t >= duration) return 0;
-  return 1 - t / duration;
+  return 1 - carbPercentAbsorbedAtPercentTime(t / duration);
 }
 
 // Sums COB (in grams) across bolus rows with carbs logged, at time `now`.
@@ -208,6 +236,49 @@ function carbAbsorptionWithin(boluses, now, horizonMinutes, opts = {}) {
   return total;
 }
 
+// Same idea as insulinActionWithin/carbAbsorptionWithin above, but
+// anchored to two absolute timestamps instead of "now, now+H" — needed
+// for retrospective correction, which looks BACKWARD at how much
+// insulin/carb effect the model says already happened between a past
+// moment and now. A dose given partway through that window (after
+// startMs but before endMs) still contributes its effect from its own
+// dose time onward — clamping tStart up to the dose's own time (never
+// negative) handles that correctly, same as a dose given before
+// startMs correctly gets tStart = its age at startMs.
+function insulinEffectBetween(boluses, corrections, startMs, endMs, opts = {}) {
+  const { peak = IOB_PEAK_MINUTES, duration = IOB_DURATION_MINUTES } = opts;
+  let total = 0;
+  for (const dose of [...(boluses || []), ...(corrections || [])]) {
+    const units = Number(dose.units) || 0;
+    if (units <= 0) continue;
+    const doseMs = toMs(dose.time);
+    if (doseMs == null || doseMs > endMs) continue;
+    const tStart = minutesBetween(doseMs, Math.max(doseMs, startMs));
+    const tEnd = minutesBetween(doseMs, endMs);
+    const remainingAtStart = iobFraction(tStart, peak, duration);
+    const remainingAtEnd = iobFraction(tEnd, peak, duration);
+    total += units * Math.max(0, remainingAtStart - remainingAtEnd);
+  }
+  return total; // units of insulin action exerted between startMs and endMs
+}
+
+function carbEffectBetween(boluses, startMs, endMs, opts = {}) {
+  const { duration = COB_DURATION_MINUTES } = opts;
+  let total = 0;
+  for (const dose of boluses || []) {
+    const carbs = Number(dose.carbs) || 0;
+    if (carbs <= 0) continue;
+    const doseMs = toMs(dose.time);
+    if (doseMs == null || doseMs > endMs) continue;
+    const tStart = minutesBetween(doseMs, Math.max(doseMs, startMs));
+    const tEnd = minutesBetween(doseMs, endMs);
+    const remainingAtStart = cobFraction(tStart, duration);
+    const remainingAtEnd = cobFraction(tEnd, duration);
+    total += carbs * Math.max(0, remainingAtStart - remainingAtEnd);
+  }
+  return total; // grams absorbed between startMs and endMs
+}
+
 /* ─────────────────────────────────────────────────────────
    Trend + effective glucose
    ───────────────────────────────────────────────────────── */
@@ -298,10 +369,24 @@ const RESOLVE_GIVEUP_MINUTES = 240; // 4h   — stop waiting, flag gaveUp
 const ROLLING_FACTOR_WINDOW  = 10;  // most recent N clean corrections averaged
 const MIN_CLEAN_SAMPLE       = 3;   // spec: need >=3 before trusting a factor
 const MIN_RELIABLE_FACTOR    = 0.5; // mmol/L per unit — below this, withhold
+// Above this, a real ISF is clinically implausible for anyone — far more
+// likely a small correction (e.g. 0.1-0.2u) got resolved against a
+// glucose drop actually caused by something else nearby (exercise, an
+// overlapping larger dose, food) than a genuine dose-response reading.
+// Division by a tiny unit count amplifies that noise hugely, which is
+// exactly the failure mode this guards against.
+const MAX_RELIABLE_FACTOR    = 15;  // mmol/L per unit — above this, withhold
 const MAX_SUGGESTED_UNITS    = 10;  // hard cap regardless of the math
 const STACKING_MIN_AGE       = 15;  // minutes
 const STACKING_MAX_AGE       = 110; // minutes
 const STACKING_MIN_IOB       = 0.5; // units
+
+// Modern pumps (e.g. Tandem t:slim X2) can deliver boluses in 0.01u
+// micro-increments — every dose suggestion below rounds to that, not the
+// old 0.5u snap, which was throwing away real precision someone on a
+// microdosing-capable pump can actually act on.
+const DOSE_ROUND_UNITS = 0.01;
+const roundDose = u => Math.round(u / DOSE_ROUND_UNITS) * DOSE_ROUND_UNITS;
 
 // Resolves a single correction against the glucose history available "as
 // of" `now`. Terminal states (resolved / gaveUp) on the INPUT object are
@@ -374,13 +459,19 @@ function resolveCorrections(corrections, glucoseHistory, boluses, now = Date.now
 }
 
 // Rolling average dropPerUnit over the most recent clean (resolved,
-// carb-free) corrections. "Clean" excludes anything still waiting/gaveUp
-// or flagged with carbInterference. Needs >=3 clean samples to be trusted.
+// carb-free) corrections. "Clean" excludes anything still waiting/gaveUp,
+// flagged with carbInterference, or landing outside a clinically
+// plausible per-correction range (MIN/MAX_RELIABLE_FACTOR) — a single
+// implausible sample (typically a tiny-unit correction whose glucose
+// drop was actually caused by something else) would otherwise skew the
+// whole rolling average even though the other 9 samples are good. Needs
+// >=3 clean samples to be trusted.
 function personalCorrectionFactor(resolvedCorrections, opts = {}) {
   const { windowSize = ROLLING_FACTOR_WINDOW, minSample = MIN_CLEAN_SAMPLE } = opts;
 
   const clean = (resolvedCorrections || [])
-    .filter(c => c.resolved && !c.carbInterference && Number.isFinite(c.dropPerUnit))
+    .filter(c => c.resolved && !c.carbInterference && Number.isFinite(c.dropPerUnit)
+      && c.dropPerUnit >= MIN_RELIABLE_FACTOR && c.dropPerUnit <= MAX_RELIABLE_FACTOR)
     .sort((a, b) => toMs(a.time) - toMs(b.time));
 
   const recent = clean.slice(-windowSize);
@@ -399,13 +490,23 @@ function personalCorrectionFactor(resolvedCorrections, opts = {}) {
 // personalCorrectionFactor), otherwise fall back to the pump-setting
 // value so dosing isn't blocked purely for lack of history yet. Never
 // fabricates a number when neither is available.
+//
+// This is the single point every caller (correction-dose suggestion,
+// the 2h hypo forecast, the chart's projected-curve, missed-basal
+// impact, the meal-dose split calculator, sensitivity-by-time-of-day)
+// gets its factor from — bounding it here to a clinically plausible
+// range (MIN/MAX_RELIABLE_FACTOR) means every one of them is protected
+// by construction, rather than each needing its own copy of the same
+// check (personalCorrectionFactor's own per-sample filtering already
+// keeps an OBSERVED factor in-bounds; this closes the same gap for the
+// pump-setting fallback, which wasn't filtered anywhere).
 function resolveCorrectionFactor(resolvedCorrections, settings, opts = {}) {
   const observed = personalCorrectionFactor(resolvedCorrections, opts);
   if (observed.sufficient) {
     return { factor: observed.factor, source: 'observed', sampleSize: observed.sampleSize, cleanSampleSize: observed.cleanSampleSize };
   }
   const pumpFactor = Number(settings?.correctionFactor);
-  if (Number.isFinite(pumpFactor) && pumpFactor > 0) {
+  if (Number.isFinite(pumpFactor) && pumpFactor >= MIN_RELIABLE_FACTOR && pumpFactor <= MAX_RELIABLE_FACTOR) {
     return { factor: pumpFactor, source: 'pump-setting', sampleSize: observed.sampleSize, cleanSampleSize: observed.cleanSampleSize };
   }
   return { factor: null, source: null, sampleSize: observed.sampleSize, cleanSampleSize: observed.cleanSampleSize };
@@ -433,19 +534,63 @@ function detectStackingCaution(boluses, corrections, now, opts = {}) {
   return flagged;
 }
 
+// How much weight the correction-dose suggestion gives the retrospective
+// discrepancy, vs. the full strength it's used at in the forecast/chart.
+// Those two are advisory displays; this number is the actual insulin
+// units suggested, so it deliberately trusts a brand-new fast-reacting
+// signal less for that — same asymmetric-caution posture as
+// projectedGlucose's half-credit for a rising trend elsewhere in this file.
+const CORRECTION_RC_WEIGHT = 0.5;
+
 // Suggest dose = (effective − idealTarget)/factor − IOB, rounded to 0.5u.
 // Guardrails withhold the number entirely (suggestedUnits stays null)
 // rather than show something misleading — a low-confidence factor, a
 // stale reading, or a still-cresting recent dose are all reasons to wait
-// and look again rather than trust the math.
-function suggestCorrectionDose(ctx, factorResult, boluses, corrections, now = Date.now()) {
+// and look again rather than trust the math. retrospectiveDiscrepancy
+// (from retrospectiveCorrection, see there) is optional and additive —
+// null/omitted behaves exactly as before this existed.
+function suggestCorrectionDose(ctx, factorResult, boluses, corrections, now = Date.now(), retrospectiveDiscrepancy = null, input = null) {
   const settings = ctx.settings || {};
   const idealTarget = Number(settings.idealTarget);
+  const retrospectiveEffect = retrospectiveDiscrepancy != null ? retrospectiveDiscrepancy * CORRECTION_RC_WEIGHT : 0;
+  const adjustedEffectiveGlucose = ctx.effectiveGlucose != null ? ctx.effectiveGlucose + retrospectiveEffect : null;
+
+  // ctx.cob (grams still unabsorbed — see dosingContext/carbsOnBoard) was
+  // computed but never used here: a reading taken while a meal or hypo
+  // treatment is still digesting isn't the number glucose will settle at,
+  // it's a snapshot mid-rise. Converted to an expected further mmol/L
+  // rise so a correction given right now is sized for where glucose is
+  // actually headed over the rest of the meal's absorption, not just
+  // where it happens to be this instant.
+  //
+  // Priced the same way the Meal Bolus Calculator prices a fresh meal —
+  // suggestMealDose's own recency/situation-weighted history for this
+  // exact carb amount, when there's enough of it — rather than always
+  // falling back to the flat pump-programmed carb ratio the way this
+  // used to unconditionally do. suggestMealDose already degrades to that
+  // same flat ratio internally when history is thin, so this never
+  // regresses below the old behavior, only personalizes on top of it
+  // when real history supports it. Before this, the two tools could
+  // suggest very different totals for what was actually the same
+  // digesting meal, since one had learned this person's real carb
+  // sensitivity and the other silently hadn't.
+  const carbRatio = Number(settings.carbRatio) || null;
+  const cobDose = (input && ctx.cob > 0) ? suggestMealDose(input, ctx.cob, now) : null;
+  const cobUnits = cobDose?.suggestedUnits != null
+    ? cobDose.suggestedUnits
+    : (carbRatio && ctx.cob > 0 ? ctx.cob / carbRatio : 0);
+  const cobRiseMmol = (cobUnits > 0 && factorResult.factor != null) ? cobUnits * factorResult.factor : 0;
 
   const base = {
     factor: factorResult.factor,
     factorSampleSize: factorResult.sampleSize,
     effectiveGlucose: ctx.effectiveGlucose,
+    retrospectiveEffect,
+    adjustedEffectiveGlucose,
+    cob: ctx.cob,
+    cobRiseMmol,
+    cobPersonalized: cobDose?.source === 'weighted-history',
+    cobPersonalizedSampleSize: cobDose?.source === 'weighted-history' ? cobDose.sampleSize : 0,
     idealTarget,
     iob: ctx.iob,
     suggestedUnits: null,
@@ -470,10 +615,10 @@ function suggestCorrectionDose(ctx, factorResult, boluses, corrections, now = Da
     return { ...base, stackingCaution: true, stackingDoses, withheldReason: 'stacking-caution' };
   }
 
-  const raw = (ctx.effectiveGlucose - idealTarget) / factorResult.factor - ctx.iob;
+  const raw = (adjustedEffectiveGlucose + cobRiseMmol - idealTarget) / factorResult.factor - ctx.iob;
   const clamped = Math.max(0, raw); // insulin can't be un-injected — never suggest negative
   const capped = Math.min(MAX_SUGGESTED_UNITS, clamped);
-  const rounded = Math.round(capped * 2) / 2;
+  const rounded = roundDose(capped);
 
   return {
     ...base,
@@ -490,8 +635,9 @@ function evaluateCorrection(input, now = Date.now()) {
   const resolvedCorrections = resolveCorrections(corrections, glucoseHistory, boluses, now);
   const factor = resolveCorrectionFactor(resolvedCorrections, settings);
   const context = dosingContext({ glucoseHistory, boluses, corrections, settings }, now);
-  const suggestion = suggestCorrectionDose(context, factor, boluses, corrections, now);
-  return { context, resolvedCorrections, factor, suggestion };
+  const rc = retrospectiveCorrection(input, now);
+  const suggestion = suggestCorrectionDose(context, factor, boluses, corrections, now, rc.discrepancy);
+  return { context, resolvedCorrections, factor, retrospective: rc, suggestion };
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -570,8 +716,17 @@ function insight(id, category, title, summary, n, extra = {}) {
 
 // ── 1. Correction-factor accuracy ───────────────────────────
 function patternCorrectionAccuracy(d) {
+  // predictedGlucose is only ever a real number when something upstream
+  // actually recorded a prediction — nightscout-adapter.js sets it to
+  // `null` for every correction since nothing computes one today.
+  // Number(null) coerces to 0 (not NaN), which used to slip straight
+  // past Number.isFinite() below and get compared against actualGlucose
+  // as if "0" were a real predicted value — reporting the raw glucose
+  // reading itself as a bogus "prediction error" and firing needs-attention
+  // on essentially every check. Checking c.predictedGlucose directly
+  // (no Number() coercion) correctly excludes the null case.
   const withPrediction = d.resolvedInWindow.filter(c =>
-    c.resolved && Number.isFinite(Number(c.predictedGlucose)) && Number.isFinite(c.actualGlucose));
+    c.resolved && Number.isFinite(c.predictedGlucose) && Number.isFinite(c.actualGlucose));
   const n = withPrediction.length;
   if (n < 3) return null;
 
@@ -623,8 +778,8 @@ function patternExerciseSensitivity(d) {
   const category = pctDiff > 0 ? 'needs-attention' : 'worth-knowing';
   const direction = pctDiff > 0 ? 'more' : 'less';
   const tryText = pctDiff > 0
-    ? 'Consider a smaller correction dose (or a slightly higher target) within a few hours of exercise to avoid overcorrecting.'
-    : 'You may need a slightly larger correction than usual soon after exercise to bring glucose down as expected.';
+    ? `Try dosing about ${Math.abs(pctDiff).toFixed(0)}% less within 8h of exercise — a correction factor closer to ${postExAvg.toFixed(1)} mmol/L/u (vs your usual ~${restAvg.toFixed(1)}) matches what's actually been working.`
+    : `You may need about ${Math.abs(pctDiff).toFixed(0)}% more insulin than usual soon after exercise — closer to ${postExAvg.toFixed(1)} mmol/L/u (vs your usual ~${restAvg.toFixed(1)}) to bring glucose down as expected.`;
   return insight('exercise-sensitivity', category,
     `You run ${direction} insulin-sensitive after exercise`,
     `Correction strength was ${postExAvg.toFixed(2)} mmol/L/u within 8h of a workout (n=${postEx.length}) vs ${restAvg.toFixed(2)} at rest (n=${rest.length}) — ${Math.abs(pctDiff).toFixed(0)}% ${direction} effective.`,
@@ -664,7 +819,7 @@ function patternPostWorkoutTrajectory(d) {
   const category = (afterAvg != null && afterAvg < -1.5) ? 'needs-attention' : 'worth-knowing';
   const extra = { beforeAvg, duringAvg, afterAvg };
   if (category === 'needs-attention') {
-    extra.tryText = 'Consider a small carb top-up in the hours after this type of workout to blunt the delayed drop.';
+    extra.tryText = `Consider a small carb top-up in the hours after this type of workout — glucose has been dropping about ${Math.abs(afterAvg).toFixed(1)} mmol/L on average in the 4h afterward.`;
   }
   return insight('post-workout-trajectory', category,
     'Your typical workout glucose trajectory',
@@ -743,7 +898,7 @@ function patternDawnPhenomenon(d) {
     return insight('dawn-phenomenon', category,
       'Dawn phenomenon — an unprompted early-morning rise',
       `Glucose rose ${avgRise.toFixed(1)} mmol/L on average between the overnight trough and ~7am, with no meal or dose in between, on ${positiveDays}/${rises.length} mornings.`,
-      rises.length, { avgRise, positiveDays, tryText: 'Ask your care team about a small pre-emptive dose or basal adjustment timed before the rise.' });
+      rises.length, { avgRise, positiveDays, tryText: `Ask your care team about a small pre-emptive dose or basal adjustment timed before the rise — it's been adding about ${avgRise.toFixed(1)} mmol/L on ${positiveDays}/${rises.length} mornings checked.` });
   }
   return insight('dawn-phenomenon', 'going-well',
     'No consistent dawn phenomenon',
@@ -798,7 +953,7 @@ function patternMealSizeTertiles(d) {
     const window = d.readings.filter(r => r.ms >= m._ms && r.ms <= m._ms + 3 * 3600000);
     if (!preR || !window.length) return null;
     const peak = Math.max(...window.map(r => r.value));
-    return { carbs: Number(m.carbs), rise: peak - preR.value };
+    return { carbs: Number(m.carbs), units: Number(m.units) || 0, rise: peak - preR.value };
   }).filter(Boolean);
   if (withOutcome.length < 9) return null;
 
@@ -809,14 +964,24 @@ function patternMealSizeTertiles(d) {
     medium: sorted.slice(third, third * 2),
     large:  sorted.slice(third * 2),
   };
-  const stats = Object.fromEntries(Object.entries(tertiles).map(([k, v]) =>
-    [k, { n: v.length, avgCarbs: mean(v.map(x => x.carbs)), avgRise: mean(v.map(x => x.rise)) }]));
+  const stats = Object.fromEntries(Object.entries(tertiles).map(([k, v]) => {
+    // Observed carb-ratio (g per unit) for meals THIS size actually got —
+    // purely descriptive of what already happened, not a computed
+    // recommendation, so it's safe to surface directly (see the "Try"
+    // text below, which only ever points at ratios already observed in
+    // the user's own data rather than deriving a new number).
+    const withDose = v.filter(x => x.units > 0);
+    const avgRatio = withDose.length ? mean(withDose.map(x => x.carbs / x.units)) : null;
+    return [k, { n: v.length, avgCarbs: mean(v.map(x => x.carbs)), avgRise: mean(v.map(x => x.rise)), avgRatio }];
+  }));
 
   const largeVsSmall = stats.large.avgRise - stats.small.avgRise;
   const category = largeVsSmall > 3 ? 'needs-attention' : 'worth-knowing';
   const extra = { stats, largeVsSmall };
   if (largeVsSmall > 1.5) {
-    extra.tryText = 'Consider a slightly stronger dose (or a small pre-bolus) for your larger meals.';
+    extra.tryText = (stats.large.avgRatio != null && stats.small.avgRatio != null)
+      ? `Your larger meals are getting about 1u per ${stats.large.avgRatio.toFixed(0)}g — similar to smaller meals' 1u per ${stats.small.avgRatio.toFixed(0)}g — but rising ${largeVsSmall.toFixed(1)} mmol/L more. Consider a stronger ratio (or a small pre-bolus) just for meals this size.`
+      : 'Consider a slightly stronger dose (or a small pre-bolus) for your larger meals.';
   }
   return insight('meal-size-tertiles', category,
     'Bigger meals spike disproportionately' ,
@@ -923,7 +1088,7 @@ function patternStackingCausedLows(d) {
   return insight('stacking-caused-lows', 'needs-attention',
     'Stacked corrections have led to lows',
     `${events.length} correction${events.length === 1 ? '' : 's'} given while a previous dose was still active were followed by a low within 3h.`,
-    clean.length, { events, tryText: 'Check IOB before correcting again, and consider waiting longer between corrections.' });
+    clean.length, { events, tryText: `Check IOB before correcting again — waiting at least ${(STACKING_MAX_AGE / 60).toFixed(1)}h since your last dose (the same threshold this check itself uses to flag stacking) would avoid this.` });
 }
 
 // ── 12. Evening-exercise → overnight-lows ────────────────────
@@ -1001,8 +1166,8 @@ function patternHypoRecovery(d) {
   const extra = { avgTimeToSafety, overshootPct };
   if (category === 'needs-attention') {
     const tryBits = [];
-    if (avgTimeToSafety > 45) tryBits.push('treating lows with faster-acting carbs (e.g. glucose tablets or juice) to bring recovery time down');
-    if (overshootPct > 40) tryBits.push('using a smaller hypo treatment to avoid rebounding high afterwards');
+    if (avgTimeToSafety > 45) tryBits.push('treating lows with faster-acting carbs (glucose tablets or juice) — the standard ~15g-then-recheck-in-15 approach tends to work faster than large or slow-digesting treatments');
+    if (overshootPct > 40) tryBits.push('sticking closer to that same ~15g rather than over-treating, to avoid rebounding high afterwards');
     extra.tryText = tryBits.join(', and ') + '.';
   }
   return insight('hypo-recovery', category,
@@ -1102,7 +1267,13 @@ function analyzePatterns(input, now = Date.now()) {
   const correctionsInWindow = windowFilter(corrections, 'time', windowStart, windowEnd);
   const resolvedInWindow = resolveCorrections(correctionsInWindow, glucoseHistory, boluses, now)
     .map(c => ({ ...c, _ms: toMs(c.time) }));
-  const cleanInWindow = resolvedInWindow.filter(c => c.resolved && !c.carbInterference && Number.isFinite(c.dropPerUnit));
+  // Same plausibility bounds personalCorrectionFactor uses (see its own
+  // comment) — without them, a tiny-unit correction whose glucose drop
+  // was actually caused by something else nearby produces a wildly
+  // inflated dropPerUnit that skews exercise-sensitivity/drift averages
+  // into clinically implausible territory (e.g. 40+ mmol/L/u).
+  const cleanInWindow = resolvedInWindow.filter(c => c.resolved && !c.carbInterference && Number.isFinite(c.dropPerUnit)
+    && c.dropPerUnit >= MIN_RELIABLE_FACTOR && c.dropPerUnit <= MAX_RELIABLE_FACTOR);
   const workouts = windowFilter(activities.workouts, 'startTime', windowStart, windowEnd);
 
   const d = {
@@ -1144,6 +1315,17 @@ const WORKOUT_DROP_WINDOW_HOURS   = 8;
 const WORKOUT_MIN_SESSIONS_RELIABLE = 3;  // minimum n before "reliable drop" is assessed at all
 const WORKOUT_MIN_SESSIONS_PERSONAL = 2;  // minimum n before the pre-workout advisor trusts personal data
 const HYPO_FORECAST_HORIZON_MIN   = 120;
+// A learned correction factor is fit against small correction doses
+// (typically well under a unit) — extrapolating it linearly across a
+// much larger carb-equivalent load (a big meal's worth of grams, divided
+// through the carb ratio) can produce a projected glucose the model has
+// no real basis for, e.g. 30-40+ mmol/L, a reading no one's ever
+// actually had. Clamping the forecast to this ceiling keeps a single
+// oversized meal from turning "may help / worth a glance" into a number
+// that looks like a hard prediction and isn't one — real severe DKA-range
+// glucose is already an emergency the person knows about directly from
+// their own CGM reading, not something this forecast needs to chase.
+const FORECAST_GLUCOSE_MAX_MMOL   = 25;
 const TIME_OF_DAY_LOOKBACK_DAYS   = 14;
 const TIME_OF_DAY_BUMP_LOW_COUNT  = 2;
 const PREVENTATIVE_CARB_TARGET    = 5.0;  // mmol/L — the trough level preventative carbs aim to lift to
@@ -1244,6 +1426,105 @@ function openWorkoutDropWithin(profiles, workouts, now, horizonMin) {
   return alert.medianDrop * (horizonHours / WORKOUT_DROP_WINDOW_HOURS);
 }
 
+/* ── Retrospective correction ─────────────────────────────────
+   Ported from Loop's StandardRetrospectiveCorrection: rather than only
+   learning ISF from an average of past corrections over days
+   (personalCorrectionFactor above), this asks a much faster question —
+   over just the last 30 minutes, how far off was the insulin+carb
+   model's PREDICTED glucose movement from what actually happened? That
+   gap ("discrepancy") is a live signal that today's effective
+   sensitivity/absorption is running differently than the model assumes
+   — illness, hormones, a bad infusion site, activity the log doesn't
+   capture — and catches it within the hour instead of waiting for
+   enough corrections to shift a multi-day rolling average.
+
+   The discrepancy is used directly as an additive glucose effect
+   (mmol/L, same units as the reading itself) rather than being run back
+   through the correction factor — same as Loop's own implementation,
+   which treats it as "glucose is moving faster/slower than modeled" and
+   extrapolates that residual movement forward, decaying it out over
+   RC_EFFECT_DURATION_MIN since an unexplained trend from half an hour
+   ago says less and less about right now the further out it's projected.
+   Set longer than the 2h hypo-forecast horizon on purpose — decayed to
+   exactly zero by RC_EFFECT_DURATION_MIN would mean the forecast never
+   actually felt any of it (a reduced-but-nonzero echo at 2h out is the
+   whole point of using this to sharpen that specific forecast).
+   ───────────────────────────────────────────────────────── */
+const RETROSPECTION_INTERVAL_MIN = 30;  // Loop's own default lookback window
+const RC_READING_TOLERANCE_MIN   = 10;  // how far a reading may sit from the target time and still count
+const RC_EFFECT_DURATION_MIN     = 180; // the discrepancy's effect decays linearly to zero over this long — see note above on why it outlasts the 2h forecast horizon
+
+// The glucose reading closest to targetMs, within toleranceMin — used to
+// find "the reading from ~30 minutes ago" without requiring one to land
+// on an exact 5-minute boundary (real CGM data doesn't always).
+function nearestReading(readings, targetMs, toleranceMin) {
+  let best = null, bestDiff = Infinity;
+  for (const r of readings) {
+    const diff = Math.abs(r.ms - targetMs);
+    if (diff < bestDiff) { best = r; bestDiff = diff; }
+  }
+  return best && bestDiff <= toleranceMin * 60000 ? best : null;
+}
+
+// Computes the current retrospective-correction discrepancy. Withheld
+// (discrepancy: null) rather than guessed when there's no reliable
+// factor, no carb ratio, or the glucose readings bracketing the window
+// aren't actually there — same "withhold rather than fake precision"
+// posture as the rest of this engine.
+function retrospectiveCorrection(input, now = Date.now()) {
+  const { glucoseHistory = [], boluses = [], corrections = [], settings = {} } = input || {};
+  const nowMs = toMs(now);
+  const curveOpts = insulinCurveOpts(settings);
+  const carbRatio = Number(settings.carbRatio) || null;
+
+  const resolvedCorrections = resolveCorrections(corrections, glucoseHistory, boluses, now);
+  const factorResult = resolveCorrectionFactor(resolvedCorrections, settings);
+  if (factorResult.factor == null) {
+    return { discrepancy: null, withheldReason: 'insufficient-history', factor: factorResult };
+  }
+  if (!carbRatio) {
+    return { discrepancy: null, withheldReason: 'missing-carb-ratio', factor: factorResult };
+  }
+
+  const readings = (glucoseHistory || [])
+    .map(r => ({ ms: toMs(r.time), value: Number(r.value) }))
+    .filter(r => r.ms != null && !Number.isNaN(r.value) && r.ms <= nowMs)
+    .sort((a, b) => a.ms - b.ms);
+
+  const startMs = nowMs - RETROSPECTION_INTERVAL_MIN * 60000;
+  const startReading = nearestReading(readings, startMs, RC_READING_TOLERANCE_MIN);
+  const endReading = nearestReading(readings, nowMs, RC_READING_TOLERANCE_MIN);
+  if (!startReading || !endReading || endReading.ms <= startReading.ms) {
+    return { discrepancy: null, withheldReason: 'insufficient-recent-readings', factor: factorResult };
+  }
+
+  const factor = factorResult.factor;
+  const actualChange = endReading.value - startReading.value;
+
+  const insulinUnits = insulinEffectBetween(boluses, corrections, startReading.ms, endReading.ms, curveOpts);
+  const carbGrams = carbEffectBetween(boluses, startReading.ms, endReading.ms, { duration: COB_DURATION_MINUTES });
+  const modeledChange = -(insulinUnits * factor) + (carbGrams / carbRatio) * factor;
+
+  return {
+    discrepancy: actualChange - modeledChange,
+    windowMinutes: minutesBetween(startReading.ms, endReading.ms),
+    factor,
+    factorSampleSize: factorResult.sampleSize,
+    withheldReason: null,
+  };
+}
+
+// The discrepancy's effect at `minutesFromNow`, decaying linearly to
+// zero over effectDurationMin — 0 whenever discrepancy itself is
+// unavailable, so callers can add this in unconditionally without a
+// separate null check (an unavailable RC signal is a safe no-op, never
+// a blocker for the prediction/suggestion it's enhancing).
+function retrospectiveEffectAt(discrepancy, minutesFromNow, effectDurationMin = RC_EFFECT_DURATION_MIN) {
+  if (discrepancy == null) return 0;
+  const fraction = clamp(1 - minutesFromNow / effectDurationMin, 0, 1);
+  return discrepancy * fraction;
+}
+
 /* ── 2h hypo forecast ──────────────────────────────────────────
    effective − insulinAction(120) − openWorkoutDrop(120) + carbAbsorption(120),
    converted to mmol/L via the personal correction factor / carb ratio.
@@ -1252,20 +1533,27 @@ function openWorkoutDropWithin(profiles, workouts, now, horizonMin) {
    fake precision." Deliberately pessimistic: ties in tier assignment
    round toward the more cautious tier, and a time-of-day with a recent
    history of lows bumps the tier up regardless of the raw number. */
-function hypoForecast2h(input, now = Date.now()) {
+// Shared by hypoForecast2h and hyperForecast2h — both predict the same
+// single forecastGlucose number (current effective glucose, projected
+// HYPO_FORECAST_HORIZON_MIN out against active insulin/carbs/workout
+// effect and a retrospective correction), they just classify it against
+// opposite ends of the target range afterward. Keeping the projection
+// itself in one place means a change to the model (a new input, a bug
+// fix) can't accidentally apply to one direction and not the other.
+function computeForecastCore(input, now = Date.now()) {
   const { glucoseHistory = [], boluses = [], corrections = [], activities = {}, settings = {} } = input || {};
   const nowMs = toMs(now);
   const curveOpts = insulinCurveOpts(settings);
 
   const ctx = dosingContext({ glucoseHistory, boluses, corrections, settings }, now);
   if (ctx.stale || ctx.effectiveGlucose == null) {
-    return { tier: null, withheldReason: 'stale-reading', context: ctx };
+    return { withheldReason: 'stale-reading', context: ctx };
   }
 
   const resolvedCorrections = resolveCorrections(corrections, glucoseHistory, boluses, now);
   const factorResult = resolveCorrectionFactor(resolvedCorrections, settings);
   if (factorResult.factor == null) {
-    return { tier: null, withheldReason: 'insufficient-history', context: ctx, factor: factorResult };
+    return { withheldReason: 'insufficient-history', context: ctx, factor: factorResult };
   }
   const factor = factorResult.factor;
   const carbRatio = Number(settings.carbRatio) || null;
@@ -1279,9 +1567,47 @@ function hypoForecast2h(input, now = Date.now()) {
   const workoutProfiles = buildWorkoutTypeProfiles(activities.workouts, glucoseHistory);
   const openWorkoutDropMmol = openWorkoutDropWithin(workoutProfiles, activities.workouts, nowMs, HYPO_FORECAST_HORIZON_MIN);
 
-  const forecastGlucose = ctx.effectiveGlucose - insulinDropMmol + carbRiseMmol - openWorkoutDropMmol;
+  // Retrospective correction: how far off the model's insulin+carb-only
+  // prediction was over the last 30 minutes, extrapolated forward (and
+  // decayed) to the forecast's own horizon — see the comment above
+  // retrospectiveCorrection for why this is a useful addition on top of
+  // the correction-factor learning above rather than a replacement for it.
+  const rc = retrospectiveCorrection(input, now);
+  const retrospectiveEffect = retrospectiveEffectAt(rc.discrepancy, HYPO_FORECAST_HORIZON_MIN);
+
+  const rawForecastGlucose = ctx.effectiveGlucose - insulinDropMmol + carbRiseMmol - openWorkoutDropMmol + retrospectiveEffect;
+  // Floor matches projectedGlucoseCurve's existing Math.max(1, ...) for
+  // the chart; ceiling is new — see FORECAST_GLUCOSE_MAX_MMOL above.
+  const forecastGlucose = clamp(rawForecastGlucose, 1, FORECAST_GLUCOSE_MAX_MMOL);
+
+  return {
+    withheldReason: null, ctx, forecastGlucose,
+    forecastCapped: forecastGlucose !== rawForecastGlucose,
+    effectiveGlucose: ctx.effectiveGlucose,
+    insulinDropMmol, carbRiseMmol, openWorkoutDropMmol,
+    retrospectiveEffect, retrospectiveDiscrepancy: rc.discrepancy,
+    factor, factorSampleSize: factorResult.sampleSize,
+  };
+}
+// computeForecastCore's withheld branches key the dosingContext as
+// `context` (matching hypoForecast2h/hyperForecast2h's own pre-refactor
+// withheld shape); its success branch keys it `ctx` instead so callers
+// can pull ctx.iob etc. without it also leaking into the final tier
+// response below, which never included a context/ctx field before this
+// split existed and shouldn't start now.
+function stripCtx(core) {
+  const { ctx, ...rest } = core;
+  return rest;
+}
+
+function hypoForecast2h(input, now = Date.now()) {
+  const { glucoseHistory = [], settings = {} } = input || {};
+  const nowMs = toMs(now);
+  const core = computeForecastCore(input, now);
+  if (core.withheldReason) return { tier: null, ...core };
 
   const low = Number(settings.targetLow) || 4.5;
+  const { forecastGlucose } = core;
   let tier;
   if (forecastGlucose <= low - 1) tier = 'high';
   else if (forecastGlucose <= low) tier = 'moderate';
@@ -1289,28 +1615,58 @@ function hypoForecast2h(input, now = Date.now()) {
   else tier = 'minimal';
 
   // Bump a tier if this time-of-day has had >=2 lows in recent history —
-  // deliberately pessimistic per spec, regardless of how the raw number lands.
+  // deliberately pessimistic per spec, regardless of how the raw number
+  // lands — but only when the forecast itself is still on the lower/
+  // normal side (below idealTarget). Without that ceiling, a forecast
+  // confidently trending toward a HIGH (e.g. 9.1 mmol/L) could still get
+  // bumped into "Slight risk" purely because this hour has crashed
+  // before, which reads as actively wrong: a hypo-risk badge sitting
+  // next to a number that isn't anywhere near hypo territory.
   const lookbackStart = nowMs - TIME_OF_DAY_LOOKBACK_DAYS * DAY_MS;
   const hourNow = hourOfDay(nowMs);
   const sameHourLows = (glucoseHistory || [])
     .map(r => ({ ms: toMs(r.time), value: Number(r.value) }))
     .filter(r => r.ms != null && r.ms >= lookbackStart && r.ms <= nowMs && hourOfDay(r.ms) === hourNow && r.value < low)
     .length;
-  const bumped = sameHourLows >= TIME_OF_DAY_BUMP_LOW_COUNT;
+  const idealTarget = Number(settings.idealTarget);
+  const bumpCeiling = Number.isFinite(idealTarget) ? idealTarget : low + 3;
+  const bumped = sameHourLows >= TIME_OF_DAY_BUMP_LOW_COUNT && forecastGlucose < bumpCeiling;
   if (bumped) {
     const order = ['minimal', 'low', 'moderate', 'high'];
     tier = order[Math.min(order.length - 1, order.indexOf(tier) + 1)];
   }
 
-  return {
-    tier,
-    bumpedForTimeOfDay: bumped,
-    forecastGlucose,
-    effectiveGlucose: ctx.effectiveGlucose,
-    insulinDropMmol, carbRiseMmol, openWorkoutDropMmol,
-    factor, factorSampleSize: factorResult.sampleSize,
-    withheldReason: null,
-  };
+  return { tier, bumpedForTimeOfDay: bumped, ...stripCtx(core), withheldReason: null };
+}
+
+// Mirror of hypoForecast2h for the high side — same projected
+// forecastGlucose, classified against targetHigh instead of targetLow,
+// plus a suggested correction dose for the forecasted peak (not the
+// current reading) using the same math suggestCorrectionDose uses:
+// (forecast - idealTarget)/factor - current IOB, floored at 0 and capped
+// at MAX_SUGGESTED_UNITS. Exists mainly so a predictive push notification
+// can say "consider ~0.5u now" rather than just "you'll likely run high."
+function hyperForecast2h(input, now = Date.now()) {
+  const { settings = {} } = input || {};
+  const core = computeForecastCore(input, now);
+  if (core.withheldReason) return { tier: null, ...core };
+
+  const high = Number(settings.targetHigh) || 10;
+  const idealTarget = Number(settings.idealTarget);
+  const { forecastGlucose, ctx, factor } = core;
+  let tier;
+  if (forecastGlucose >= high + 3) tier = 'high';
+  else if (forecastGlucose >= high + 1.5) tier = 'moderate';
+  else if (forecastGlucose >= high) tier = 'low';
+  else tier = 'minimal';
+
+  let suggestedUnits = null;
+  if (tier !== 'minimal' && Number.isFinite(idealTarget) && factor >= MIN_RELIABLE_FACTOR) {
+    const raw = (forecastGlucose - idealTarget) / factor - (ctx.iob || 0);
+    suggestedUnits = roundDose(Math.min(MAX_SUGGESTED_UNITS, Math.max(0, raw)));
+  }
+
+  return { tier, suggestedUnits, ...stripCtx(core), withheldReason: null };
 }
 
 // Same model as hypoForecast2h, generalized into a curve for charting —
@@ -1332,12 +1688,14 @@ function projectedGlucoseCurve(input, now = Date.now(), horizonMinutes = HYPO_FO
   if (factorResult.factor == null) return [];
 
   const carbRatio = Number(settings.carbRatio) || null;
+  const rc = retrospectiveCorrection(input, now);
   const points = [];
   for (let t = 0; t <= horizonMinutes; t += stepMinutes) {
     const insulinDropMmol = insulinActionWithin(boluses, corrections, nowMs, t, curveOpts) * factorResult.factor;
     const carbAbsorptionGrams = carbAbsorptionWithin(boluses, nowMs, t);
     const carbRiseMmol = carbRatio ? (carbAbsorptionGrams / carbRatio) * factorResult.factor : 0;
-    const value = Math.max(1, ctx.effectiveGlucose - insulinDropMmol + carbRiseMmol);
+    const retrospectiveEffect = retrospectiveEffectAt(rc.discrepancy, t);
+    const value = Math.max(1, ctx.effectiveGlucose - insulinDropMmol + carbRiseMmol + retrospectiveEffect);
     points.push({ ms: nowMs + t * 60000, minutesFromNow: t, value });
   }
   return points;
@@ -1610,7 +1968,7 @@ function detectBasalSuspendEpisodes(basalDoses, glucoseHistory, activities, now 
 function preventativeUnplugBolusAdvice(missedUnits, durationMin, hyperRisk, hypoRisk) {
   if (hyperRisk === 'low' || hypoRisk !== 'low') return null;
   if (durationMin < UNPLUG_BOLUS_MIN_DURATION_MIN) return null;
-  const suggestedUnits = Math.round(missedUnits * UNPLUG_BOLUS_COVERAGE_FRACTION * 2) / 2;
+  const suggestedUnits = roundDose(missedUnits * UNPLUG_BOLUS_COVERAGE_FRACTION);
   if (suggestedUnits < UNPLUG_BOLUS_MIN_SUGGESTED_UNITS) return null;
   return {
     suggestedUnits,
@@ -2039,7 +2397,7 @@ function suggestMealDose(input, newCarbs, now = Date.now()) {
   const weightedOutcomeBias = pastMeals.reduce((s, m) => s + m.outcomeBias * m.weight, 0) / totalWeight;
   const nudgePct = clamp(weightedOutcomeBias * 0.1, -0.15, 0.15); // capped +/-15%
 
-  const units = Math.round((newCarbs / weightedRatio) * (1 + nudgePct) * 2) / 2;
+  const units = roundDose((newCarbs / weightedRatio) * (1 + nudgePct));
 
   return {
     source: 'weighted-history',
@@ -2056,7 +2414,7 @@ function fallbackMealDose(newCarbs, settings, reason) {
   if (!carbRatio) return { source: 'none', suggestedUnits: null, withheldReason: 'missing-carb-ratio' };
   return {
     source: 'manual-carb-ratio',
-    suggestedUnits: Math.round((newCarbs / carbRatio) * 2) / 2,
+    suggestedUnits: roundDose(newCarbs / carbRatio),
     withheldReason: reason,
   };
 }
@@ -2229,12 +2587,12 @@ function suggestMacroMealDose(input, meal, now = Date.now()) {
 
   if (guide.highProteinFlag) total *= (1 + SPLIT_DOSE_PROTEIN_BUMP_PCT);
 
-  const upfrontUnits = Math.round(total * guide.upfrontPct * 2) / 2;
-  const delayedUnits = guide.tier === 'single' ? 0 : Math.max(0, Math.round((total - upfrontUnits) * 2) / 2);
+  const upfrontUnits = roundDose(total * guide.upfrontPct);
+  const delayedUnits = guide.tier === 'single' ? 0 : Math.max(0, roundDose(total - upfrontUnits));
   const low = Number(settings.targetLow) || 4.5;
 
   return {
-    suggestedUnits: Math.round(total * 2) / 2,
+    suggestedUnits: roundDose(total),
     carbUnits: Math.round(carbUnits * 100) / 100,
     correctionUnits: Math.round(correctionUnits * 100) / 100,
     correctionAvailable,
@@ -2334,12 +2692,40 @@ const SENSITIVITY_TOD_BUCKETS = [
   { label: 'Evening (18-24)',   from: 18, to: 24 },
 ];
 
+// Finer 3h-block version of the same time-of-day split, used for the
+// basal/pump-profile review specifically — real pump basal segments are
+// commonly programmed at this granularity (a single 6h "Night" rate
+// often actually needs splitting, e.g. a stronger rate 03:00-06:00 for
+// dawn phenomenon than 00:00-03:00), so the review should be able to
+// suggest at the same resolution someone would actually edit their
+// pump profile in. basalWindowReview still counts at most one clean
+// instance per calendar day per bucket regardless of bucket width, so
+// this doesn't reduce the sample-size ceiling — it only narrows what
+// window each instance is measured over.
+const REGIMEN_TOD_BUCKETS = [
+  { label: '00:00–03:00', from: 0,  to: 3 },
+  { label: '03:00–06:00', from: 3,  to: 6 },
+  { label: '06:00–09:00', from: 6,  to: 9 },
+  { label: '09:00–12:00', from: 9,  to: 12 },
+  { label: '12:00–15:00', from: 12, to: 15 },
+  { label: '15:00–18:00', from: 15, to: 18 },
+  { label: '18:00–21:00', from: 18, to: 21 },
+  { label: '21:00–24:00', from: 21, to: 24 },
+];
+
 function sensitivityMap(input, now = Date.now()) {
   const { glucoseHistory = [], boluses = [], corrections = [], activities = {} } = input || {};
   const nowMs = toMs(now);
+  // Same MIN/MAX_RELIABLE_FACTOR plausibility bounds personalCorrectionFactor
+  // and analyzePatterns' cleanInWindow use (see personalCorrectionFactor's
+  // comment) — without them a tiny-unit correction whose glucose drop was
+  // actually caused by something else nearby produces a wildly inflated
+  // dropPerUnit (e.g. 24+ mmol/L/u, clinically impossible) that skews
+  // whichever time-of-day cell it lands in.
   const clean = resolveCorrections(corrections, glucoseHistory, boluses, now)
     .map(c => ({ ...c, _ms: toMs(c.time) }))
-    .filter(c => c._ms != null && c._ms <= nowMs && c.resolved && !c.carbInterference && Number.isFinite(c.dropPerUnit));
+    .filter(c => c._ms != null && c._ms <= nowMs && c.resolved && !c.carbInterference && Number.isFinite(c.dropPerUnit)
+      && c.dropPerUnit >= MIN_RELIABLE_FACTOR && c.dropPerUnit <= MAX_RELIABLE_FACTOR);
 
   const isNearExercise = (ms) => (activities.workouts || []).some(w => {
     const endMs = toMs(w.endTime) ?? toMs(w.startTime);
@@ -2400,10 +2786,10 @@ function timeWeightedAverage(segments, fromHour, toHour, field) {
   }
   return totalWeight > 0 ? weightedSum / totalWeight : null;
 }
-function prescribedRegimenTable(pumpProfile) {
+function prescribedRegimenTable(pumpProfile, buckets = REGIMEN_TOD_BUCKETS) {
   const segments = pumpProfile?.default;
   if (!segments?.length) return null;
-  return SENSITIVITY_TOD_BUCKETS.map(bucket => ({
+  return buckets.map(bucket => ({
     timeOfDay: bucket.label,
     basalRate: timeWeightedAverage(segments, bucket.from, bucket.to, 'basalRate'),
     correctionFactor: timeWeightedAverage(segments, bucket.from, bucket.to, 'correctionFactor'),
@@ -2422,8 +2808,19 @@ function prescribedRegimenTable(pumpProfile) {
    exactly the kind of fake precision this file avoids everywhere
    else). Always framed as worth reviewing with your diabetes team —
    this computes a number, but it is NOT a standing instruction.
+
+   REGIMEN_LOOKBACK_DAYS was 7 for a long time with no real justification
+   for that number over any other — and 7 real days is a bad unit to
+   require a clean, exercise-free, IOB/COB-free instance of every single
+   3h block within, especially for someone active most days: one unusually
+   disrupted week (illness, travel, an eventful few days) can leave every
+   block withheld even though calmer days exist just outside the window.
+   21 gives the same strict per-block gating (still >=4 clean instances,
+   still direction-consistency-checked) far more chances to find them,
+   while staying under what a live Nightscout feed can even provide
+   (diabetes-sync.js caps at 31 days server-side).
    ═══════════════════════════════════════════════════════════ */
-const REGIMEN_LOOKBACK_DAYS            = 7;
+const REGIMEN_LOOKBACK_DAYS            = 21;
 const REGIMEN_MIN_CLEAN_SAMPLES        = 4;   // per window/ratio check — higher bar than tactical doses (3)
 const REGIMEN_CLEAN_IOB_MAX            = 0.3; // units — below this counts as "no meaningful insulin activity"
 const REGIMEN_MIN_COVERAGE_PCT         = 0.8; // fraction of a window's readings that must be present to trust it
@@ -2437,24 +2834,65 @@ const REGIMEN_MIN_OUTCOME_BIAS         = 0.3; // average meal outcome bias below
 // across the whole window, then see whether glucose drifted anyway —
 // drift with nothing else going on is the classic basal-too-low
 // (drifted up) / basal-too-high (drifted down) signal.
-function basalWindowReview(input, now = Date.now()) {
-  const { glucoseHistory = [], boluses = [], corrections = [], basalDoses = [], settings = {} } = input || {};
+// Given the profile-switch timeline adaptProfileSwitches produces
+// (sorted ascending by ms), which named profile was actually active at a
+// given moment — the most recent switch at or before it, or the earliest
+// known profile if `ms` predates every recorded switch (a fetch window
+// can start mid-profile, before any switch happened to fall inside it).
+function resolveActiveProfileAt(profileSwitches, ms) {
+  if (!profileSwitches?.length) return null;
+  let active = profileSwitches[0].profileName;
+  for (const s of profileSwitches) {
+    if (s.ms <= ms) active = s.profileName; else break;
+  }
+  return active;
+}
+
+function basalWindowReview(input, now = Date.now(), profileFilter = null) {
+  const { glucoseHistory = [], boluses = [], corrections = [], basalDoses = [], activities = {}, settings = {} } = input || {};
   const nowMs = toMs(now);
   const windowStart = nowMs - REGIMEN_LOOKBACK_DAYS * DAY_MS;
   const readings = sortedReadings(glucoseHistory, windowStart, nowMs);
   const curveOpts = insulinCurveOpts(settings);
+  const matchesProfile = (ms) => !profileFilter || profileFilter(ms);
+  // Same post-exercise exclusion sensitivityMap/patternExerciseSensitivity/
+  // carbRatioReview already use — a "clean" window here is meant to isolate
+  // pure basal drift, but exercise (a morning strength session, say) drops
+  // glucose on its own for hours afterward. Without this, that drop gets
+  // misread as "basal is too strong here" when it's actually the workout,
+  // and for someone who already runs a deliberately lower basal ahead of
+  // training specifically to blunt that effect, this would recommend
+  // cutting it even further for the wrong reason.
+  const isNearExercise = (ms) => (activities.workouts || []).some(w => {
+    const endMs = toMs(w.endTime) ?? toMs(w.startTime);
+    return endMs != null && ms >= endMs && ms <= endMs + 8 * 3600000;
+  });
 
   const resolvedCorrections = resolveCorrections(corrections, glucoseHistory, boluses, now);
   const factorResult = resolveCorrectionFactor(resolvedCorrections, settings);
 
-  return SENSITIVITY_TOD_BUCKETS.map(bucket => {
+  // Midnight-aligned, NOT windowStart-aligned — windowStart is exactly
+  // `now` minus a whole number of days, so it preserves now's own
+  // time-of-day (e.g. call this at 07:35 and windowStart lands at 07:35,
+  // 7 days back). Stepping by DAY_MS from there would keep every
+  // "dayStart" at 07:35 too, so a bucket like {from:0,to:3} labeled
+  // "00:00–03:00" would actually select 07:35-10:35 — silently shifted
+  // by whatever time of day the function happens to run at, rather than
+  // the true calendar hours the label promises. Flooring to the most
+  // recent UTC midnight at or before windowStart fixes the anchor; the
+  // readings array is already bounded to [windowStart, nowMs] so an
+  // extra partial day at the start just yields fewer/no matching
+  // readings there rather than double-counting anything.
+  const firstMidnight = Math.floor(windowStart / DAY_MS) * DAY_MS;
+
+  return REGIMEN_TOD_BUCKETS.map(bucket => {
     const windowHours = bucket.to - bucket.from;
     const instances = [];
 
-    for (let dayStart = windowStart; dayStart < nowMs; dayStart += DAY_MS) {
+    for (let dayStart = firstMidnight; dayStart < nowMs; dayStart += DAY_MS) {
       const wStart = dayStart + bucket.from * 3600000;
       const wEnd = dayStart + bucket.to * 3600000;
-      if (wEnd > nowMs) continue;
+      if (wEnd > nowMs || wEnd < windowStart) continue;
 
       const windowReadings = readings.filter(r => r.ms >= wStart && r.ms <= wEnd);
       const expectedCount = (windowHours * 60) / 5; // ~5min CGM cadence
@@ -2462,7 +2900,7 @@ function basalWindowReview(input, now = Date.now()) {
 
       let clean = true;
       for (let t = wStart; t <= wEnd; t += 30 * 60000) {
-        if (activeInsulin(boluses, corrections, t, curveOpts) > REGIMEN_CLEAN_IOB_MAX || carbsOnBoard(boluses, t) > 0) {
+        if (activeInsulin(boluses, corrections, t, curveOpts) > REGIMEN_CLEAN_IOB_MAX || carbsOnBoard(boluses, t) > 0 || isNearExercise(t) || !matchesProfile(t)) {
           clean = false;
           break;
         }
@@ -2499,11 +2937,161 @@ function basalWindowReview(input, now = Date.now()) {
     const extraUnitsPerHour = (avgDrift / factorResult.factor) / windowHours;
     const rawPctChange = (extraUnitsPerHour / avgBasalRate) * 100;
     const suggestedPctChange = clamp(rawPctChange, -REGIMEN_MAX_PCT_CHANGE, REGIMEN_MAX_PCT_CHANGE);
+    // Applied to the same observed avgBasalRate the % itself was derived
+    // from (not the pump-programmed rate, which may differ from what was
+    // actually delivered) — internally consistent, and rounded to 0.05u/hr,
+    // the finest increment most pumps actually accept.
+    const suggestedBasalRate = Math.round(avgBasalRate * (1 + suggestedPctChange / 100) * 20) / 20;
 
     return {
       timeOfDay: bucket.label, n: instances.length, avgDrift, avgBasalRate,
-      suggestedPctChange, direction: suggestedPctChange > 0 ? 'increase' : 'decrease',
+      suggestedPctChange, suggestedBasalRate, direction: suggestedPctChange > 0 ? 'increase' : 'decrease',
       cappedAtLimit: Math.abs(rawPctChange) > REGIMEN_MAX_PCT_CHANGE,
+      withheldReason: null,
+    };
+  });
+}
+
+// Same carb-ratio check as carbRatioReview below, but scoped to each 3h
+// block independently instead of pooling the whole week — meals are far
+// sparser than background CGM readings, so most blocks (especially
+// overnight ones nobody eats in) will honestly come back
+// insufficient-meals rather than force a number out of 1-2 data points.
+function carbRatioByWindowReview(input, now = Date.now(), profileFilter = null) {
+  const { glucoseHistory = [], boluses = [], activities = {}, settings = {} } = input || {};
+  const nowMs = toMs(now);
+  const windowStart = nowMs - REGIMEN_LOOKBACK_DAYS * DAY_MS;
+  const readings = sortedReadings(glucoseHistory, -Infinity, nowMs);
+  const low = Number(settings.targetLow) || 4.5;
+  const high = Number(settings.targetHigh) || 8.5;
+  const carbRatio = Number(settings.carbRatio);
+
+  if (!carbRatio) {
+    return REGIMEN_TOD_BUCKETS.map(bucket => ({ timeOfDay: bucket.label, n: 0, withheldReason: 'missing-carb-ratio' }));
+  }
+
+  const workouts = activities.workouts || [];
+  const isNearExercise = ms => workouts.some(w => {
+    const endMs = toMs(w.endTime) ?? toMs(w.startTime);
+    return endMs != null && ms >= endMs && ms <= endMs + 8 * 3600000;
+  });
+  const matchesProfile = (ms) => !profileFilter || profileFilter(ms);
+
+  const meals = (boluses || [])
+    .filter(b => Number(b.carbs) > 0 && Number(b.units) > 0)
+    .map(b => ({ ...b, _ms: toMs(b.time) }))
+    .filter(b => b._ms != null && b._ms >= windowStart && b._ms <= nowMs && !isNearExercise(b._ms) && matchesProfile(b._ms));
+
+  return REGIMEN_TOD_BUCKETS.map(bucket => {
+    const inBucket = meals.filter(m => { const h = hourOfDay(m._ms); return h >= bucket.from && h < bucket.to; });
+    const outcomes = inBucket.map(m => {
+      const window = readings.filter(r => r.ms >= m._ms && r.ms <= m._ms + 4 * 3600000);
+      if (!window.length) return null;
+      if (window.some(r => r.value < low)) return -1;
+      if (Math.max(...window.map(r => r.value)) > high) return 1;
+      return 0;
+    }).filter(b => b != null);
+
+    if (outcomes.length < REGIMEN_MIN_CLEAN_SAMPLES) {
+      return { timeOfDay: bucket.label, n: outcomes.length, currentRatio: carbRatio, withheldReason: 'insufficient-meals' };
+    }
+
+    const highCount = outcomes.filter(b => b === 1).length;
+    const lowCount = outcomes.filter(b => b === -1).length;
+    const consistency = Math.max(highCount, lowCount) / outcomes.length;
+    const avgBias = mean(outcomes);
+
+    if (consistency < REGIMEN_MIN_DIRECTION_CONSISTENCY || Math.abs(avgBias) < REGIMEN_MIN_OUTCOME_BIAS) {
+      return { timeOfDay: bucket.label, n: outcomes.length, currentRatio: carbRatio, withheldReason: 'no-consistent-signal' };
+    }
+
+    const rawPctChange = clamp(-avgBias * 20, -100, 100);
+    const suggestedPctChange = clamp(rawPctChange, -REGIMEN_MAX_PCT_CHANGE, REGIMEN_MAX_PCT_CHANGE);
+    const suggestedRatio = Math.round(carbRatio * (1 + suggestedPctChange / 100) * 2) / 2;
+
+    return {
+      timeOfDay: bucket.label, n: outcomes.length, currentRatio: carbRatio, suggestedRatio,
+      suggestedPctChange, direction: suggestedPctChange < 0 ? 'tighten' : 'loosen',
+      cappedAtLimit: Math.abs(rawPctChange) > REGIMEN_MAX_PCT_CHANGE,
+      withheldReason: null,
+    };
+  });
+}
+
+// Correction-factor equivalent of the two reviews above: within each 3h
+// block, do clean (resolved, no-carb-interference, plausibly-bounded —
+// same MIN/MAX_RELIABLE_FACTOR guard used everywhere else in this file)
+// corrections consistently imply a different ISF than what's currently
+// programmed? Needs the same sample-size floor and >=70% same-direction
+// agreement as the basal/carb-ratio checks before it'll suggest anything.
+//
+// `prescribedTable` (optional, shape: prescribedRegimenTable's output) lets
+// the comparison use the REAL per-block correction factor for whichever
+// pump profile is actually being reviewed, instead of one flat
+// settings.correctionFactor for the whole day — a single blended number
+// can sit far from what's actually programmed in any given 3h block (a
+// pump profile that varies ISF by time of day, which most do), which
+// would silently mis-anchor both the "current" this reports AND the
+// suggested value derived from it. Falls back to the flat setting when no
+// table is available, so this stays usable without pump-profile data.
+function correctionFactorByWindowReview(input, now = Date.now(), profileFilter = null, prescribedTable = null) {
+  const { glucoseHistory = [], boluses = [], corrections = [], activities = {}, settings = {} } = input || {};
+  const nowMs = toMs(now);
+  const windowStart = nowMs - REGIMEN_LOOKBACK_DAYS * DAY_MS;
+  const fallbackFactor = Number(settings.correctionFactor) || null;
+  const currentFactorFor = (bucketLabel) => {
+    const rx = prescribedTable?.find(p => p.timeOfDay === bucketLabel)?.correctionFactor;
+    return Number.isFinite(rx) ? rx : fallbackFactor;
+  };
+
+  if (!prescribedTable?.length && !fallbackFactor) {
+    return REGIMEN_TOD_BUCKETS.map(bucket => ({ timeOfDay: bucket.label, n: 0, withheldReason: 'missing-correction-factor' }));
+  }
+
+  // Same post-exercise exclusion as basalWindowReview/carbRatioByWindowReview
+  // — a correction taken while still sensitized from an earlier workout
+  // isn't representative of this block's baseline ISF, the same way
+  // sensitivityMap keeps post-exercise corrections in their own separate
+  // context rather than blending them into "rest."
+  const isNearExercise = (ms) => (activities.workouts || []).some(w => {
+    const endMs = toMs(w.endTime) ?? toMs(w.startTime);
+    return endMs != null && ms >= endMs && ms <= endMs + 8 * 3600000;
+  });
+  const matchesProfile = (ms) => !profileFilter || profileFilter(ms);
+
+  const clean = resolveCorrections(windowFilter(corrections, 'time', windowStart, nowMs), glucoseHistory, boluses, now)
+    .map(c => ({ ...c, _ms: toMs(c.time) }))
+    .filter(c => c._ms != null && c.resolved && !c.carbInterference && Number.isFinite(c.dropPerUnit)
+      && c.dropPerUnit >= MIN_RELIABLE_FACTOR && c.dropPerUnit <= MAX_RELIABLE_FACTOR
+      && !isNearExercise(c._ms) && matchesProfile(c._ms));
+
+  return REGIMEN_TOD_BUCKETS.map(bucket => {
+    const currentFactor = currentFactorFor(bucket.label);
+    if (!currentFactor) {
+      return { timeOfDay: bucket.label, n: 0, withheldReason: 'missing-correction-factor' };
+    }
+    const inBucket = clean.filter(c => { const h = hourOfDay(c._ms); return h >= bucket.from && h < bucket.to; });
+    if (inBucket.length < REGIMEN_MIN_CLEAN_SAMPLES) {
+      return { timeOfDay: bucket.label, n: inBucket.length, currentFactor, withheldReason: 'insufficient-clean-corrections' };
+    }
+
+    const avgDropPerUnit = mean(inBucket.map(c => c.dropPerUnit));
+    const pctChange = ((avgDropPerUnit - currentFactor) / currentFactor) * 100;
+    const aboveCount = inBucket.filter(c => c.dropPerUnit > currentFactor).length;
+    const belowCount = inBucket.filter(c => c.dropPerUnit < currentFactor).length;
+    const consistency = Math.max(aboveCount, belowCount) / inBucket.length;
+
+    if (Math.abs(pctChange) < 15 || consistency < REGIMEN_MIN_DIRECTION_CONSISTENCY) {
+      return { timeOfDay: bucket.label, n: inBucket.length, avgDropPerUnit, currentFactor, withheldReason: 'no-consistent-signal' };
+    }
+
+    const suggestedPctChange = clamp(pctChange, -REGIMEN_MAX_PCT_CHANGE, REGIMEN_MAX_PCT_CHANGE);
+    const suggestedFactor = Math.round(currentFactor * (1 + suggestedPctChange / 100) * 20) / 20;
+
+    return {
+      timeOfDay: bucket.label, n: inBucket.length, avgDropPerUnit, currentFactor, suggestedFactor,
+      suggestedPctChange, direction: suggestedFactor > currentFactor ? 'increase' : 'decrease',
+      cappedAtLimit: Math.abs(pctChange) > REGIMEN_MAX_PCT_CHANGE,
       withheldReason: null,
     };
   });
@@ -2512,7 +3100,10 @@ function basalWindowReview(input, now = Date.now()) {
 // Whole-week carb-ratio check: did meals dosed with the current ratio
 // consistently run high (ratio too loose) or low (too tight)? Excludes
 // meals near exercise, same as the meal-dose/pattern checks elsewhere.
-function carbRatioReview(input, now = Date.now()) {
+// Kept as a fallback reference alongside carbRatioByWindowReview above —
+// a whole week pools enough meals to say something even on weeks where
+// no single 3h block individually clears the sample-size floor.
+function carbRatioReview(input, now = Date.now(), profileFilter = null) {
   const { glucoseHistory = [], boluses = [], activities = {}, settings = {} } = input || {};
   const nowMs = toMs(now);
   const windowStart = nowMs - REGIMEN_LOOKBACK_DAYS * DAY_MS;
@@ -2520,6 +3111,7 @@ function carbRatioReview(input, now = Date.now()) {
   const low = Number(settings.targetLow) || 4.5;
   const high = Number(settings.targetHigh) || 8.5;
   const carbRatio = Number(settings.carbRatio);
+  const matchesProfile = (ms) => !profileFilter || profileFilter(ms);
 
   const workouts = activities.workouts || [];
   const isNearExercise = ms => workouts.some(w => {
@@ -2530,7 +3122,7 @@ function carbRatioReview(input, now = Date.now()) {
   const meals = (boluses || [])
     .filter(b => Number(b.carbs) > 0 && Number(b.units) > 0)
     .map(b => ({ ...b, _ms: toMs(b.time) }))
-    .filter(b => b._ms != null && b._ms >= windowStart && b._ms <= nowMs && !isNearExercise(b._ms));
+    .filter(b => b._ms != null && b._ms >= windowStart && b._ms <= nowMs && !isNearExercise(b._ms) && matchesProfile(b._ms));
 
   if (!carbRatio) return { n: meals.length, withheldReason: 'missing-carb-ratio' };
 
@@ -2570,10 +3162,57 @@ function carbRatioReview(input, now = Date.now()) {
 }
 
 function regimenReview(input, now = Date.now()) {
+  const prescribedTable = input?.pumpProfile ? prescribedRegimenTable(input.pumpProfile) : null;
   return {
     basalByWindow: basalWindowReview(input, now),
+    carbRatioByWindow: carbRatioByWindowReview(input, now),
+    correctionFactorByWindow: correctionFactorByWindowReview(input, now, null, prescribedTable),
     carbRatio: carbRatioReview(input, now),
   };
+}
+
+// Nightscout's own profile-switch names ("Mo", "Thur", ...) mapped to the
+// matching segment array in the pump-profile object (keyed 'default' /
+// 'thu' — same convention app.js's dxProfileSegments already uses for the
+// UI). Anything unrecognized falls back to 'default'.
+function pumpProfileSegmentsForName(pumpProfile, name) {
+  const n = String(name || '').toLowerCase();
+  return (n.startsWith('thu') ? pumpProfile?.thu : pumpProfile?.default) || null;
+}
+
+// Same three per-block reviews as regimenReview, but run once per
+// distinct named pump profile instead of pooling every day together —
+// for anyone who deliberately switches profiles (an exercise-day profile,
+// a low-medication-week profile, whatever the reason), pooling hides
+// the fact that two different settings are actually in play on different
+// days and blends their outcomes into one misleading average.
+// input.profileSwitches (from nightscout-adapter's adaptProfileSwitches)
+// carries the real timeline of which profile was active when — this
+// doesn't guess *why* a day used one profile over another, it just
+// respects whatever the user already decided by actually switching.
+// Falls back to a single 'default' bucket (regimenReview's pooled
+// result) when no switch history is available, so this stays a strict
+// superset of the older behavior rather than a breaking change.
+function regimenReviewByProfile(input, now = Date.now()) {
+  const profileSwitches = input?.profileSwitches || [];
+  if (!profileSwitches.length) {
+    return { profiles: ['default'], byProfile: { default: regimenReview(input, now) } };
+  }
+
+  const profiles = [...new Set(profileSwitches.map(s => s.profileName))];
+  const byProfile = {};
+  for (const name of profiles) {
+    const profileFilter = (ms) => resolveActiveProfileAt(profileSwitches, ms) === name;
+    const segments = pumpProfileSegmentsForName(input?.pumpProfile, name);
+    const prescribedTable = segments ? prescribedRegimenTable({ default: segments }) : null;
+    byProfile[name] = {
+      basalByWindow: basalWindowReview(input, now, profileFilter),
+      carbRatioByWindow: carbRatioByWindowReview(input, now, profileFilter),
+      correctionFactorByWindow: correctionFactorByWindowReview(input, now, profileFilter, prescribedTable),
+      carbRatio: carbRatioReview(input, now, profileFilter),
+    };
+  }
+  return { profiles, byProfile };
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -2663,11 +3302,15 @@ const DiabetesEngine = {
   // Stage 1 API
   iobFraction,
   cobFraction,
+  carbPercentAbsorbedAtPercentTime,
   activeInsulin,
   carbsOnBoard,
   mergeMealCarbsIntoBoluses,
+  roundDose,
   insulinActionWithin,
   carbAbsorptionWithin,
+  insulinEffectBetween,
+  carbEffectBetween,
   computeTrend,
   projectedGlucose,
   dosingContext,
@@ -2679,6 +3322,8 @@ const DiabetesEngine = {
   detectStackingCaution,
   suggestCorrectionDose,
   evaluateCorrection,
+  retrospectiveCorrection,
+  retrospectiveEffectAt,
   // Stage 3 API
   glucoseStats,
   timeInRange,
@@ -2687,6 +3332,7 @@ const DiabetesEngine = {
   buildWorkoutTypeProfiles,
   workoutLiveAlert,
   hypoForecast2h,
+  hyperForecast2h,
   projectedGlucoseCurve,
   preWorkoutAdvisor,
   classifyIntensity,
@@ -2704,6 +3350,7 @@ const DiabetesEngine = {
   suggestMealDose,
   insulinHealthCheck,
   sensitivityMap,
+  SENSITIVITY_TOD_BUCKETS,
   prescribedRegimenTable,
   splitDoseGuide,
   suggestMacroMealDose,
@@ -2714,7 +3361,11 @@ const DiabetesEngine = {
   // Stage 6 API
   basalWindowReview,
   carbRatioReview,
+  carbRatioByWindowReview,
+  correctionFactorByWindowReview,
   regimenReview,
+  regimenReviewByProfile,
+  resolveActiveProfileAt,
   REGIMEN_MAX_PCT_CHANGE,
   // Stage 7 API
   forecastAccuracy,

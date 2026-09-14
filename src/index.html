@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>fitl00p</title>
 
   <!-- PWA -->
@@ -75,12 +75,9 @@
           </div>
       </div>
 
-      <div class="auth-tabs">
-        <button class="auth-tab auth-tab--active" data-tab="signin">Sign in</button>
-        <button class="auth-tab" data-tab="signup">Create account</button>
-      </div>
-
-      <!-- Sign in -->
+      <!-- Sign in / sign up — real Supabase auth (signInWithPassword /
+           signUp). Sign-up lands the account on the existing
+           pending-approval screen until an admin approves it. -->
       <form class="auth-form" id="formSignin" novalidate>
         <div class="field">
           <label for="siEmail">Email</label>
@@ -90,27 +87,13 @@
           <label for="siPassword">Password</label>
           <input type="password" id="siPassword" placeholder="••••••••" autocomplete="current-password" required>
         </div>
-        <button type="submit" class="btn btn--primary btn--full" id="btnSignin">Sign in</button>
+        <button type="submit" class="btn btn--primary btn--full" id="btnSignin">Unlock</button>
         <p class="auth-msg" id="msgSignin"></p>
         <button type="button" class="btn-link" id="btnForgot">Forgot password?</button>
-      </form>
-
-      <!-- Sign up -->
-      <form class="auth-form" id="formSignup" novalidate hidden>
-        <div class="field">
-          <label for="suName">Display name</label>
-          <input type="text" id="suName" placeholder="Lewis" autocomplete="name">
-        </div>
-        <div class="field">
-          <label for="suEmail">Email</label>
-          <input type="email" id="suEmail" placeholder="you@example.com" autocomplete="email" required>
-        </div>
-        <div class="field">
-          <label for="suPassword">Password <span class="field-hint">min. 8 characters</span></label>
-          <input type="password" id="suPassword" placeholder="••••••••" autocomplete="new-password" required minlength="8">
-        </div>
-        <button type="submit" class="btn btn--primary btn--full" id="btnSignup">Create account</button>
-        <p class="auth-msg" id="msgSignup"></p>
+        <p class="auth-toggle">
+          <span id="authToggleText">Need access?</span>
+          <button type="button" class="btn-link" id="btnAuthToggle">Sign up</button>
+        </p>
       </form>
     </div>
   </div>
@@ -170,13 +153,6 @@
           <div class="field">
             <label for="obName">What should we call you?</label>
             <input type="text" id="obName" placeholder="Your name" autocomplete="given-name">
-          </div>
-          <div class="field">
-            <label>Preferred weight unit</label>
-            <div class="onboard-pills" id="obUnit">
-              <button class="pill active" data-val="kg">kg</button>
-              <button class="pill" data-val="lb">lbs</button>
-            </div>
           </div>
           <div class="field">
             <label>Do you use an Apple Watch or Apple Health?</label>
@@ -334,6 +310,13 @@
     <nav class="appbar__nav" id="appNav"></nav>
     <div class="appbar__right">
       <span class="appbar__user" id="appbarUser"></span>
+      <button class="appbar__icon-btn appbar__bell" id="btnCoachBell" aria-label="Daily briefing" title="Daily briefing">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/>
+          <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+        </svg>
+        <span class="appbar__bell-dot" id="coachBellDot" hidden></span>
+      </button>
       <button class="appbar__icon-btn appbar__settings" id="btnOpenSettingsHeader" data-view="settings" aria-label="Settings" title="Settings">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="3"/>
@@ -434,6 +417,48 @@
             <div class="score-detail__label" id="scoreDetailLabel"></div>
             <div class="score-detail__meta" id="scoreDetailMeta"></div>
             <div class="battery-factors" id="scoreDetailFactors"></div>
+          </div>
+        </div>
+
+        <!-- Daily habit checklist — Gemma's account only (gated client-
+             side in renderChecklist/_loadDashboardInner). Four manually-
+             ticked daily targets; completing all four extends a streak
+             stored in habit_checklist_log and fires an immediate "well
+             done" push via push-send.js. -->
+        <div class="card card--checklist" id="checklistCard" hidden>
+          <div class="card-eyebrow">
+            ✅ Daily checklist
+            <span class="checklist-streak" id="checklistStreak" hidden>🔥 <span id="checklistStreakCount">0</span></span>
+          </div>
+          <div class="checklist-tiles" id="checklistTiles">
+            <button type="button" class="checklist-tile" data-key="steps">
+              <span class="checklist-tile__check">✓</span>
+              <span class="checklist-tile__icon">👟</span>
+              <span class="checklist-tile__label">Steps</span>
+              <span class="checklist-tile__target">12,000</span>
+              <span class="checklist-tile__streak" hidden>🔥0</span>
+            </button>
+            <button type="button" class="checklist-tile" data-key="water">
+              <span class="checklist-tile__check">✓</span>
+              <span class="checklist-tile__icon">💧</span>
+              <span class="checklist-tile__label">Water</span>
+              <span class="checklist-tile__target">2L</span>
+              <span class="checklist-tile__streak" hidden>🔥0</span>
+            </button>
+            <button type="button" class="checklist-tile" data-key="food">
+              <span class="checklist-tile__check">✓</span>
+              <span class="checklist-tile__icon">🍽️</span>
+              <span class="checklist-tile__label">Food</span>
+              <span class="checklist-tile__target">Logged</span>
+              <span class="checklist-tile__streak" hidden>🔥0</span>
+            </button>
+            <button type="button" class="checklist-tile" data-key="weight">
+              <span class="checklist-tile__check">✓</span>
+              <span class="checklist-tile__icon">⚖️</span>
+              <span class="checklist-tile__label">Weight</span>
+              <span class="checklist-tile__target">Logged</span>
+              <span class="checklist-tile__streak" hidden>🔥0</span>
+            </button>
           </div>
         </div>
 
@@ -667,9 +692,12 @@
               <div class="health-tile__label">Glucose</div>
               <div class="health-tile__val" id="tileGlucoseVal">—</div>
               <div class="health-tile__unit">mmol/L</div>
-              <!-- Estimated HbA1c from the last 14 days of observed BG
+              <!-- Estimated HbA1c from the last 7 days of observed BG
                    (ADAG mean-glucose formula) — hidden until there's
-                   enough recent data to make it a reasonable estimate. -->
+                   enough recent data to make it a reasonable estimate.
+                   Coloured green/red against the ADA non-diabetic cutoff
+                   (<5.7%), independent of the tile's own good/warn/alert
+                   state (see renderHealthTiles in app.js). -->
               <div class="health-tile__sub" id="tileGlucoseA1c" hidden></div>
               <canvas class="health-tile__spark" id="sparkGlucose" width="80" height="28"></canvas>
             </div>
@@ -685,6 +713,236 @@
         </div>
 
       </div>
+
+      <!-- ── DIABETES (Lewy's account only — gated by applyDiabetesTabVisibility
+           via profile.diabetes_enabled, since Gemma's profile has it off) ── -->
+      <div id="viewDiabetes" hidden>
+        <h1 class="view-title" style="margin-top:32px">🩸 Diabetes</h1>
+
+        <div class="card" id="dxNotConnected">
+          <div class="card-eyebrow">Not connected</div>
+          <p class="empty-state">Connect your Nightscout site in Settings to see glucose, IOB/COB, correction guidance and pattern insights here.</p>
+          <button class="btn btn--primary btn--small" id="btnDxGoToSettings">Go to Settings</button>
+        </div>
+
+        <div id="dxConnected" hidden>
+          <p class="dx-disclaimer">Heuristic pattern-spotting only, built on population-average insulin curves — not medical advice or a dosing calculator. Always use your own judgement.</p>
+
+          <div class="card card--dx-now" id="dxNowCard">
+            <div class="card-eyebrow">
+              <span>Now <span class="card-eyebrow-sub" id="dxReadingAge"></span></span>
+              <button class="btn btn--ghost btn--small" id="btnDxSimpleMode" type="button">😴 Simple view</button>
+            </div>
+            <div class="dx-now-row">
+              <div class="dx-now-glucose">
+                <span class="dx-now-glucose__val" id="dxCurrentGlucose">—</span>
+                <span class="dx-now-glucose__unit">mmol/L</span>
+                <span class="dx-now-trend" id="dxTrendArrow"></span>
+              </div>
+              <div class="dx-now-stats">
+                <div class="dx-now-stat"><span class="dx-now-stat__label">IOB</span><span class="dx-now-stat__val" id="dxIob">—</span></div>
+                <div class="dx-now-stat"><span class="dx-now-stat__label">COB</span><span class="dx-now-stat__val" id="dxCob">—</span></div>
+                <div class="dx-now-stat"><span class="dx-now-stat__label">~30min</span><span class="dx-now-stat__val" id="dxEffective">—</span></div>
+              </div>
+            </div>
+            <p class="dx-stale-note" id="dxStaleNote" hidden></p>
+          </div>
+
+          <div class="card">
+            <div class="card-eyebrow">
+              <span>Glucose trend <span class="card-eyebrow-sub">2h back · 30min projected <span style="opacity:.7">— scroll for more</span></span></span>
+              <span style="display:flex;gap:6px">
+                <button class="btn btn--ghost btn--small" id="btnDxLogActivity" type="button">+ Activity</button>
+                <button class="btn btn--ghost btn--small" id="btnDxLogInsulinGap" type="button">⚠️ Insulin gap</button>
+              </span>
+            </div>
+            <div class="dx-gap-banner" id="dxGapBanner" hidden>
+              <span id="dxGapBannerText"></span>
+              <button class="btn btn--small" id="btnDxResolveGap" type="button">Mark resolved</button>
+            </div>
+            <div class="dx-chart-scroll" id="dxChartScroll">
+              <div class="dx-chart-wrap">
+                <canvas id="dxGlucoseChart" height="240"></canvas>
+                <div class="dx-chart-markers" id="dxChartMarkers"></div>
+              </div>
+            </div>
+            <p class="chart-empty" id="dxGlucoseChartEmpty" hidden>Not enough recent glucose data.</p>
+            <p class="dx-chart-hint" id="dxBasalFreshness"></p>
+            <p class="dx-chart-hint">Scroll to see earlier history · tap a bolus, correction or activity marker for details</p>
+            <div class="dx-chart-legend">
+              <span class="dx-chart-legend__item"><span class="dx-chart-legend__swatch" style="background:#3B9EFF"></span>Glucose</span>
+              <span class="dx-chart-legend__item"><span class="dx-chart-legend__swatch dx-chart-legend__swatch--dashed"></span>Projected</span>
+              <span class="dx-chart-legend__item"><span class="dx-chart-legend__swatch" style="background:#facc15"></span>Bolus</span>
+              <span class="dx-chart-legend__item"><span class="dx-chart-legend__swatch" style="background:#fb923c"></span>Correction</span>
+              <span class="dx-chart-legend__item"><span class="dx-chart-legend__swatch" style="background:#f472b6"></span>🍽 Meal, no bolus</span>
+              <span class="dx-chart-legend__item"><span class="dx-chart-legend__swatch" style="background:#2dd4bf"></span>Basal rate</span>
+              <span class="dx-chart-legend__item"><span class="dx-chart-legend__swatch" style="background:rgba(45,212,191,.15);border:1px dashed rgba(45,212,191,.6)"></span>Basal (scheduled, no override logged)</span>
+              <span class="dx-chart-legend__item"><span class="dx-chart-legend__swatch" style="background:#A78BFA"></span>IOB</span>
+              <span class="dx-chart-legend__item"><span class="dx-chart-legend__swatch" style="background:rgba(74,222,128,.35)"></span>Target range</span>
+              <span class="dx-chart-legend__item dx-chart-legend__item--wide">🏊🚶🏃🏋️ Activity · 🔌 Unplugged</span>
+              <span class="dx-chart-legend__item"><span class="dx-chart-legend__swatch" style="background:rgba(248,113,113,.22)"></span>⚠️ No insulin</span>
+            </div>
+
+            <div id="dxInsulinGapForm" hidden style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+              <div class="field">
+                <label for="dxGapReason">Reason</label>
+                <select id="dxGapReason">
+                  <option value="site_failure">Infusion site came out</option>
+                  <option value="pump_issue">Pump issue</option>
+                  <option value="missed_dose">Missed a dose</option>
+                  <option value="other">Other</option>
+                </select>
+              </div>
+              <div style="display:flex;gap:10px">
+                <div class="field" style="flex:1;margin-bottom:0">
+                  <label for="dxGapDate">No insulin since — date</label>
+                  <input type="date" id="dxGapDate">
+                </div>
+                <div class="field" style="flex:1;margin-bottom:0">
+                  <label for="dxGapTime">Time</label>
+                  <input type="time" id="dxGapTime">
+                </div>
+              </div>
+              <div class="field" style="margin-top:12px">
+                <label for="dxGapNote">Note (optional)</label>
+                <input type="text" id="dxGapNote" placeholder="e.g. site pulled out during workout">
+              </div>
+              <div style="display:flex;gap:10px;margin-top:14px">
+                <button class="btn btn--primary" id="btnSaveDxGap" style="flex:1">Save</button>
+                <button class="btn btn--ghost" id="btnCancelDxGap" style="flex:1">Cancel</button>
+              </div>
+              <p class="field-hint" id="dxGapLogStatus"></p>
+            </div>
+            <div id="dxInsulinGapList"></div>
+
+            <div id="dxActivityLogForm" hidden style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+              <div class="field">
+                <label for="dxActivityType">Activity</label>
+                <select id="dxActivityType">
+                  <option value="swim">Swim</option>
+                  <option value="walk">Walk</option>
+                  <option value="run">Run</option>
+                  <option value="strength">Strength</option>
+                  <option value="other">Other</option>
+                </select>
+              </div>
+              <div style="display:flex;gap:10px">
+                <div class="field" style="flex:1;margin-bottom:0">
+                  <label for="dxActivityDate">Date</label>
+                  <input type="date" id="dxActivityDate">
+                </div>
+                <div class="field" style="flex:1;margin-bottom:0">
+                  <label for="dxActivityTime">Start time</label>
+                  <input type="time" id="dxActivityTime">
+                </div>
+                <div class="field" style="flex:1;margin-bottom:0">
+                  <label for="dxActivityDuration">Duration (min)</label>
+                  <input type="number" id="dxActivityDuration" min="1" value="30" inputmode="numeric">
+                </div>
+              </div>
+              <label class="checkbox-option checkbox-option--full" style="margin-top:12px">
+                <input type="checkbox" id="dxActivityUnplugged">
+                <span>🔌 I disconnected my pump during this</span>
+              </label>
+              <div style="display:flex;gap:10px;margin-top:14px">
+                <button class="btn btn--primary" id="btnSaveDxActivity" style="flex:1">Save</button>
+                <button class="btn btn--ghost" id="btnCancelDxActivity" style="flex:1">Cancel</button>
+              </div>
+              <p class="field-hint" id="dxActivityLogStatus"></p>
+            </div>
+            <div id="dxActivityLogList"></div>
+          </div>
+
+          <div class="dx-section-label">💉 Dosing tools</div>
+
+          <div class="card" id="dxForecastCard">
+            <div class="card-eyebrow">2h hypo forecast</div>
+            <div id="dxForecastBody"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-eyebrow">Correction suggestion</div>
+            <div id="dxCorrectionBody"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-eyebrow">
+              Meal bolus calculator
+              <span class="field-hint" style="text-transform:none;letter-spacing:0;font-weight:400">fat/protein/name optional</span>
+            </div>
+            <p style="font-size:12px;color:var(--ink-3);line-height:1.5;margin-bottom:10px">
+              Factors in your current glucose and IOB alongside the carbs — running low reduces the suggestion, running high adds a correction on top. Add fat/protein for a split-dose suggestion, and a meal name to build up per-meal history (pick a past one to see what actually worked last time).
+            </p>
+            <div class="field">
+              <label for="dxMealPreset">Today's meals <span class="field-hint">pick one to reuse its macros</span></label>
+              <select id="dxMealPreset">
+                <option value="">— Select a previous meal —</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="dxMealName">Meal name <span class="field-hint">optional — or type a new one</span></label>
+              <input type="text" id="dxMealName" placeholder="e.g. Pizza, Porridge…" autocomplete="off">
+            </div>
+            <div class="field-grid">
+              <div class="field">
+                <label for="dxMealCarbs">Carbs <span class="field-hint">grams</span></label>
+                <input type="number" id="dxMealCarbs" min="0" step="1" placeholder="60" inputmode="numeric">
+              </div>
+              <div class="field">
+                <label for="dxMealFat">Fat <span class="field-hint">grams</span></label>
+                <input type="number" id="dxMealFat" min="0" step="1" placeholder="0" inputmode="numeric">
+              </div>
+              <div class="field">
+                <label for="dxMealProtein">Protein <span class="field-hint">grams</span></label>
+                <input type="number" id="dxMealProtein" min="0" step="1" placeholder="0" inputmode="numeric">
+              </div>
+            </div>
+            <button class="btn btn--ghost btn--small" id="btnDxMealDose">Calculate dose</button>
+            <div id="dxMealDoseBody"></div>
+          </div>
+
+          <div class="dx-section-label">📊 Insights &amp; trends</div>
+
+          <div class="card" id="dxPatternsCard">
+            <div class="card-eyebrow">Patterns <span class="card-eyebrow-sub" id="dxPatternsWindow">last 7 days</span></div>
+            <div id="dxPatternsBody"></div>
+          </div>
+
+          <div class="card" id="dxHealthCard">
+            <div class="card-eyebrow">Weekly insulin health check</div>
+            <div id="dxHealthBody"></div>
+          </div>
+
+          <div class="card" id="dxForecastAccuracyCard">
+            <div class="card-eyebrow">Forecast accuracy <span class="card-eyebrow-sub">2h hypo forecast, last 14 days</span></div>
+            <div id="dxForecastAccuracyBody"></div>
+          </div>
+
+          <div class="card" id="dxTodaysMealsCard">
+            <div class="card-eyebrow">Today's meals <span class="card-eyebrow-sub">link a dose or mark as a hypo treatment</span></div>
+            <div id="dxTodaysMealsBody"></div>
+          </div>
+
+          <div class="card" id="dxSensitivityCard">
+            <div class="card-eyebrow">Sensitivity map <span class="card-eyebrow-sub">mmol/L drop per unit</span></div>
+            <div id="dxSensitivityBody"></div>
+          </div>
+
+          <div class="dx-section-label">🛠️ Review</div>
+
+          <div class="card" id="dxRegimenCard">
+            <div class="card-eyebrow">Basal &amp; carb ratio review <span class="card-eyebrow-sub">last 7 days</span></div>
+            <p class="dx-disclaimer" style="margin-bottom:12px">
+              Computed from your own data, not medical advice — review any regimen change with your diabetes team before adjusting your pump profile.
+            </p>
+            <div id="dxRegimenBody"></div>
+          </div>
+
+          <button class="btn btn--ghost btn--small" id="btnDxRefresh" style="width:100%;margin-top:4px">Refresh</button>
+          <p class="dx-last-sync" id="dxLastSync"></p>
+        </div>
+      </div>
+
     </div>
   </div>
 
@@ -794,6 +1052,17 @@
           <h1 class="view-title">Workout</h1>
           <button type="button" class="btn btn--ghost btn--small" id="btnWorkoutHistory">History →</button>
         </div>
+        <div id="activeWorkoutBanner" class="active-workout-banner" hidden>
+          <div class="active-workout-banner__icon">🏋️</div>
+          <div class="active-workout-banner__body">
+            <div class="active-workout-banner__title" id="activeWorkoutBannerTitle"></div>
+            <div class="active-workout-banner__desc" id="activeWorkoutBannerDesc"></div>
+            <div class="active-workout-banner__actions">
+              <button type="button" class="btn btn--primary btn--small" id="btnContinueWorkout">Continue workout</button>
+              <button type="button" class="btn btn--ghost btn--small" id="btnAbandonWorkout">Abandon</button>
+            </div>
+          </div>
+        </div>
         <div class="routine-filters" id="routineFilters">
           <select id="routineFilterSplit" class="split-select">
             <option value="">All splits</option>
@@ -888,7 +1157,8 @@
         <h1 class="view-title">Daily history</h1>
         <div class="view-head-actions">
           <button class="btn btn--ghost btn--small btn--icon" id="btnWeightLogToggle" title="Log weight" aria-label="Log weight" hidden>⚖️</button>
-          <button class="btn btn--ghost btn--small btn--icon" id="btnTzToggle" title="Peptide trackers" aria-label="Peptide trackers">💉</button>
+          <button class="btn btn--ghost btn--small btn--icon" id="btnOralMedsToggle" title="Daily meds" aria-label="Daily meds" hidden>💊</button>
+          <button class="btn btn--ghost btn--small btn--icon" id="btnTzToggle" title="Peptides" aria-label="Peptides">💉</button>
           <button class="btn btn--ghost btn--small" id="btnExportCsv">Export CSV</button>
         </div>
       </div>
@@ -918,11 +1188,41 @@
         <div id="manualWeightRecent" class="field-hint" style="margin-top:10px;line-height:1.8"></div>
       </div>
 
-      <div class="card" id="tzCard" hidden>
+      <!-- Daily oral meds section — one shared panel behind the 💊 icon,
+           for ordinary daily pills (finasteride, minoxidil, etc.) that
+           don't fit the injection-protocol model (no phases, no
+           cartridge/units, no injection site) the peptide tracker below
+           is built around. Rows are rendered dynamically from whatever
+           oral_meds rows exist for the account — see renderOralMeds. -->
+      <div class="card card--peptide-section" id="oralMedsSection" hidden>
         <div class="tz-card-head">
-          <span class="card-eyebrow">Tirzepatide tracker</span>
-          <button type="button" class="btn btn--icon" id="btnTzClose" title="Close" aria-label="Close">✕</button>
+          <span class="card-eyebrow">💊 Daily meds</span>
+          <button type="button" class="btn btn--icon" id="btnOralMedsSectionClose" title="Close" aria-label="Close">✕</button>
         </div>
+        <div id="oralMedsContainer"></div>
+      </div>
+
+      <!-- Peptide section — one shared panel behind the 💉 icon, split
+           into per-peptide accordions rather than one tracker per
+           feature build. Tirzepatide and SS-31 are Active (each keeps
+           its own dedicated storage/logic — tirzepatide_doses and the
+           generic peptide_protocols/peptide_doses tables respectively —
+           unified only at this UI layer); BPC-157 is Discontinued,
+           shown read-only from its untouched historical bpc157_doses
+           data, with no logging UI since nothing new gets added to it. -->
+      <div class="card card--peptide-section" id="peptideSection" hidden>
+        <div class="tz-card-head">
+          <span class="card-eyebrow">💉 Peptides</span>
+          <button type="button" class="btn btn--icon" id="btnPeptideSectionClose" title="Close" aria-label="Close">✕</button>
+        </div>
+
+        <div class="peptide-accordion">
+          <button type="button" class="peptide-accordion__header" data-target="tzCard">
+            <span class="peptide-accordion__name">Tirzepatide</span>
+            <span class="peptide-status-badge peptide-status-badge--active">Active</span>
+            <span class="peptide-accordion__chevron">▾</span>
+          </button>
+          <div class="peptide-accordion__body" id="tzCard">
         <div class="chart-wrap">
           <canvas id="tzChart" height="200"></canvas>
           <p class="chart-empty" id="tzChartEmpty">Log an injection to see your levels.</p>
@@ -939,13 +1239,14 @@
           <div class="field">
             <label>Dose</label>
             <select id="tzDoseMg">
-              <option value="1">1 mg — 8 clicks</option>
-              <option value="2">2 mg — 16 clicks</option>
-              <option value="3">3 mg — 24 clicks</option>
-              <option value="4">4 mg — 32 clicks</option>
-              <option value="5">5 mg — 40 clicks</option>
-              <option value="6">6 mg — 48 clicks</option>
-              <option value="7">7 mg — 56 clicks</option>
+              <option value="0.5">0.5 mg — 0.5 units</option>
+              <option value="1">1 mg — 1 unit</option>
+              <option value="2">2 mg — 2 units</option>
+              <option value="3">3 mg — 3 units</option>
+              <option value="4">4 mg — 4 units</option>
+              <option value="5">5 mg — 5 units</option>
+              <option value="6">6 mg — 6 units</option>
+              <option value="7">7 mg — 7 units</option>
             </select>
           </div>
           <div class="field">
@@ -1009,63 +1310,22 @@
         <p class="field-hint" style="margin-top:8px;line-height:1.5">
           28-day default is general guidance for a pre-mixed research-peptide pen kept refrigerated (2–8°C) — potency is commonly cited as dropping below ~90% past that point. Room temperature is shorter, closer to 21 days. Adjust per pen if your supplier states otherwise.
         </p>
-      </div>
-
-      <!-- Opened/closed together with tzCard by the same 💉 needle icon
-           (see btnTzToggle) — no pen/vial tracker, unlike Tirzepatide,
-           since doses are drawn from a vial by syringe rather than a
-           fixed-click pen. -->
-      <div class="card" id="bpcCard" hidden>
-        <div class="tz-card-head">
-          <span class="card-eyebrow">BPC-157 tracker</span>
-          <button type="button" class="btn btn--icon" id="btnBpcClose" title="Close" aria-label="Close">✕</button>
-        </div>
-        <div class="chart-wrap">
-          <canvas id="bpcChart" height="200"></canvas>
-          <p class="chart-empty" id="bpcChartEmpty">Log an injection to see your levels.</p>
-        </div>
-        <div class="history-legend">
-          <span class="legend-item legend-item--actual">— Logged level</span>
-          <span class="legend-item legend-item--proj">- - If daily routine continues</span>
-          <span class="legend-item legend-item--tz-preview">● Tap the chart to inspect a time</span>
-        </div>
-        <div id="bpcCurrentLevel" class="tz-current-level" hidden></div>
-        <div id="bpcInspectPanel" class="tz-inspect-panel" hidden></div>
-
-        <div id="bpcLogForm" class="tz-log-form" hidden>
-          <div class="field">
-            <label>Dose <span class="field-hint">mg</span></label>
-            <input type="number" id="bpcDoseMg" step="0.1" min="0.1" value="0.5">
           </div>
-          <div class="field">
-            <label>Date &amp; time</label>
-            <input type="datetime-local" id="bpcInjectedAt">
-          </div>
-          <div class="field">
-            <label>Injection site</label>
-            <select id="bpcSite">
-              <option value="left_thigh">Left thigh</option>
-              <option value="right_thigh">Right thigh</option>
-              <option value="left_stomach">Left stomach</option>
-              <option value="right_stomach">Right stomach</option>
-              <option value="centre_stomach">Centre stomach</option>
-            </select>
-          </div>
-          <div class="settings-actions">
-            <button class="btn btn--primary btn--small" id="btnBpcSave">Save injection</button>
-            <button class="btn btn--ghost btn--small" id="btnBpcCancel">Cancel</button>
-          </div>
-          <span class="save-status" id="bpcFormStatus"></span>
         </div>
 
-        <div class="settings-actions" id="bpcLogButtonWrap">
-          <button class="btn btn--primary btn--small" id="btnBpcLog">Log injection</button>
-        </div>
+        <div id="peptideProtocolsContainer"></div>
 
-        <div id="bpcDoseList" class="tz-dose-list"></div>
-        <p class="field-hint" style="margin-top:8px;line-height:1.5">
-          Level curve uses a community-estimated ~4h half-life and ~30min time-to-peak for subcutaneous BPC-157 — there's no rigorous published human pharmacokinetic study to draw on (unlike Tirzepatide's clinical data), so treat this as a rough shape, not a precise figure.
-        </p>
+        <div class="peptide-accordion">
+          <button type="button" class="peptide-accordion__header" data-target="bpcAccordionBody">
+            <span class="peptide-accordion__name">BPC-157</span>
+            <span class="peptide-status-badge peptide-status-badge--discontinued">Discontinued</span>
+            <span class="peptide-accordion__chevron">▸</span>
+          </button>
+          <div class="peptide-accordion__body" id="bpcAccordionBody" hidden>
+            <p class="field-hint">No longer being taken — history kept for reference.</p>
+            <div class="peptide-history" id="bpcHistory"></div>
+          </div>
+        </div>
       </div>
 
       <div class="card">
@@ -1125,6 +1385,10 @@
             <div class="theme-swatch swatch--nebula"></div>
             <span class="theme-label">Nebula</span>
           </button>
+          <button class="theme-btn" data-theme="nebula-light" title="Nebula Light — lavender-white + violet &amp; fuchsia, same glass cards as Nebula">
+            <div class="theme-swatch swatch--nebula-light"></div>
+            <span class="theme-label">Nebula Light</span>
+          </button>
         </div>
         <div class="field" style="margin-top:14px">
           <label class="checkbox-option checkbox-option--full">
@@ -1140,13 +1404,6 @@
         <div class="field">
           <label for="setDisplayName">Display name</label>
           <input type="text" id="setDisplayName" placeholder="Your name">
-        </div>
-        <div class="field">
-          <label for="setUnit">Weight unit</label>
-          <select id="setUnit">
-            <option value="kg">Kilograms (kg)</option>
-            <option value="lb">Pounds (lb)</option>
-          </select>
         </div>
       </div>
 
@@ -1497,190 +1754,6 @@
     </div>
   </div>
 
-  <!-- Diabetes View -->
-  <div class="view" id="viewDiabetes" hidden>
-    <div class="view-inner">
-      <h1 class="view-title">Diabetes</h1>
-
-      <div class="card" id="dxNotConnected">
-        <div class="card-eyebrow">Not connected</div>
-        <p class="empty-state">Connect your Nightscout site in Settings to see glucose, IOB/COB, correction guidance and pattern insights here.</p>
-        <button class="btn btn--primary btn--small" id="btnDxGoToSettings">Go to Settings</button>
-      </div>
-
-      <div id="dxConnected" hidden>
-        <p class="dx-disclaimer">Heuristic pattern-spotting only, built on population-average insulin curves — not medical advice or a dosing calculator. Always use your own judgement.</p>
-
-        <div class="card card--dx-now">
-          <div class="card-eyebrow">
-            <span>Now <span class="card-eyebrow-sub" id="dxReadingAge"></span></span>
-            <button class="btn btn--ghost btn--small" id="btnDxSimpleMode" type="button">😴 Simple view</button>
-          </div>
-          <div class="dx-now-row">
-            <div class="dx-now-glucose">
-              <span class="dx-now-glucose__val" id="dxCurrentGlucose">—</span>
-              <span class="dx-now-glucose__unit">mmol/L</span>
-              <span class="dx-now-trend" id="dxTrendArrow"></span>
-            </div>
-            <div class="dx-now-stats">
-              <div class="dx-now-stat"><span class="dx-now-stat__label">IOB</span><span class="dx-now-stat__val" id="dxIob">—</span></div>
-              <div class="dx-now-stat"><span class="dx-now-stat__label">COB</span><span class="dx-now-stat__val" id="dxCob">—</span></div>
-              <div class="dx-now-stat"><span class="dx-now-stat__label">~30min</span><span class="dx-now-stat__val" id="dxEffective">—</span></div>
-            </div>
-          </div>
-          <p class="dx-stale-note" id="dxStaleNote" hidden></p>
-        </div>
-
-        <div class="card">
-          <div class="card-eyebrow">
-            <span>Glucose trend <span class="card-eyebrow-sub">4h back · 2h projected</span></span>
-            <button class="btn btn--ghost btn--small" id="btnDxLogActivity" type="button">+ Activity</button>
-          </div>
-          <div class="dx-chart-scroll" id="dxChartScroll">
-            <div class="dx-chart-wrap">
-              <canvas id="dxGlucoseChart" height="240"></canvas>
-              <div class="dx-chart-markers" id="dxChartMarkers"></div>
-            </div>
-          </div>
-          <p class="chart-empty" id="dxGlucoseChartEmpty" hidden>Not enough recent glucose data.</p>
-          <p class="dx-chart-hint" id="dxBasalFreshness"></p>
-          <p class="dx-chart-hint">Scroll to see earlier history · tap a bolus, correction or activity marker for details</p>
-          <div class="dx-chart-legend">
-            <span class="dx-chart-legend__item"><span class="dx-chart-legend__swatch" style="background:#3B9EFF"></span>Glucose</span>
-            <span class="dx-chart-legend__item"><span class="dx-chart-legend__swatch dx-chart-legend__swatch--dashed"></span>Projected</span>
-            <span class="dx-chart-legend__item"><span class="dx-chart-legend__swatch" style="background:#facc15"></span>Bolus</span>
-            <span class="dx-chart-legend__item"><span class="dx-chart-legend__swatch" style="background:#fb923c"></span>Correction</span>
-            <span class="dx-chart-legend__item"><span class="dx-chart-legend__swatch" style="background:#f472b6"></span>🍽 Meal, no bolus</span>
-            <span class="dx-chart-legend__item"><span class="dx-chart-legend__swatch" style="background:#2dd4bf"></span>Basal rate</span>
-            <span class="dx-chart-legend__item"><span class="dx-chart-legend__swatch" style="background:rgba(45,212,191,.15);border:1px dashed rgba(45,212,191,.6)"></span>Basal (scheduled, no override logged)</span>
-            <span class="dx-chart-legend__item"><span class="dx-chart-legend__swatch" style="background:#A78BFA"></span>IOB</span>
-            <span class="dx-chart-legend__item"><span class="dx-chart-legend__swatch" style="background:rgba(74,222,128,.35)"></span>Target range</span>
-            <span class="dx-chart-legend__item">🏊🚶🏃🏋️ Activity · 🔌 Unplugged</span>
-          </div>
-
-          <div id="dxActivityLogForm" hidden style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
-            <div class="field">
-              <label for="dxActivityType">Activity</label>
-              <select id="dxActivityType">
-                <option value="swim">Swim</option>
-                <option value="walk">Walk</option>
-                <option value="run">Run</option>
-                <option value="strength">Strength</option>
-                <option value="other">Other</option>
-              </select>
-            </div>
-            <div style="display:flex;gap:10px">
-              <div class="field" style="flex:1;margin-bottom:0">
-                <label for="dxActivityDate">Date</label>
-                <input type="date" id="dxActivityDate">
-              </div>
-              <div class="field" style="flex:1;margin-bottom:0">
-                <label for="dxActivityTime">Start time</label>
-                <input type="time" id="dxActivityTime">
-              </div>
-              <div class="field" style="flex:1;margin-bottom:0">
-                <label for="dxActivityDuration">Duration (min)</label>
-                <input type="number" id="dxActivityDuration" min="1" value="30" inputmode="numeric">
-              </div>
-            </div>
-            <label class="checkbox-option checkbox-option--full" style="margin-top:12px">
-              <input type="checkbox" id="dxActivityUnplugged">
-              <span>🔌 I disconnected my pump during this</span>
-            </label>
-            <div style="display:flex;gap:10px;margin-top:14px">
-              <button class="btn btn--primary" id="btnSaveDxActivity" style="flex:1">Save</button>
-              <button class="btn btn--ghost" id="btnCancelDxActivity" style="flex:1">Cancel</button>
-            </div>
-            <p class="field-hint" id="dxActivityLogStatus"></p>
-          </div>
-          <div id="dxActivityLogList"></div>
-        </div>
-
-        <div class="card" id="dxForecastCard">
-          <div class="card-eyebrow">2h hypo forecast</div>
-          <div id="dxForecastBody"></div>
-        </div>
-
-        <div class="card">
-          <div class="card-eyebrow">Correction suggestion</div>
-          <div id="dxCorrectionBody"></div>
-        </div>
-
-        <div class="card">
-          <div class="card-eyebrow">
-            Meal bolus calculator
-            <span class="field-hint" style="text-transform:none;letter-spacing:0;font-weight:400">fat/protein/name optional</span>
-          </div>
-          <p style="font-size:12px;color:var(--ink-3);line-height:1.5;margin-bottom:10px">
-            Factors in your current glucose and IOB alongside the carbs — running low reduces the suggestion, running high adds a correction on top. Add fat/protein for a split-dose suggestion, and a meal name to build up per-meal history (pick a past one to see what actually worked last time).
-          </p>
-          <div class="field">
-            <label for="dxMealPreset">Today's meals <span class="field-hint">pick one to reuse its macros</span></label>
-            <select id="dxMealPreset">
-              <option value="">— Select a previous meal —</option>
-            </select>
-          </div>
-          <div class="field">
-            <label for="dxMealName">Meal name <span class="field-hint">optional — or type a new one</span></label>
-            <input type="text" id="dxMealName" placeholder="e.g. Pizza, Porridge…" autocomplete="off">
-          </div>
-          <div class="field-grid">
-            <div class="field">
-              <label for="dxMealCarbs">Carbs <span class="field-hint">grams</span></label>
-              <input type="number" id="dxMealCarbs" min="0" step="1" placeholder="60" inputmode="numeric">
-            </div>
-            <div class="field">
-              <label for="dxMealFat">Fat <span class="field-hint">grams</span></label>
-              <input type="number" id="dxMealFat" min="0" step="1" placeholder="0" inputmode="numeric">
-            </div>
-            <div class="field">
-              <label for="dxMealProtein">Protein <span class="field-hint">grams</span></label>
-              <input type="number" id="dxMealProtein" min="0" step="1" placeholder="0" inputmode="numeric">
-            </div>
-          </div>
-          <button class="btn btn--ghost btn--small" id="btnDxMealDose">Calculate dose</button>
-          <div id="dxMealDoseBody"></div>
-        </div>
-
-        <div class="card" id="dxPatternsCard">
-          <div class="card-eyebrow">Patterns <span class="card-eyebrow-sub" id="dxPatternsWindow">last 7 days</span></div>
-          <div id="dxPatternsBody"></div>
-        </div>
-
-        <div class="card" id="dxHealthCard">
-          <div class="card-eyebrow">Weekly insulin health check</div>
-          <div id="dxHealthBody"></div>
-        </div>
-
-        <div class="card" id="dxForecastAccuracyCard">
-          <div class="card-eyebrow">Forecast accuracy <span class="card-eyebrow-sub">2h hypo forecast, last 14 days</span></div>
-          <div id="dxForecastAccuracyBody"></div>
-        </div>
-
-        <div class="card" id="dxTodaysMealsCard">
-          <div class="card-eyebrow">Today's meals <span class="card-eyebrow-sub">link a dose or mark as a hypo treatment</span></div>
-          <div id="dxTodaysMealsBody"></div>
-        </div>
-
-        <div class="card" id="dxSensitivityCard">
-          <div class="card-eyebrow">Sensitivity map <span class="card-eyebrow-sub">mmol/L drop per unit</span></div>
-          <div id="dxSensitivityBody"></div>
-        </div>
-
-        <div class="card" id="dxRegimenCard">
-          <div class="card-eyebrow">Basal &amp; carb ratio review <span class="card-eyebrow-sub">last 7 days</span></div>
-          <p class="dx-disclaimer" style="margin-bottom:12px">
-            Computed from your own data, not medical advice — review any regimen change with your diabetes team before adjusting your pump profile.
-          </p>
-          <div id="dxRegimenBody"></div>
-        </div>
-
-        <button class="btn btn--ghost btn--small" id="btnDxRefresh" style="width:100%;margin-top:4px">Refresh</button>
-        <p class="dx-last-sync" id="dxLastSync"></p>
-      </div>
-    </div>
-  </div>
-
   <!-- ═══ DIABETES SIMPLE MODE ══════════════════════════════════
        Glanceable always-on overlay: current glucose, IOB, live basal
        rate and one recommended action, in large type — meant to be
@@ -1734,12 +1807,38 @@
         </div>
       </div>
 
+      <!-- Target minus today's totals above — what's left to work with.
+           Hidden entirely when there's no calorie target set yet (a
+           fresh profile, or a plan that's never run) rather than showing
+           a meaningless "remaining" against nothing. Protein is a fixed
+           1g/lb-bodyweight target; fat/carbs are derived from the
+           calorie target (25% fat, remainder carbs) — see
+           computeMacroTargets(). The three "remaining" macro figures are
+           then reconciled against the remaining calorie budget by
+           computeAchievableRemaining() so they never ask for more than
+           can actually still be eaten today — see that function for the
+           protein-first allocation. -->
+      <div class="card" id="lfRemainingCard" hidden>
+        <div class="card-eyebrow">Remaining</div>
+        <div class="macro-totals" id="foodMacroRemaining">
+          <div class="macro-total"><span class="macro-total__val" id="rtCals">0</span><span class="macro-total__label">kcal</span></div>
+          <div class="macro-total"><span class="macro-total__val" id="rtProtein">0g</span><span class="macro-total__label">Protein</span></div>
+          <div class="macro-total"><span class="macro-total__val" id="rtCarbs">0g</span><span class="macro-total__label">Carbs</span></div>
+          <div class="macro-total"><span class="macro-total__val" id="rtFat">0g</span><span class="macro-total__label">Fat</span></div>
+        </div>
+        <p class="lf-remaining-note" id="rtAdjustedNote" hidden></p>
+      </div>
+
       <!-- Personal quick-add shortcuts (see the ⭐ toggle in the review
            form below) — tap one to pre-fill the review form instead of
            starting from scratch. -->
       <div class="card" id="lfFavoritesCard" hidden>
         <div class="card-eyebrow">Favourites</div>
-        <div id="lfFavoritesRow" class="lf-favorites-row"></div>
+        <div class="lf-favorites-row">
+          <select id="lfFavoritesSelect"></select>
+          <button type="button" class="btn btn--small" id="lfFavoritesAdd">Add</button>
+          <button type="button" class="btn btn--small btn--ghost" id="lfFavoritesDelete" title="Remove favourite">✕</button>
+        </div>
       </div>
 
       <div class="card">
@@ -1753,11 +1852,48 @@
           </select>
         </div>
 
+        <button type="button" class="btn btn--ghost btn--full" id="btnLfCopyYesterday" hidden style="margin-bottom:10px">📋 Copy yesterday's meal</button>
+
         <div class="onboard-pills" id="lfModePills">
           <button type="button" class="pill" data-mode="scan">📷 Scan</button>
           <button type="button" class="pill" data-mode="search">🔍 Search</button>
           <button type="button" class="pill" data-mode="photo">📸 Photo</button>
+          <button type="button" class="pill" data-mode="text">📝 Describe</button>
           <button type="button" class="pill" data-mode="manual">✏️ Manual</button>
+        </div>
+
+        <!-- Describe mode — plain-English meal text, split server-side
+             into one estimate per distinct food (see
+             food-text-estimate.js). A single parsed item drops into the
+             shared review form below like any other source; several
+             items get their own editable list, since the review form
+             only ever edits one food at a time. -->
+        <div id="lfTextPanel" hidden style="margin-top:12px">
+          <div class="field">
+            <label for="lfTextInput">What did you eat? <span class="field-hint">plain English — several foods at once is fine</span></label>
+            <textarea id="lfTextInput" rows="3" placeholder="e.g. 2 baking sweet potatoes and ready cooked chicken skewers"></textarea>
+          </div>
+          <div class="field">
+            <label for="lfTextLoggedAt">Logged at <span class="field-hint">defaults to now</span></label>
+            <input type="datetime-local" id="lfTextLoggedAt">
+          </div>
+          <button class="btn btn--primary btn--full" id="btnLfTextEstimate">Estimate calories &amp; macros</button>
+          <p class="field-hint" id="lfTextEstimateStatus"></p>
+
+          <div id="lfTextResults" hidden style="margin-top:14px">
+            <p class="field-hint" id="lfTextNote"></p>
+            <div id="lfTextItems"></div>
+            <div class="lf-text-total" id="lfTextTotal"></div>
+            <label class="checkbox-option checkbox-option--full" id="lfTextShareWrap" hidden>
+              <input type="checkbox" id="lfTextShare">
+              <span>🍽️ Also log this for <span id="lfTextShareName">—</span></span>
+            </label>
+            <div style="display:flex;gap:10px;margin-top:10px">
+              <button class="btn btn--primary" id="btnLfTextSave" style="flex:1">Log all</button>
+              <button class="btn btn--ghost" id="btnLfTextCancel" style="flex:1">Cancel</button>
+            </div>
+            <p class="field-hint" id="lfTextSaveStatus"></p>
+          </div>
         </div>
 
         <!-- Scan mode -->
@@ -1912,9 +2048,6 @@
     <button class="tab-btn" data-view="history" aria-label="History" title="History">
       <span class="tab-btn__pill"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 8v4l3 2"/></svg></span>
     </button>
-    <button class="tab-btn" data-view="diabetes" aria-label="Diabetes" title="Diabetes">
-      <span class="tab-btn__pill"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5s6.5 7.2 6.5 12.2a6.5 6.5 0 01-13 0C5.5 9.7 12 2.5 12 2.5z"/></svg></span>
-    </button>
   </nav>
 
 </div><!-- /screenApp -->
@@ -2005,6 +2138,28 @@
         </div>
       </div>
 
+    </div>
+  </div>
+</div>
+
+<!-- Daily briefing — generated once each morning (see notify-ai-coach.js)
+     from recovery/sleep, this week's training and calorie balance, and
+     (when diabetes tracking is on) a 7-day insulin health check. Behind
+     the bell icon rather than a persistent dashboard card — a push
+     notification with a one-line teaser already goes out at ~08:00; this
+     modal is just where you read the full thing in-app. -->
+<div class="modal-backdrop" id="coachModal" hidden>
+  <div class="modal">
+    <div class="modal__head">
+      <span class="modal__title">🧭 Daily briefing</span>
+      <button class="modal__close" id="coachModalClose">×</button>
+    </div>
+    <div class="modal__body">
+      <p class="empty-state" id="coachBriefingEmpty">Your morning briefing appears here once generated (~08:00 daily).</p>
+      <div class="coach-briefing" id="coachBriefingBody" hidden>
+        <div class="coach-briefing__date" id="coachBriefingDate"></div>
+        <div class="coach-briefing__text" id="coachBriefingText"></div>
+      </div>
     </div>
   </div>
 </div>

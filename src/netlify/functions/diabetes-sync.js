@@ -17,7 +17,7 @@
 // nightscout-adapter.js for what that confirmed and corrected.
 
 const crypto = require('crypto');
-const { adaptNightscoutData } = require('../../nightscout-adapter.js');
+const { adaptNightscoutData, adaptProfileSwitches } = require('../../nightscout-adapter.js');
 
 const HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -51,7 +51,13 @@ exports.handler = async function (event) {
     const [entries, treatments, profileDocs] = await Promise.all([
       nsFetch(`${baseUrl}/api/v1/entries.json?count=20000&find[date][$gte]=${sinceMs}${tokenQS}`, reqHeaders),
       nsFetch(`${baseUrl}/api/v1/treatments.json?count=5000&find[created_at][$gte]=${new Date(sinceMs).toISOString()}${tokenQS}`, reqHeaders),
-      nsFetch(`${baseUrl}/api/v1/profile.json?count=1${tokenQS}`, reqHeaders),
+      // count=30, not 1 — profile.json's own revision history (a fresh
+      // document each time the pump's active default profile actually
+      // changes) is the only place a profile switch shows up at all for a
+      // tconnectsync feed; there's no distinct "Profile Switch" treatment
+      // event for it. 30 is generous headroom for even frequent switching
+      // within the 31-day max lookback this endpoint supports.
+      nsFetch(`${baseUrl}/api/v1/profile.json?count=30${tokenQS}`, reqHeaders),
     ]);
 
     if (!entries.ok) {
@@ -75,6 +81,7 @@ exports.handler = async function (event) {
         // The chart uses this to fill those holes with the *scheduled*
         // rate, visually distinct from a confirmed delivered dose.
         basalSchedule: extractBasalSchedule(profileDocs.ok ? profileDocs.data : null),
+        profileSwitches: adaptProfileSwitches(profileDocs.ok ? profileDocs.data : null),
         meta: {
           days,
           entriesFetched: (entries.data || []).length,

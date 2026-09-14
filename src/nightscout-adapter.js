@@ -119,6 +119,25 @@ function adaptTreatments(treatments) {
   return { boluses, corrections, basalDoses };
 }
 
+/* ── Profile history → profile-switch timeline ────────────────
+   Nightscout doesn't log a distinct "Profile Switch" treatment event for
+   a Tandem/tconnectsync feed — instead, a fresh profile.json document
+   gets uploaded each time the pump's active default profile actually
+   changes, timestamped by when that happened. Fetching more than the
+   latest one (see diabetes-sync.js) and sorting them gives a real
+   timeline of which named profile (e.g. a weekday-default vs a
+   deliberately-switched-to alternate) was active at any point in the
+   lookback window — exactly what's needed to review basal/ISF/carb-ratio
+   suggestions separately per profile instead of pooling every day
+   together regardless of which settings were actually running. */
+function adaptProfileSwitches(profileDocs) {
+  if (!Array.isArray(profileDocs)) return [];
+  return profileDocs
+    .map(d => ({ ms: toMs(d.created_at ?? d.startDate ?? d.mills), profileName: d.defaultProfile || null }))
+    .filter(s => s.ms != null && s.profileName)
+    .sort((a, b) => a.ms - b.ms);
+}
+
 /* ── Top-level adapter ─────────────────────────────────────── */
 function adaptNightscoutData({ entries, treatments } = {}) {
   const glucoseHistory = adaptEntries(entries);
@@ -130,6 +149,7 @@ const NightscoutAdapter = {
   mgdlToMmol,
   adaptEntries,
   adaptTreatments,
+  adaptProfileSwitches,
   adaptNightscoutData,
 };
 

@@ -1,11 +1,14 @@
 // netlify/functions/notify-tirzepatide.js
 // Scheduled: cron fires hourly (covering both UTC equivalents of the
-// BST/GMT offset) across the window that spans Friday 09:00-21:00
-// Europe/London, and self-gates on every fire to only actually proceed
-// when it's really Friday and really within that local hour range (see
-// londonNow() in _lib/webpush.js). Keeps re-firing every hour until an
-// injection has been logged for today, then goes quiet for the rest of
-// the day.
+// BST/GMT offset) across the 09:00-21:00 Europe/London window, every
+// day — but only actually sends once 7 days have passed since the last
+// logged dose (see isDue below), not on a fixed weekday. A dose taken
+// late one week (say, Saturday instead of Friday) correctly pushes the
+// following week's reminder to the next Saturday too, rather than
+// snapping back to "always Friday" regardless of when the last one
+// actually happened. Once due, keeps re-firing hourly — across
+// multiple days if it comes to that, not just the one "due" day — until
+// a fresh injection has been logged, then goes quiet until next due.
 
 const { sendWebPush, londonNow, londonDateStrOf, GEMMA_USER_ID } = require('./_lib/webpush');
 
@@ -55,6 +58,16 @@ async function sbFetch(path) {
   return { ok: true, data: await res.json() };
 }
 
+// Plain calendar-date arithmetic (noon UTC avoids any DST-related
+// date-shift at the day boundary) — dueDateStr only ever gets compared
+// against another YYYY-MM-DD string, never used as a real instant.
+const REMINDER_INTERVAL_DAYS = 7;
+function addDaysToDateStr(dateStr, days) {
+  const d = new Date(`${dateStr}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
 async function buildReminder(userId, todayDateStr) {
   const { data } = await sbFetch(`/rest/v1/tirzepatide_doses?user_id=eq.${userId}&select=dose_mg,site,injected_at&order=injected_at.desc&limit=30`);
   const doses = data || [];
@@ -64,6 +77,9 @@ async function buildReminder(userId, todayDateStr) {
   if (alreadyLoggedToday) return null;
 
   const last = doses[0];
+  const dueDateStr = addDaysToDateStr(londonDateStrOf(last.injected_at), REMINDER_INTERVAL_DAYS);
+  if (todayDateStr < dueDateStr) return null; // not due yet — under a week since the last dose
+
   const next = tzNextSite(last.site);
   const lastLabel = TZ_SITE_LABELS[last.site] || last.site || 'unknown site';
   const nextLabel = TZ_SITE_LABELS[next] || next;
@@ -78,8 +94,8 @@ async function buildReminder(userId, todayDateStr) {
 
 exports.handler = async function () {
   const now = londonNow();
-  const inWindow = now.weekday === 'Fri' && now.hour >= WINDOW_START_HOUR && now.hour <= WINDOW_END_HOUR;
-  if (!inWindow) return { statusCode: 200, body: 'not Friday 09:00-21:00 London — skipping' };
+  const inWindow = now.hour >= WINDOW_START_HOUR && now.hour <= WINDOW_END_HOUR;
+  if (!inWindow) return { statusCode: 200, body: 'outside 09:00-21:00 London — skipping' };
   if (!SB_URL || !SB_SERVICE) return { statusCode: 500, body: 'Supabase env vars missing' };
 
   const { data: subs } = await sbFetch('/rest/v1/push_subscriptions?select=user_id,endpoint,p256dh,auth_key');

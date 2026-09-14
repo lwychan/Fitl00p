@@ -92,7 +92,7 @@
     if (!tab) {
       tab = document.createElement('button');
       tab.id = '__consoleTab';
-      tab.style.cssText = 'position:fixed;bottom:12px;right:12px;z-index:999998;' +
+      tab.style.cssText = 'position:fixed;bottom:12px;left:12px;z-index:999998;' +
         'background:#1a1a1a;color:#fff;border:1px solid #444;border-radius:20px;' +
         'padding:6px 12px;font:11px -apple-system,sans-serif;opacity:0.55;';
       document.documentElement.appendChild(tab);
@@ -139,13 +139,40 @@ const VAPID_PUBLIC = 'BOUj3c5wS_5htviclNYyinBVVxCkz0HfJOZVcVrEoxIwBFqPqxljCg7l5m
 const { createClient } = window.supabase;
 let db = null; // initialised after config loads
 
-// supabase-js guards auth calls (signInWithPassword, setSession, etc.) with a
-// cross-tab mutex built on navigator.locks. If a lock is ever orphaned — an
-// aborted request, a reload mid-acquisition, a backgrounded tab — every
-// future auth call queues behind it and hangs forever with no error. This
-// app only ever runs one tab's worth of auth logic at a time, so trade away
-// cross-tab coordination for a lock that can never deadlock.
-const noOpAuthLock = async (name, acquireTimeout, fn) => fn();
+// supabase-js guards auth calls (signInWithPassword, refreshSession, etc.)
+// with a cross-tab mutex built on navigator.locks. If a lock is ever
+// orphaned — an aborted request, a reload mid-acquisition, a backgrounded
+// tab — every future auth call queues behind it and hangs forever with no
+// error, which is why this used to be replaced with a true no-op (skip the
+// lock entirely). But going fully lock-free traded that hang for a
+// different real bug, confirmed from Supabase's own auth audit log: two
+// refresh attempts firing close together with nothing serializing them can
+// both submit the same refresh_token — Supabase rotates+revokes it on
+// first use, so the loser's request gets rejected and the whole session is
+// treated as dead, forcing a fresh password login even though the session
+// was fine seconds earlier (seen twice in one day, once just 5 minutes
+// after a refresh had just succeeded).
+//
+// This is the middle ground: a real mutex that still serializes auth calls
+// (so the race above can't happen) but is plain JS state scoped to this
+// tab's own execution context — not the browser-level navigator.locks API
+// — so it's wiped clean by any reload and can never carry an orphaned lock
+// across one. A bounded wait is kept as a second line of defense: if a
+// held call somehow never finishes, waiters give up and proceed rather
+// than queue forever, so this still can't reintroduce the original hang.
+let authLockChain = Promise.resolve();
+async function tabLocalAuthLock(name, acquireTimeout, fn) {
+  const waitMs = acquireTimeout > 0 ? acquireTimeout : 10000;
+  const previousHolder = authLockChain;
+  let releaseThisHold;
+  authLockChain = new Promise(resolve => { releaseThisHold = resolve; });
+  try {
+    await Promise.race([previousHolder, new Promise(resolve => setTimeout(resolve, waitMs))]);
+    return await fn();
+  } finally {
+    releaseThisHold();
+  }
+}
 
 /* ── DOM shortcuts ──────────────────────────────────────── */
 const $ = id => document.getElementById(id);
@@ -157,17 +184,13 @@ const el = {
   screenApp:  $('screenApp'),
   // auth
   formSignin:    $('formSignin'),
-  formSignup:    $('formSignup'),
   siEmail:       $('siEmail'),
   siPassword:    $('siPassword'),
-  suName:        $('suName'),
-  suEmail:       $('suEmail'),
-  suPassword:    $('suPassword'),
   btnSignin:     $('btnSignin'),
-  btnSignup:     $('btnSignup'),
   btnForgot:     $('btnForgot'),
   msgSignin:     $('msgSignin'),
-  msgSignup:     $('msgSignup'),
+  btnAuthToggle:   $('btnAuthToggle'),
+  authToggleText:  $('authToggleText'),
   // appbar
   appbarUser:    $('appbarUser'),
   appNav:        $('appNav'),
@@ -192,8 +215,15 @@ const el = {
   mtProtein:        $('mtProtein'),
   mtCarbs:          $('mtCarbs'),
   mtFat:            $('mtFat'),
+  lfRemainingCard:  $('lfRemainingCard'),
+  rtCals:           $('rtCals'),
+  rtProtein:        $('rtProtein'),
+  rtCarbs:          $('rtCarbs'),
+  rtFat:            $('rtFat'),
+  rtAdjustedNote:   $('rtAdjustedNote'),
   lfMealSlot:       $('lfMealSlot'),
   lfModePills:      $('lfModePills'),
+  btnLfCopyYesterday: $('btnLfCopyYesterday'),
   lfScanPanel:      $('lfScanPanel'),
   lfScanVideo:      $('lfScanVideo'),
   lfScanStatus:     $('lfScanStatus'),
@@ -217,6 +247,21 @@ const el = {
   lfPhotoDesc:      $('lfPhotoDesc'),
   btnLfEstimate:    $('btnLfEstimate'),
   lfEstimateStatus: $('lfEstimateStatus'),
+  lfTextPanel:      $('lfTextPanel'),
+  lfTextInput:      $('lfTextInput'),
+  lfTextLoggedAt:   $('lfTextLoggedAt'),
+  btnLfTextEstimate: $('btnLfTextEstimate'),
+  lfTextEstimateStatus: $('lfTextEstimateStatus'),
+  lfTextResults:    $('lfTextResults'),
+  lfTextNote:       $('lfTextNote'),
+  lfTextItems:      $('lfTextItems'),
+  lfTextTotal:      $('lfTextTotal'),
+  lfTextShareWrap:  $('lfTextShareWrap'),
+  lfTextShare:      $('lfTextShare'),
+  lfTextShareName:  $('lfTextShareName'),
+  btnLfTextSave:    $('btnLfTextSave'),
+  btnLfTextCancel:  $('btnLfTextCancel'),
+  lfTextSaveStatus: $('lfTextSaveStatus'),
   lfReviewForm:     $('lfReviewForm'),
   lfFoodName:       $('lfFoodName'),
   lfBrand:          $('lfBrand'),
@@ -236,7 +281,9 @@ const el = {
   lfShareName:      $('lfShareName'),
   btnLfFavToggle:   $('btnLfFavToggle'),
   lfFavoritesCard:  $('lfFavoritesCard'),
-  lfFavoritesRow:   $('lfFavoritesRow'),
+  lfFavoritesSelect: $('lfFavoritesSelect'),
+  lfFavoritesAdd:   $('lfFavoritesAdd'),
+  lfFavoritesDelete: $('lfFavoritesDelete'),
   btnLfSave:        $('btnLfSave'),
   btnLfCancel:      $('btnLfCancel'),
   lfSaveStatus:     $('lfSaveStatus'),
@@ -273,6 +320,26 @@ const el = {
   dashChart:      $('dashChart'),
   dashChartEmpty: $('dashChartEmpty'),
   dashChartSkeleton: $('dashChartSkeleton'),
+  btnCoachBell:         $('btnCoachBell'),
+  coachModal:           $('coachModal'),
+  coachBellDot:         $('coachBellDot'),
+  coachBriefingEmpty:   $('coachBriefingEmpty'),
+  coachBriefingBody:    $('coachBriefingBody'),
+  coachBriefingDate:    $('coachBriefingDate'),
+  coachBriefingText:    $('coachBriefingText'),
+  checklistCard:        $('checklistCard'),
+  checklistTiles:       $('checklistTiles'),
+  checklistStreak:      $('checklistStreak'),
+  checklistStreakCount: $('checklistStreakCount'),
+  peptideSection:          $('peptideSection'),
+  btnPeptideSectionClose:  $('btnPeptideSectionClose'),
+  peptideProtocolsContainer: $('peptideProtocolsContainer'),
+  oralMedsSection:         $('oralMedsSection'),
+  btnOralMedsToggle:       $('btnOralMedsToggle'),
+  btnOralMedsSectionClose: $('btnOralMedsSectionClose'),
+  oralMedsContainer:       $('oralMedsContainer'),
+  bpcAccordionBody:        $('bpcAccordionBody'),
+  bpcHistory:              $('bpcHistory'),
   scoreCarousel:      $('scoreCarousel'),
   scoreCarouselEmpty: $('scoreCarouselEmpty'),
   scoreDetail:        $('scoreDetail'),
@@ -341,27 +408,8 @@ const el = {
   tzPenAddButtonWrap:  $('tzPenAddButtonWrap'),
   tzPenFormStatus:     $('tzPenFormStatus'),
   tzPenHistory:        $('tzPenHistory'),
-  // BPC-157 — opened/closed together with the tz card by the same
-  // needle icon (btnTzToggle), each with its own independent ✕.
-  btnBpcClose:         $('btnBpcClose'),
-  bpcCard:             $('bpcCard'),
-  bpcChart:            $('bpcChart'),
-  bpcChartEmpty:       $('bpcChartEmpty'),
-  bpcCurrentLevel:     $('bpcCurrentLevel'),
-  bpcInspectPanel:     $('bpcInspectPanel'),
-  bpcLogForm:          $('bpcLogForm'),
-  bpcLogButtonWrap:    $('bpcLogButtonWrap'),
-  btnBpcLog:           $('btnBpcLog'),
-  btnBpcSave:          $('btnBpcSave'),
-  btnBpcCancel:        $('btnBpcCancel'),
-  bpcDoseMg:           $('bpcDoseMg'),
-  bpcInjectedAt:       $('bpcInjectedAt'),
-  bpcSite:             $('bpcSite'),
-  bpcFormStatus:       $('bpcFormStatus'),
-  bpcDoseList:         $('bpcDoseList'),
   // settings
   setDisplayName:    $('setDisplayName'),
-  setUnit:           $('setUnit'),
   setTdee:           $('setTdee'),
   setStepsGoal:      $('setStepsGoal'),
   setEatTargetManual: $('setEatTargetManual'),
@@ -377,6 +425,7 @@ const el = {
   viewDiabetes:      $('viewDiabetes'),
   dxNotConnected:    $('dxNotConnected'),
   dxConnected:       $('dxConnected'),
+  dxNowCard:         $('dxNowCard'),
   dxReadingAge:      $('dxReadingAge'),
   dxCurrentGlucose:  $('dxCurrentGlucose'),
   dxTrendArrow:      $('dxTrendArrow'),
@@ -428,6 +477,19 @@ const el = {
   btnCancelDxActivity: $('btnCancelDxActivity'),
   dxActivityLogStatus: $('dxActivityLogStatus'),
   dxActivityLogList: $('dxActivityLogList'),
+  dxGapBanner:       $('dxGapBanner'),
+  dxGapBannerText:   $('dxGapBannerText'),
+  btnDxResolveGap:   $('btnDxResolveGap'),
+  btnDxLogInsulinGap: $('btnDxLogInsulinGap'),
+  dxInsulinGapForm:  $('dxInsulinGapForm'),
+  dxGapReason:       $('dxGapReason'),
+  dxGapDate:         $('dxGapDate'),
+  dxGapTime:         $('dxGapTime'),
+  dxGapNote:         $('dxGapNote'),
+  btnSaveDxGap:      $('btnSaveDxGap'),
+  btnCancelDxGap:    $('btnCancelDxGap'),
+  dxGapLogStatus:    $('dxGapLogStatus'),
+  dxInsulinGapList:  $('dxInsulinGapList'),
   dxLastSync:        $('dxLastSync'),
   btnDxSimpleMode:   $('btnDxSimpleMode'),
   screenDxSimple:    $('screenDxSimple'),
@@ -461,7 +523,118 @@ let activePlan     = null;   // weight_plans row (is_active=true)
 let todayLog       = null;   // daily_logs row for today
 
 const KCAL_PER_KG  = 7700;
-const KCAL_PER_LB  = 3500;
+
+// Body-weight fields that a user can type a value into — daily_logs.weight
+// and weight_plans.start_weight/target_weight — are stored as canonical KG
+// always, same convention as health_daily.weight_kg (Apple Health sync).
+// Converted to/from the display unit ONLY at the UI boundary: once when
+// saving a typed value, once when rendering a stored value. Every internal
+// comparison/arithmetic (plan progress, BMI-per-kg dosing, deficit maths)
+// must use the raw kg value untouched — mixing a converted display number
+// back into that math is exactly the bug this convention exists to prevent
+// (a value saved while the display unit was kg being silently reinterpreted
+// as lb, or vice versa, the moment the user switches units in Settings).
+const LB_TO_KG = 0.45359237;
+const weightToKg   = (val, unit) => unit === 'lb' ? Number(val) * LB_TO_KG : Number(val);
+const weightFromKg = (kg, unit)  => unit === 'lb' ? Number(kg) / LB_TO_KG : Number(kg);
+
+// Body weight (dashboard, History, weight plan, onboarding, manual weight
+// logging) always displays/enters in lb; exercise/lifting weight (workout
+// sets, personal records, strength progress) always in kg — hardcoded
+// rather than a user-switchable setting, since a single shared toggle
+// covering both was flipping the "wrong" one and corrupting the other's
+// numbers. There is no Settings control for either of these anymore.
+const BODY_WEIGHT_UNIT     = 'lb';
+const EXERCISE_WEIGHT_UNIT = 'kg';
+
+// Two-person household, same fixed id already hardcoded server-side
+// (see GEMMA_USER_ID in netlify/functions/_lib/webpush.js) — gates the
+// Gemma-only daily checklist card below and the diabetes tab's default
+// visibility assumption for her account specifically.
+const GEMMA_USER_ID = '2c8bf000-b870-4ea1-8a67-ec00ee7d4041';
+
+// Progressive overload: equipment where a fixed external weight is
+// actually being added (barbell plates, a dumbbell pair, a plate-loaded
+// or pin-stack machine) supports a real "add a bit more than last time"
+// suggestion. Cable/kettlebell/bodyweight are left alone — cable stacks
+// and kettlebells jump in their own fixed increments that vary machine to
+// machine, and bodyweight has no external load to increment at all.
+const PROGRESSIVE_EQUIPMENT = new Set(['barbell', 'dumbbell', 'machine']);
+const PROGRESSION_INCREMENT_KG = 2.5;
+
+// Standard bar/plate loading (kg) — a 20kg Olympic bar plus a common
+// gym plate set. There's no per-exercise bar-type field in the data
+// model (EZ bar, trap bar etc. would differ), so this is a reasonable
+// default rather than something precisely tracked per exercise.
+const BARBELL_BAR_KG = 20;
+const AVAILABLE_PLATES_KG = [25, 20, 15, 10, 5, 2.5, 1.25];
+
+// Greedy per-side plate breakdown for a total barbell weight — e.g. 60kg
+// total = 20kg bar + 20kg per side, so this returns [{kg:20,count:1}].
+// Returns null when the weight is below the bar itself, or up to ~0.5kg
+// off what's achievable with this plate set (rounding/typo territory)
+// rather than silently proposing a slightly-wrong combination.
+function platesForWeight(totalWeight, barWeightKg = BARBELL_BAR_KG) {
+  const total = Number(totalWeight);
+  if (!Number.isFinite(total) || total < barWeightKg) return null;
+  let perSide = (total - barWeightKg) / 2;
+  if (perSide < 0.01) return [];
+
+  const breakdown = [];
+  for (const plate of AVAILABLE_PLATES_KG) {
+    let count = 0;
+    while (perSide + 1e-9 >= plate) { perSide -= plate; count++; }
+    if (count > 0) breakdown.push({ kg: plate, count });
+  }
+  return perSide > 0.5 ? null : breakdown; // leftover too big to represent with this plate set
+}
+
+// Given the last session's top set for this exercise (or null if it's
+// never been logged), decide the suggested starting weight for this
+// session — null if this equipment type isn't a progressive one, or
+// there's no history yet to build from. hitTarget reflects whether last
+// time's reps met the prescribed target (or there is no target), which
+// is what decides bump-vs-repeat.
+function computeSuggestedWeight(equipmentType, last, targetReps) {
+  if (!last || !equipmentType || !PROGRESSIVE_EQUIPMENT.has(equipmentType)) return null;
+  const hitTarget = !targetReps || last.reps >= targetReps;
+  return hitTarget ? last.weight + PROGRESSION_INCREMENT_KG : last.weight;
+}
+
+function formatPlateHint(equipmentType, weight, baseWeightKg) {
+  if (equipmentType !== 'barbell') return '';
+  const bar = baseWeightKg != null ? Number(baseWeightKg) : BARBELL_BAR_KG;
+  const breakdown = platesForWeight(weight, bar);
+  if (breakdown == null) return '';
+  if (!breakdown.length) return `= bar only (${bar}kg)`;
+  return `= ${breakdown.map(b => `${b.count}×${b.kg}`).join(' + ')}kg per side`;
+}
+
+// One-line "why this weight is pre-filled" explanation — shown whenever
+// suggestedWeight was actually computed (a progressive-equipment exercise
+// with a real last-session top set to build from).
+function renderProgressionHint(ex) {
+  if (ex.suggestedWeight == null || !ex.lastSession) return '';
+  const { weight: lastWeight, reps: lastReps } = ex.lastSession;
+  const hitTarget = !ex.reps || lastReps >= ex.reps;
+  const note = hitTarget
+    ? `hit ${ex.reps || lastReps} reps — up ${PROGRESSION_INCREMENT_KG}kg`
+    : `missed the ${ex.reps} rep target — repeating this weight`;
+  return `<div class="exercise-card__progression" style="font-size:12px;color:var(--ink-2);margin:0 16px 4px">
+    💪 Suggested: ${fmt1(ex.suggestedWeight)}${EXERCISE_WEIGHT_UNIT} (last time ${lastWeight}${EXERCISE_WEIGHT_UNIT} × ${lastReps}, ${note})
+  </div>`;
+}
+
+// Small "⏱ Ns rest" pill shown only when this exercise has a real
+// per-exercise rest_seconds_override — otherwise a countdown that's
+// shorter/longer than the routine's stated rest (e.g. a deliberately
+// quicker 60s for an isolation move vs. the routine's 90s default)
+// looks like a random glitch instead of the intentional per-exercise
+// setting it actually is.
+function restBadgeHtml(ex) {
+  if (ex.rest_seconds_override == null) return '';
+  return `<span class="exercise-card__rest-badge" title="This exercise has its own rest time, different from the routine default">⏱ ${ex.rest_seconds_override}s rest</span>`;
+}
 
 const EXERCISE_LIST = [
   'Bench Press','Incline Bench Press','Decline Bench Press','Dumbbell Fly',
@@ -494,6 +667,10 @@ const fmtAxis = iso => {
 };
 
 const fmt1 = n => (n == null ? '—' : Number(n).toFixed(1));
+// Insulin-unit amounts specifically — Tandem t:slim X2 (and most modern
+// pumps) microdose to 0.01u, so these show the real precision instead of
+// fmt1's coarser 1 decimal place.
+const fmtDose = n => (n == null ? '—' : Number(n).toFixed(2));
 const fmtInt = n => (n == null ? '—' : Math.round(n).toLocaleString());
 const fmtSigned = (n, dp) => (n >= 0 ? '+' : '') + Number(n).toFixed(dp);
 const clamp01 = (v, g) => Math.min(100, Math.max(0, (v / (g || 1)) * 100));
@@ -559,34 +736,31 @@ function setBtn(btn, loading, text, loadingText = 'Saving…') {
    AUTH — wired in initApp() after db is ready
 ═══════════════════════════════════════════════════════════ */
 
-// Tab switching (no db needed — wire immediately)
-document.querySelectorAll('.auth-tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('.auth-tab').forEach(t => t.classList.remove('auth-tab--active'));
-    tab.classList.add('auth-tab--active');
-    const which = tab.dataset.tab;
-    el.formSignin.hidden = which !== 'signin';
-    el.formSignup.hidden = which !== 'signup';
-    el.msgSignin.textContent = '';
-    el.msgSignup.textContent = '';
-  });
-});
+// Sign in / sign up — real Supabase auth (signInWithPassword / signUp),
+// which is what RLS's auth.uid() = user_id checks key off of. Sign-up
+// lands the new account in the existing pending-approval flow (role
+// defaults to 'pending' via the handle_new_user DB trigger; see
+// createApprovalRequest and the role branch in onAuthStateChange below) —
+// an admin approves them from the existing IAM modal (loadIamData).
+let authMode = 'signin'; // 'signin' | 'signup'
+
+function setAuthMode(mode) {
+  authMode = mode;
+  const isSignup = mode === 'signup';
+  setBtn(el.btnSignin, false, isSignup ? 'Sign up' : 'Unlock');
+  el.siPassword.autocomplete = isSignup ? 'new-password' : 'current-password';
+  if (el.authToggleText) el.authToggleText.textContent = isSignup ? 'Already have an account?' : 'Need access?';
+  if (el.btnAuthToggle) el.btnAuthToggle.textContent = isSignup ? 'Sign in' : 'Sign up';
+  el.msgSignin.textContent = '';
+  el.msgSignin.classList.remove('is-ok');
+}
+
+el.btnAuthToggle?.addEventListener('click', () => setAuthMode(authMode === 'signup' ? 'signin' : 'signup'));
 
 function resetAuthForms() {
-  el.siEmail.value    = '';
+  el.siEmail.value = '';
   el.siPassword.value = '';
-  el.suEmail.value    = '';
-  el.suPassword.value = '';
-  el.suName.value     = '';
-  setBtn(el.btnSignin, false, 'Sign in');
-  el.msgSignin.textContent = '';
-  el.msgSignup.textContent = '';
-  el.msgSignin.classList.remove('is-ok');
-  el.msgSignup.classList.remove('is-ok');
-  document.querySelectorAll('.auth-tab').forEach(t => t.classList.remove('auth-tab--active'));
-  document.querySelector('.auth-tab[data-tab="signin"]').classList.add('auth-tab--active');
-  el.formSignin.hidden = false;
-  el.formSignup.hidden = true;
+  setAuthMode('signin');
 }
 
 function showScreen(screen) {
@@ -647,42 +821,47 @@ function initApp() {
     // the whole flow; onAuthStateChange resets it on failure, and success
     // navigates away from this screen entirely.
     if (authHandling) return;
-    setBtn(el.btnSignin, true, 'Sign in', 'Signing in…');
-    el.msgSignin.textContent = '';
 
     const email    = el.siEmail.value.trim();
     const password = el.siPassword.value;
+    el.msgSignin.textContent = '';
+    el.msgSignin.classList.remove('is-ok');
 
+    if (authMode === 'signup') {
+      setBtn(el.btnSignin, true, 'Sign up', 'Requesting…');
+      const { data, error } = await db.auth.signUp({ email, password });
+      if (error) {
+        setBtn(el.btnSignin, false, 'Sign up');
+        el.msgSignin.textContent = error.message;
+        return;
+      }
+      if (!data.session) {
+        // Email confirmation required before Supabase issues a session —
+        // onAuthStateChange (and the pending-approval flow) only take over
+        // once they actually sign in after confirming.
+        setBtn(el.btnSignin, false, 'Sign up');
+        el.msgSignin.textContent = 'Check your email to confirm your account, then sign in.';
+        el.msgSignin.classList.add('is-ok');
+        setAuthMode('signin');
+        return;
+      }
+      // Session issued immediately — onAuthStateChange takes it from here
+      // (new profile via the handle_new_user trigger, role defaults to
+      // 'pending', landing it on the existing pending-approval screen).
+      return;
+    }
+
+    setBtn(el.btnSignin, true, 'Unlock', 'Unlocking…');
     const { error } = await db.auth.signInWithPassword({ email, password });
 
     if (error) {
-      setBtn(el.btnSignin, false, 'Sign in');
+      setBtn(el.btnSignin, false, 'Unlock');
       el.msgSignin.textContent = error.message;
-      el.msgSignin.classList.remove('is-ok');
       return;
     }
 
     // Login succeeded. onAuthStateChange fires SIGNED_IN and handles the
     // screen transition (and button reset on failure) via its own logic.
-  });
-
-  // Sign up
-  el.formSignup.addEventListener('submit', async e => {
-    e.preventDefault();
-    setBtn(el.btnSignup, true, 'Create account', 'Creating…');
-    el.msgSignup.textContent = '';
-    const { error } = await db.auth.signUp({
-      email:    el.suEmail.value.trim(),
-      password: el.suPassword.value,
-      options:  { data: { full_name: el.suName.value.trim() } },
-    });
-    setBtn(el.btnSignup, false, 'Create account');
-    if (error) {
-      el.msgSignup.textContent = error.message;
-    } else {
-      el.msgSignup.textContent = 'Check your email to confirm your account, then sign in.';
-      el.msgSignup.classList.add('is-ok');
-    }
   });
 
   // Forgot password
@@ -828,16 +1007,16 @@ function initApp() {
         authHandling = false;
       }
 
-      const theme = profile?.theme || localStorage.getItem(THEME_KEY) || 'slate';
+      const theme = profile?.theme || localStorage.getItem(THEME_KEY) || 'nebula';
       applyTheme(theme, false); // apply visually only — don't write to DB during login
 
       if (!profile) {
         console.error('Profile failed to load — session valid, showing retry');
         showScreen('auth');
         hideBootScreen();
-        setBtn(el.btnSignin, false, 'Sign in');
+        setBtn(el.btnSignin, false, 'Unlock');
         if (el.msgSignin) {
-          el.msgSignin.textContent = 'Could not connect. Check your connection and tap "Sign in" to try again.';
+          el.msgSignin.textContent = 'Could not connect. Check your connection and tap "Unlock" to try again.';
           el.msgSignin.classList.remove('is-ok');
         }
         return;
@@ -947,11 +1126,15 @@ function loadUIState() {
   } catch { return null; }
 }
 
+// Diabetes no longer has its own tab/view — its whole section (el.viewDiabetes)
+// now lives nested inside viewDashboard's DOM (see index.html) and is shown
+// or hidden as a unit by applyDiabetesTabVisibility() below, independent of
+// which top-level view is active. It's deliberately NOT listed here, so the
+// "hide every view" sweep at the top of navigateTo() never touches it.
 const views = {
   dashboard:    el.viewDashboard,
   workout:      el.viewWorkout,
   history:      el.viewHistory,
-  diabetes:     el.viewDiabetes,
   settings:     el.viewSettings,
   workoutAdmin: el.viewWorkoutAdmin,
   logFood:      el.viewLogFood,
@@ -961,33 +1144,33 @@ const viewLoaders = {
   dashboard:    loadDashboard,
   workout:      loadWorkout,
   history:      loadHistory,
-  diabetes:     loadDiabetes,
   settings:     loadSettings,
   workoutAdmin: loadWorkoutAdminData,
   logFood:      loadLogFood,
 };
 
-// Hides the Diabetes tab button (and bounces off the Diabetes view itself,
-// if somehow still on it) whenever profile.diabetes_enabled is explicitly
-// false — off by default only ever means "never asked" (NOT NULL column
-// defaulting true), so nobody currently using it loses access silently.
-// Hides everything gated on diabetes tracking being on — the tab button
-// itself, plus the Workout tab's glucose-impact card (the Diabetes tab's
-// own diabetes-specific cards don't need separate gating here since
-// they're simply unreachable once the tab button is hidden).
+// Shows/hides the whole nested Diabetes section on the dashboard whenever
+// profile.diabetes_enabled is explicitly false — off by default only ever
+// means "never asked" (NOT NULL column defaulting true), so nobody currently
+// using it loses access silently. Gemma's profile has this off, so her
+// dashboard never renders the diabetes section (or the Workout tab's
+// glucose-impact card) at all.
 function applyDiabetesTabVisibility() {
   const enabled = profile?.diabetes_enabled !== false;
-  document.querySelectorAll('.tab-btn[data-view="diabetes"]').forEach(b => { b.hidden = !enabled; });
+  if (el.viewDiabetes) el.viewDiabetes.hidden = !enabled;
   if (el.dxWorkoutImpactCard) el.dxWorkoutImpactCard.hidden = !enabled;
 }
 
 async function navigateTo(name) {
-  if (name === 'diabetes' && profile?.diabetes_enabled === false) name = 'dashboard';
-  // Live auto-refresh and Simple view only make sense while the
-  // diabetes tab is actually the one on screen — leaving it stops the
-  // poll and force-closes the overlay so it can never linger on top
-  // of whichever tab is opened next.
-  if (name !== 'diabetes') {
+  // Diabetes is no longer its own destination — it's a section nested
+  // inside the dashboard now (see applyDiabetesTabVisibility). Any old
+  // caller still asking for it just lands on the dashboard instead.
+  if (name === 'diabetes') name = 'dashboard';
+  // Live auto-refresh and Simple view only make sense while the dashboard
+  // (which the diabetes section now lives inside) is actually on screen —
+  // leaving it stops the poll and force-closes the overlay so it can never
+  // linger on top of whichever tab is opened next.
+  if (name !== 'dashboard') {
     stopDxAutoRefresh();
     closeDxSimpleMode();
   }
@@ -998,7 +1181,7 @@ async function navigateTo(name) {
   // Hide all views including the admin screen
   Object.values(views).forEach(v => { if (v) v.hidden = true; });
   // Only update tab bar for main tabs — admin screen has no tab
-  const mainTabs = ['dashboard','workout','history','diabetes','settings'];
+  const mainTabs = ['dashboard','workout','history','settings'];
   document.querySelectorAll('.tab-btn').forEach(b => {
     b.classList.toggle('tab-btn--active', b.dataset.view === name);
   });
@@ -1012,6 +1195,17 @@ async function navigateTo(name) {
       await viewLoaders[name]();
     } catch (loaderErr) {
       console.error(`Loader error for view "${name}":`, loaderErr?.message || loaderErr);
+    }
+  }
+  // The diabetes section is nested inside the dashboard's DOM (not a
+  // separate view), so it needs its own load call alongside loadDashboard()
+  // above rather than going through viewLoaders. applyDiabetesTabVisibility()
+  // already hid it entirely for Gemma (diabetes_enabled === false).
+  if (name === 'dashboard' && profile?.diabetes_enabled !== false) {
+    try {
+      await loadDiabetes();
+    } catch (loaderErr) {
+      console.error('Loader error for diabetes section:', loaderErr?.message || loaderErr);
     }
   }
   saveUIState(name);
@@ -1164,7 +1358,7 @@ async function loadDashboardWithTimeout() {
 }
 
 async function _loadDashboardInner(signal) {
-  const unit = profile?.weight_unit || 'kg';
+  const unit = BODY_WEIGHT_UNIT;
 
   // Only visibly rendered under the Nebula theme (see .dash-hero__head in
   // app.css) — harmless to always set.
@@ -1173,7 +1367,7 @@ async function _loadDashboardInner(signal) {
   }
 
   // ── Fetch all data in parallel ────────────────────────────
-  const [logRes, healthRes, healthHistRes, logsRes, lastSessionRes, lastSyncRes, mfpCalRes, todayWorkoutsRes, foodLogRes, recentAppleWorkoutsRes] = await Promise.all([
+  const [logRes, healthRes, healthHistRes, logsRes, lastSessionRes, lastSyncRes, mfpCalRes, todayWorkoutsRes, foodLogRes, recentAppleWorkoutsRes, coachRes] = await Promise.all([
     db.from('daily_logs')
       .select('*, cal_apple')
       .eq('user_id', currentUser.id)
@@ -1184,7 +1378,7 @@ async function _loadDashboardInner(signal) {
     // Fetch last 2 days of health data — overnight metrics (VO2, HRV, sleep)
     // come from the previous night's sync, not today's row
     db.from('health_daily')
-      .select('readiness_score, sleep_total_hrs, sleep_deep_hrs, sleep_rem_hrs, sleep_start, hrv_ms, resting_hr, active_energy_kcal, resting_energy_kcal, dietary_energy_kcal, spo2_avg, spo2_min, respiratory_rate, wrist_temp_dev, hr_recovery_bpm, vo2_max, heart_rate_avg, distance_km, glucose_avg_mmol, weight_kg, steps, exercise_mins, workout_hr_avg, log_date')
+      .select('readiness_score, sleep_total_hrs, sleep_deep_hrs, sleep_rem_hrs, sleep_start, hrv_ms, resting_hr, active_energy_kcal, resting_energy_kcal, dietary_energy_kcal, spo2_avg, spo2_min, respiratory_rate, wrist_temp_dev, hr_recovery_bpm, vo2_max, heart_rate_avg, distance_km, glucose_avg_mmol, weight_kg, steps, exercise_mins, workout_hr_avg, breathing_disturbances_elevated, log_date')
       .eq('user_id', currentUser.id)
       .gte('log_date', new Date(Date.now() - 1 * 86400000).toISOString().slice(0, 10))
       .order('log_date', { ascending: false })
@@ -1243,12 +1437,17 @@ async function _loadDashboardInner(signal) {
       .abortSignal(signal),
 
     // Native fitl00p food log — top of pickConsumedCalories' precedence
-    // (see there), but only from today onward; native logging only just
-    // started, so anything before today keeps reading cal_mfp/dietary_energy.
+    // (see there), same 30-day window as healthHistRes/mfpCalRes above so
+    // the 7-day deficit trend (and est. fat change) below can actually
+    // find a native-logged day's calories instead of falling through to
+    // cal_mfp (empty, once MFP syncing stops) and reading as no data at
+    // all — same bug already fixed for the History tab's Consumed column
+    // (see loadHistory), just a separate query here that had the same
+    // today-only leftover from when native logging had just started.
     db.from('food_log')
       .select('log_date, calories_kcal')
       .eq('user_id', currentUser.id)
-      .gte('log_date', todayISO())
+      .gte('log_date', new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10))
       .abortSignal(signal),
 
     // Recent Watch-synced workouts (any day, not just today — unlike
@@ -1256,12 +1455,37 @@ async function _loadDashboardInner(signal) {
     // fitl00p's own logged strength session with the calories/heart-rate
     // Apple Health actually recorded for it. See matchAppleWorkout below.
     db.from('apple_health_workouts')
-      .select('workout_type, started_at, ended_at, avg_heart_rate, max_heart_rate, active_energy_kcal, total_energy_kcal')
+      .select('workout_type, started_at, ended_at, avg_heart_rate, max_heart_rate, active_energy_kcal, total_energy_kcal, distance_km')
       .eq('user_id', currentUser.id)
       .order('started_at', { ascending: false })
       .limit(15)
       .abortSignal(signal),
+
+    // Latest AI coach briefing (see notify-ai-coach.js) — independent of
+    // everything else fetched here, just batched into the same round trip.
+    db.from('ai_coach_briefings')
+      .select('briefing_date, content')
+      .eq('user_id', currentUser.id)
+      .order('briefing_date', { ascending: false })
+      .limit(1)
+      .abortSignal(signal)
+      .maybeSingle(),
   ]);
+
+  renderCoachBriefing(coachRes.data);
+
+  // Daily checklist — Gemma's account only. Not batched into the
+  // Promise.all above since it needs currentUser.id to decide whether
+  // to fetch anything at all, and only ever applies to one account.
+  if (el.checklistCard) {
+    if (currentUser.id === GEMMA_USER_ID) {
+      await fetchChecklistRows();
+      renderChecklist();
+    } else {
+      el.checklistCard.hidden = true;
+    }
+  }
+
 
   const log           = { ...(logRes.data || {}) };
   const rawHealthRows = healthRes.data || [];
@@ -1287,10 +1511,16 @@ async function _loadDashboardInner(signal) {
   };
 
   // Total burn = active energy + resting energy (true full-day expenditure)
-  // If resting not available yet, fall back to active only
+  // If resting not available yet, fall back to active only. Number()
+  // first — active_energy_kcal/resting_energy_kcal are Postgres numeric
+  // columns, which can arrive as strings rather than JS numbers; plain
+  // `a + r` on two such strings concatenates instead of adding (see the
+  // same fix in loadHistory's Burned column).
   const totalBurn = (health, log, bmrFallback) => {
-    const a = health?.active_energy_kcal ?? log?.active_energy_kcal;
-    const r = health?.resting_energy_kcal ?? bmrFallback;
+    const aRaw = health?.active_energy_kcal ?? log?.active_energy_kcal;
+    const rRaw = health?.resting_energy_kcal ?? bmrFallback;
+    const a = aRaw != null ? Number(aRaw) : null;
+    const r = rRaw != null ? Number(rRaw) : null;
     if (a != null && r != null) return Math.round(a + r);
     if (a != null) return Math.round(a);
     if (r != null) return Math.round(r);
@@ -1341,13 +1571,32 @@ async function _loadDashboardInner(signal) {
   todayLog = log;
 
   // ── Today metrics ─────────────────────────────────────────
-  // Weight: today's log → health_daily today → health_daily yesterday (most recent reading)
-  // Most recent known weight: today's log → today's health → latest reading in 30-day history
+  // Weight: today's log → health_daily today → most recent reading from
+  // EITHER source (health_daily's 30-day history or daily_logs' 90-day
+  // manual-entry history, whichever is more recent by date). Checking
+  // only health_daily here used to leave a manual-weight-logging account
+  // (no Apple Health weight sync at all, so health_daily.weight_kg is
+  // always null for them) with no fallback beyond today's own entry —
+  // this tile would show "—" any day they hadn't logged yet, or worse,
+  // silently miss a real recent entry that only exists in daily_logs.
+  // renderPlanCard's current-weight figure already falls back through
+  // `logs` (daily_logs) correctly; this mirrors that so the two numbers
+  // on the same dashboard can't disagree.
   const latestHistWeight = healthHistory
     .filter(h => h.weight_kg != null)
-    .sort((a, b) => (a.log_date < b.log_date ? 1 : -1))[0]?.weight_kg ?? null;
-  const todayWeight = log?.weight ?? health?.weight_kg ?? latestHistWeight;
-  el.dTodayWeight.textContent = todayWeight ? fmt1(todayWeight) : '—';
+    .sort((a, b) => (a.log_date < b.log_date ? 1 : -1))[0] || null;
+  const latestLogsWeight = logs.length ? logs[logs.length - 1] : null; // already non-null-weight-only, ascending
+  let fallbackWeightKg = null;
+  if (latestHistWeight && latestLogsWeight) {
+    fallbackWeightKg = latestHistWeight.log_date >= latestLogsWeight.log_date
+      ? latestHistWeight.weight_kg : Number(latestLogsWeight.weight);
+  } else if (latestHistWeight) {
+    fallbackWeightKg = latestHistWeight.weight_kg;
+  } else if (latestLogsWeight) {
+    fallbackWeightKg = Number(latestLogsWeight.weight);
+  }
+  const todayWeight = log?.weight ?? health?.weight_kg ?? fallbackWeightKg; // kg
+  el.dTodayWeight.textContent = todayWeight ? fmt1(weightFromKg(todayWeight, unit)) : '—';
   const weightUnitEl = $('dTodayWeightUnit');
   if (weightUnitEl) weightUnitEl.textContent = unit;
   el.dTodaySteps.textContent = (log?.steps || health?.steps) ? fmtInt(log?.steps || health?.steps) : '—';
@@ -1401,13 +1650,54 @@ async function _loadDashboardInner(signal) {
   el.dashChartSkeleton.hidden = true;
   el.dashChart.hidden         = !hasWeightData;
   el.dashChartEmpty.hidden    = hasWeightData;
-  if (hasWeightData) drawChart(el.dashChart, el.dashChartEmpty, logs, activePlan);
+  if (hasWeightData) {
+    // logs[].weight and activePlan.*_weight are canonical kg — converted
+    // together here so the chart's numbers (axis labels, "target X" text)
+    // match the unit the rest of the dashboard is showing.
+    drawChart(
+      el.dashChart, el.dashChartEmpty,
+      logs.map(r => ({ ...r, weight: weightFromKg(r.weight, unit) })),
+      activePlan ? { ...activePlan, start_weight: weightFromKg(activePlan.start_weight, unit), target_weight: weightFromKg(activePlan.target_weight, unit) } : null
+    );
+  }
 
   // ── Health widgets ────────────────────────────────────────
+  // Sleep need (see computeSleepNeed) folds in yesterday's strain, so
+  // that has to be computed first — same local-midnight boundary
+  // todayWorkoutsRes above already uses, just shifted back one day, so
+  // "yesterday" here means the same calendar day recentAppleWorkouts'
+  // started_at would show in the Workout tab, not a UTC slice of it.
+  const todayDateStr = health?.log_date || todayISO();
+  const yesterdayStart = new Date(); yesterdayStart.setHours(0, 0, 0, 0); yesterdayStart.setDate(yesterdayStart.getDate() - 1);
+  const yesterdayEnd   = new Date(); yesterdayEnd.setHours(0, 0, 0, 0);
+  const yesterdayDateStr = new Date(new Date(todayDateStr + 'T00:00:00Z').getTime() - 86400000).toISOString().slice(0, 10);
+  const yesterdayHealth = healthHistory.find(h => h.log_date === yesterdayDateStr) || null;
+  const yesterdayWorkouts = recentAppleWorkouts.filter(w => {
+    const t = new Date(w.started_at).getTime();
+    return t >= yesterdayStart.getTime() && t < yesterdayEnd.getTime();
+  });
+  const yesterdayStrainScore = computeStrainScore(yesterdayHealth, healthHistory, {}, yesterdayWorkouts).score;
+  const sleepNeedResult = computeSleepNeed(healthHistory, todayDateStr, yesterdayStrainScore);
+  const recoveryResult  = computeRecoveryScore(health, healthHistory, sleepNeedResult);
+  const todayStrainResult = computeStrainScore(health, healthHistory, log, todayWorkouts, recoveryResult.score);
+
+  // Tonight's sleep target — same computeSleepNeed formula sleepNeedResult
+  // above already uses to grade LAST night's sleep against what yesterday's
+  // exertion called for, just pointed forward: today's own strain (so far)
+  // drives how much sleep tonight should aim for, rather than yesterday's.
+  // The debt component doesn't need its own forward/back distinction — it
+  // already only looks at nights strictly before todayDate, which is
+  // exactly "what's owed heading into tonight" either way. Surfaced inside
+  // the Sleep gauge's tap-to-expand detail (see computeSleepScore) rather
+  // than as always-visible chrome on the gauge itself, plus the 20:00
+  // push notification (notify-sleep-target.js) for whoever wants it
+  // without opening the app at all.
+  const tonightSleepNeed = computeSleepNeed(healthHistory, todayDateStr, todayStrainResult.score);
+
   renderScoreGauges({
-    recovery:  computeRecoveryScore(health, healthHistory),
-    sleep:     computeSleepScore(health, healthHistory),
-    strain:    computeStrainScore(health, healthHistory, log, todayWorkouts),
+    recovery:  recoveryResult,
+    sleep:     computeSleepScore(health, healthHistory, sleepNeedResult, tonightSleepNeed),
+    strain:    todayStrainResult,
     nutrition: computeNutritionScore(health, log, smartTarget),
   });
   renderHealthTiles(health, healthHistory);
@@ -1449,47 +1739,50 @@ function renderWeightReminder(log, unit) {
   if (el.wrUnit) el.wrUnit.textContent = unit;
 
   const loggedToday = log?.weight != null;
+  const displayWeight = loggedToday ? weightFromKg(log.weight, unit) : null; // log.weight is kg
   el.weightReminderCard.classList.toggle('card--weight-reminder--done', loggedToday);
   if (el.wrBadge)  el.wrBadge.textContent = loggedToday ? 'Logged' : 'Not logged';
   if (el.wrHint)   el.wrHint.textContent  = loggedToday
-    ? `Today's weight: ${fmt1(log.weight)} ${unit}. You can update it below.`
+    ? `Today's weight: ${fmt1(displayWeight)} ${unit}. You can update it below.`
     : "No weight logged today yet — a quick entry keeps your trend accurate.";
   // Pre-fill with today's value if there is one, so re-saving is an edit
   // rather than starting from blank; leave user-typed input alone otherwise.
   if (el.wrWeight && document.activeElement !== el.wrWeight) {
-    el.wrWeight.value = loggedToday ? log.weight : '';
+    el.wrWeight.value = loggedToday ? fmt1(displayWeight) : '';
   }
 }
 
 el.btnWrSave?.addEventListener('click', async () => {
   if (!currentUser) return;
-  const weight = parseFloat(el.wrWeight?.value);
-  if (!Number.isFinite(weight) || weight <= 0) {
+  const unit = BODY_WEIGHT_UNIT;
+  const inputWeight = parseFloat(el.wrWeight?.value);
+  if (!Number.isFinite(inputWeight) || inputWeight <= 0) {
     flash(el.wrStatus, 'Enter a weight.', true);
     return;
   }
+  const weightKg = weightToKg(inputWeight, unit);
   setBtn(el.btnWrSave, true, 'Log', 'Saving…');
   const { error } = await db
     .from('daily_logs')
-    .upsert({ user_id: currentUser.id, log_date: todayISO(), weight }, { onConflict: 'user_id,log_date' });
+    .upsert({ user_id: currentUser.id, log_date: todayISO(), weight: weightKg }, { onConflict: 'user_id,log_date' });
   setBtn(el.btnWrSave, false, 'Log');
   if (error) {
     flash(el.wrStatus, 'Error: ' + error.message, true);
     return;
   }
   flash(el.wrStatus, 'Saved.');
-  todayLog = { ...(todayLog || {}), weight };
-  renderWeightReminder(todayLog, profile?.weight_unit || 'kg');
-  if (el.dTodayWeight) el.dTodayWeight.textContent = fmt1(weight);
+  todayLog = { ...(todayLog || {}), weight: weightKg };
+  renderWeightReminder(todayLog, unit);
+  if (el.dTodayWeight) el.dTodayWeight.textContent = fmt1(inputWeight);
 });
 
 function renderPlanCard(logs, smartTarget) {
-  const unit = profile?.weight_unit || 'kg';
+  const unit = BODY_WEIGHT_UNIT;
   el.dCurrentUnit.textContent = unit;
   el.dTargetUnit.textContent  = unit;
 
   if (!activePlan) {
-    el.dCurrentWeight.textContent = logs.length ? fmt1(logs[logs.length - 1].weight) : '—';
+    el.dCurrentWeight.textContent = logs.length ? fmt1(weightFromKg(logs[logs.length - 1].weight, unit)) : '—';
     el.dTargetWeight.textContent  = '—';
     el.dProgressLabel.textContent = 'Set a plan in Settings';
     el.dProgressFill.style.width  = '0%';
@@ -1497,9 +1790,12 @@ function renderPlanCard(logs, smartTarget) {
     return;
   }
 
+  // All weight math below stays in kg (logs[].weight, activePlan.*_weight
+  // are canonical kg) — only converted to the display unit at the very
+  // end, when building the text the user actually sees.
   const latestW = logs.length ? Number(logs[logs.length - 1].weight) : Number(activePlan.start_weight);
-  el.dCurrentWeight.textContent = fmt1(latestW);
-  el.dTargetWeight.textContent  = fmt1(activePlan.target_weight);
+  el.dCurrentWeight.textContent = fmt1(weightFromKg(latestW, unit));
+  el.dTargetWeight.textContent  = fmt1(weightFromKg(activePlan.target_weight, unit));
 
   const today    = new Date(todayISO() + 'T00:00:00');
   const end      = new Date(activePlan.target_date + 'T00:00:00');
@@ -1526,16 +1822,15 @@ function renderPlanCard(logs, smartTarget) {
       el.dDeficitNeeded.textContent = `${smartTarget.dailyDeficit.toLocaleString()} kcal/day ${methodNote}`;
     }
     const weeklyKg = (smartTarget.kgLeft / smartTarget.daysLeft * 7);
-    el.dWeeklyPace.textContent = `${fmtSigned(-weeklyKg, 2)} ${unit}/wk`;
+    el.dWeeklyPace.textContent = `${fmtSigned(-weightFromKg(weeklyKg, unit), 2)} ${unit}/wk`;
   } else {
-    const remaining = activePlan.target_weight - latestW;
-    const kcalPer   = unit === 'kg' ? KCAL_PER_KG : KCAL_PER_LB;
-    const dailyChg  = remaining / daysLeft;
-    const deficit   = -(dailyChg * kcalPer);
-    const calTarget = Math.max(1200, Math.round((profile?.tdee || 2200) - deficit));
+    const remainingKg = activePlan.target_weight - latestW;
+    const dailyChgKg  = remainingKg / daysLeft;
+    const deficit     = -(dailyChgKg * KCAL_PER_KG);
+    const calTarget   = Math.max(1200, Math.round((profile?.tdee || 2200) - deficit));
     el.dCalTarget.textContent = `${calTarget.toLocaleString()} kcal`;
     if (el.dDeficitNeeded) el.dDeficitNeeded.textContent = `${Math.round(deficit).toLocaleString()} kcal/day`;
-    el.dWeeklyPace.textContent = `${fmtSigned(dailyChg * 7, 2)} ${unit}/wk`;
+    el.dWeeklyPace.textContent = `${fmtSigned(weightFromKg(dailyChgKg * 7, unit), 2)} ${unit}/wk`;
   }
 
   el.dPlanStats.hidden = false;
@@ -1552,7 +1847,20 @@ function workoutStatParts(w) {
   if (kcal != null) parts.push(`<span class="last-workout-stat">🔥 ${Math.round(kcal)} kcal</span>`);
   if (w.avg_heart_rate != null) parts.push(`<span class="last-workout-stat">❤️ ${Math.round(w.avg_heart_rate)} bpm avg</span>`);
   const durMin = Math.round((new Date(w.ended_at) - new Date(w.started_at)) / 60000);
-  if (Number.isFinite(durMin) && durMin > 0) parts.push(`<span class="last-workout-stat">⏱ ${durMin} min</span>`);
+  const hasDuration = Number.isFinite(durMin) && durMin > 0;
+  if (hasDuration) parts.push(`<span class="last-workout-stat">⏱ ${durMin} min</span>`);
+  if (w.max_heart_rate != null) parts.push(`<span class="last-workout-stat">📈 ${Math.round(w.max_heart_rate)} bpm max</span>`);
+  if (w.distance_km != null && w.distance_km > 0) {
+    parts.push(`<span class="last-workout-stat">📍 ${w.distance_km.toFixed(2)} km</span>`);
+    // Pace only means something alongside a real duration — skip it rather
+    // than divide by a missing/zero minute count.
+    if (hasDuration) {
+      const paceMinPerKm = durMin / w.distance_km;
+      const paceWhole = Math.floor(paceMinPerKm);
+      const paceSec = Math.round((paceMinPerKm - paceWhole) * 60);
+      parts.push(`<span class="last-workout-stat">🚶 ${paceWhole}:${String(paceSec).padStart(2, '0')}/km</span>`);
+    }
+  }
   return parts;
 }
 function workoutStatsRowHtml(w) {
@@ -1677,6 +1985,41 @@ function tieredSleepDurationScore(hrs) {
   return 15;
 }
 
+// ── Sleep need ───────────────────────────────────────────────
+// Published methodology (WHOOP's own): how much sleep last night's
+// exertion plus accumulated debt actually call for, rather than a flat
+// tier everyone's held to regardless of how hard yesterday was. Recovery
+// and Sleep below both substitute "did you meet YOUR need" for the old
+// flat duration tier wherever they score last night's length, since
+// hitting a personalised target is a better readiness signal than
+// clearing a population-average bar.
+const SLEEP_NEED_BASELINE_HRS = 8;   // adult midpoint — not personalised further yet
+const SLEEP_DEBT_CAP_HRS      = 1.5; // a week of debt can't be repaid in one night
+const SLEEP_NAP_THRESHOLD_HRS = 4;   // nights under this are naps — excluded from debt/baseline math, kept in raw history
+
+// f(strain): near-zero addition on a rest day, rising to ~1h17m after an
+// all-out (21) day — the harder yesterday was, the more sleep tonight
+// calls for. debt: shortfall vs baseline summed over the last 3 REAL
+// (non-nap) nights before today, capped so it can't compound forever.
+function computeSleepNeed(healthHistory, todayDate, yesterdayStrainScore) {
+  const strainHours = yesterdayStrainScore != null
+    ? 1.7 / (1 + Math.exp((17 - yesterdayStrainScore) / 3.5))
+    : 0;
+
+  const priorNights = (healthHistory || [])
+    .filter(h => h.log_date < todayDate && h.sleep_total_hrs != null && h.sleep_total_hrs >= SLEEP_NAP_THRESHOLD_HRS)
+    .sort((a, b) => b.log_date.localeCompare(a.log_date))
+    .slice(0, 3);
+  const shortfallSum = priorNights.reduce((sum, h) => sum + Math.max(0, SLEEP_NEED_BASELINE_HRS - h.sleep_total_hrs), 0);
+  const debtHours = Math.min(SLEEP_DEBT_CAP_HRS, 0.35 * shortfallSum);
+
+  const needHours = SLEEP_NEED_BASELINE_HRS + strainHours + debtHours;
+  return {
+    needHours, baselineHours: SLEEP_NEED_BASELINE_HRS, strainHours, debtHours,
+    yesterdayStrainScore, priorNightsUsed: priorNights.length,
+  };
+}
+
 // ── Recovery ─────────────────────────────────────────────────
 // Physiological readiness — same four inputs WHOOP publicly states
 // theirs uses (HRV, resting HR, respiratory rate, sleep), each scored
@@ -1688,7 +2031,7 @@ function tieredSleepDurationScore(hrs) {
 // not co-equal factors. Calorie balance deliberately isn't a factor
 // here — that's what the separate Nutrition score is for; folding it
 // into Recovery too would double-count the same signal.
-function computeRecoveryScore(health, healthHistory) {
+function computeRecoveryScore(health, healthHistory, sleepNeed) {
   let totalScore = 0, totalWeight = 0;
   const factors = [];
   const todayDate = health?.log_date;
@@ -1743,12 +2086,21 @@ function computeRecoveryScore(health, healthHistory) {
 
   const sleep = health?.sleep_total_hrs;
   if (sleep != null) {
-    let sleepScore = tieredSleepDurationScore(sleep);
-    const deep = health?.sleep_deep_hrs || 0;
-    const rem  = health?.sleep_rem_hrs  || 0;
-    sleepScore = Math.min(100, sleepScore + Math.min(10, (deep + rem) * 5));
+    // Prefer sleep_performance (slept ÷ personalised need) over the old
+    // flat duration tier when a need figure is available — see
+    // computeSleepNeed. Falls back to the tiered scorer on a fresh
+    // account with no prior-night history to compute debt/need from yet.
+    let sleepScore;
+    if (sleepNeed?.needHours) {
+      sleepScore = clamp((sleep / sleepNeed.needHours) * 100, 0, 100);
+      factors.push({ label: 'Sleep', val: `${fmt1(sleep)}h / ${fmt1(sleepNeed.needHours)}h needed`, pct: Math.round(sleepScore), cls: 'sleep' });
+    } else {
+      const deep = health?.sleep_deep_hrs || 0;
+      const rem  = health?.sleep_rem_hrs  || 0;
+      sleepScore = Math.min(100, tieredSleepDurationScore(sleep) + Math.min(10, (deep + rem) * 5));
+      factors.push({ label: 'Sleep', val: `${fmt1(sleep)}h`, pct: Math.round(sleepScore), cls: 'sleep' });
+    }
     totalScore += sleepScore * 0.25; totalWeight += 0.25;
-    factors.push({ label: 'Sleep', val: `${fmt1(sleep)}h`, pct: Math.round(sleepScore), cls: 'sleep' });
   }
 
   if (totalWeight === 0) return { score: null, label: '', factors: [] };
@@ -1765,16 +2117,33 @@ function computeRecoveryScore(health, healthHistory) {
 // Last night specifically, not overall readiness: duration, how much
 // of it was deep/REM (vs the healthy ~13-23% / ~20-25% ranges), and
 // bedtime consistency against the last two weeks.
-function computeSleepScore(health, healthHistory) {
+function computeSleepScore(health, healthHistory, sleepNeed, tonightSleepNeed) {
   const sleep = health?.sleep_total_hrs;
   if (sleep == null) return { score: null, label: '', factors: [] };
 
   let totalScore = 0, totalWeight = 0;
   const factors = [];
 
-  const durScore = tieredSleepDurationScore(sleep);
-  totalScore += durScore * 0.40; totalWeight += 0.40;
-  factors.push({ label: 'Duration', val: `${fmt1(sleep)}h`, pct: Math.round(durScore), cls: 'sleep' });
+  // Performance against personalised need (see computeSleepNeed) replaces
+  // the flat duration tier when there's enough history to compute one —
+  // broken out line by line (baseline/strain/debt) so where the target
+  // number came from is visible, not just the final hours figure.
+  if (sleepNeed?.needHours) {
+    const perfScore = clamp((sleep / sleepNeed.needHours) * 100, 0, 100);
+    totalScore += perfScore * 0.40; totalWeight += 0.40;
+    factors.push({ label: 'Performance', val: `${Math.round(perfScore)}% of ${fmt1(sleepNeed.needHours)}h needed`, pct: Math.round(perfScore), cls: 'sleep' });
+    factors.push({ label: 'Baseline', val: `${fmt1(sleepNeed.baselineHours)}h`, pct: 100, cls: 'sleep' });
+    if (sleepNeed.strainHours > 0.02) {
+      factors.push({ label: "Yesterday's strain", val: `+${fmt1(sleepNeed.strainHours)}h${sleepNeed.yesterdayStrainScore != null ? ` (${fmt1(sleepNeed.yesterdayStrainScore)} strain)` : ''}`, pct: Math.round(clamp((sleepNeed.strainHours / 1.3) * 100, 0, 100)), cls: 'intensity' });
+    }
+    if (sleepNeed.debtHours > 0.02) {
+      factors.push({ label: 'Sleep debt', val: `+${fmt1(sleepNeed.debtHours)}h (last ${sleepNeed.priorNightsUsed}n)`, pct: Math.round(clamp((sleepNeed.debtHours / SLEEP_DEBT_CAP_HRS) * 100, 0, 100)), cls: 'active' });
+    }
+  } else {
+    const durScore = tieredSleepDurationScore(sleep);
+    totalScore += durScore * 0.40; totalWeight += 0.40;
+    factors.push({ label: 'Duration', val: `${fmt1(sleep)}h`, pct: Math.round(durScore), cls: 'sleep' });
+  }
 
   const scoreStagePct = (pct, idealLo, idealHi) => {
     if (pct >= idealLo && pct <= idealHi) return 100;
@@ -1816,13 +2185,31 @@ function computeSleepScore(health, healthHistory) {
     }
   }
 
+  // Apple Watch's native Sleep Apnea Notifications (Series 9/10/SE3/Ultra 2,
+  // watchOS 11+) — an elevated flag some nights, never a rate (Apple doesn't
+  // expose the underlying events/hr to third-party apps via HealthKit, only
+  // this boolean). null means no sync that night (true for all history
+  // before this was enabled) rather than "not elevated" — excluded from the
+  // score entirely rather than treated as either good or bad, same as every
+  // other factor above when its own field is missing.
+  const breathingElevated = health?.breathing_disturbances_elevated;
+  if (breathingElevated != null) {
+    const breathingScore = breathingElevated ? 30 : 100;
+    totalScore += breathingScore * 0.15; totalWeight += 0.15;
+    factors.push({
+      label: 'Breathing', val: breathingElevated ? 'Elevated' : 'Not elevated',
+      pct: breathingScore, cls: 'breathing',
+    });
+  }
+
   if (totalWeight === 0) return { score: null, label: '', factors: [] };
   const score = Math.round(totalScore / totalWeight);
   const label = score >= 80 ? 'Great night — solid duration and architecture.' :
                 score >= 60 ? 'Good sleep, some room to improve.' :
                 score >= 40 ? 'Below par — try to catch up tonight.' :
                               'Poor sleep — expect it to affect today.';
-  return { score, label, factors };
+  const tonightNote = tonightSleepNeed?.needHours != null ? ` Aim for ${fmt1(tonightSleepNeed.needHours)}h tonight.` : '';
+  return { score, label: label + tonightNote, factors };
 }
 
 // ── Strain ───────────────────────────────────────────────────
@@ -1863,7 +2250,17 @@ const STRAIN_K_KCAL  = 0.00081;
 
 function tanakaHrMax(ageYears) { return 208 - 0.7 * (ageYears || 35); }
 
-function computeStrainScore(health, healthHistory, log, workoutsToday) {
+// Closes the loop between the two scores instead of leaving them as two
+// independent charts: how hard today "should" be, given how recovered
+// this morning's reading says the body actually is.
+function targetStrainRange(recoveryScore) {
+  if (recoveryScore == null) return null;
+  if (recoveryScore >= 67) return { lo: 14.0, hi: 18.0, band: 'green' };
+  if (recoveryScore >= 34) return { lo: 9.0,  hi: 13.5, band: 'yellow' };
+  return { lo: 0, hi: 8.0, band: 'red' };
+}
+
+function computeStrainScore(health, healthHistory, log, workoutsToday, recoveryScore) {
   const dailyActiveKcal = health?.active_energy_kcal ?? log?.active_energy_kcal;
   const workouts = (workoutsToday || []).filter(w => Number.isFinite(Number(w.avg_heart_rate)));
   if (dailyActiveKcal == null && !workouts.length) return { score: null, label: '', factors: [] };
@@ -1897,11 +2294,24 @@ function computeStrainScore(health, healthHistory, log, workoutsToday) {
   }
   factors.push({ label: 'Daily activity', val: `${Math.round(residualKcal)} kcal`, pct: clamp(Math.round((residualKcal / 700) * 100), 0, 100), cls: 'active' });
 
-  const label = score >= 15 ? 'All-out day — plan for real recovery.' :
-                score >= 10 ? 'High strain today.' :
-                score >= 6  ? 'Moderate strain today.' :
-                score >= 2  ? 'Light day so far.' :
-                              'Very low strain so far today.';
+  const target = targetStrainRange(recoveryScore);
+  if (target) {
+    factors.push({ label: 'Target (from recovery)', val: `${fmt1(target.lo)}–${fmt1(target.hi)}`, pct: clamp(Math.round((score / target.hi) * 100), 0, 100), cls: target.band === 'green' ? 'intensity' : target.band === 'yellow' ? 'active' : 'breathing' });
+  }
+
+  let label = score >= 15 ? 'All-out day — plan for real recovery.' :
+              score >= 10 ? 'High strain today.' :
+              score >= 6  ? 'Moderate strain today.' :
+              score >= 2  ? 'Light day so far.' :
+                            'Very low strain so far today.';
+  if (target) {
+    const inRange = score >= target.lo && score <= target.hi;
+    label += inRange
+      ? ` Right in today's ${fmt1(target.lo)}–${fmt1(target.hi)} target for how recovered you are.`
+      : score > target.hi
+        ? ` Already past today's ${fmt1(target.lo)}–${fmt1(target.hi)} target — recovery says today wasn't built for this much.`
+        : ` Room left in today's ${fmt1(target.lo)}–${fmt1(target.hi)} target if you want it.`;
+  }
   return { score, label, factors };
 }
 
@@ -1963,6 +2373,837 @@ function setScoreGauge(key, score) {
   ring.style.strokeDashoffset = SCORE_RING_CIRCUMFERENCE * (1 - pct);
   val.textContent = formatScoreVal(key, score);
   liquid?.style.setProperty('--fill-pct', `${pct * 100}%`);
+}
+
+// The bell's unread dot stays lit until today's briefing has actually
+// been opened, keyed by date rather than a fixed "read: true" flag so
+// tomorrow's fresh briefing isn't silently suppressed by today's read.
+const COACH_READ_KEY = 'fitl00p:coach_read_date';
+let latestCoachBriefing = null;
+
+// Stores the once-daily briefing from notify-ai-coach.js and lights the
+// bell icon's dot if it hasn't been opened yet today. Rendered into the
+// modal (openCoachModal) on demand rather than immediately — plain
+// textContent there (not innerHTML), since the content is server-
+// generated free text, not markup.
+function renderCoachBriefing(row) {
+  latestCoachBriefing = row?.content ? row : null;
+  if (!el.coachBellDot) return;
+  let readDate = null;
+  try { readDate = localStorage.getItem(COACH_READ_KEY); } catch {}
+  el.coachBellDot.hidden = !latestCoachBriefing || latestCoachBriefing.briefing_date === readDate;
+}
+
+function openCoachModal() {
+  if (!el.coachModal) return;
+  if (latestCoachBriefing) {
+    el.coachBriefingEmpty.hidden = true;
+    el.coachBriefingBody.hidden = false;
+    const d = new Date(latestCoachBriefing.briefing_date + 'T00:00:00');
+    el.coachBriefingDate.textContent = d.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
+    el.coachBriefingText.textContent = latestCoachBriefing.content;
+    try { localStorage.setItem(COACH_READ_KEY, latestCoachBriefing.briefing_date); } catch {}
+    el.coachBellDot.hidden = true;
+  } else {
+    el.coachBriefingEmpty.hidden = false;
+    el.coachBriefingBody.hidden = true;
+  }
+  el.coachModal.hidden = false;
+}
+
+el.btnCoachBell?.addEventListener('click', openCoachModal);
+document.addEventListener('click', e => {
+  if (e.target.closest('#coachModalClose')) el.coachModal.hidden = true;
+});
+
+/* ═══ DAILY CHECKLIST (Gemma's account only) ═══════════════
+   Four manually-ticked daily targets — steps, water, food logged,
+   weight logged — rendered as a 4-tile dashboard card. Completing all
+   four in a day extends the overall streak, and each item also keeps
+   its own independent streak (e.g. water ticked 6 days running even if
+   steps has gaps) — both stored per-day in habit_checklist_log, set
+   only on the day they extend, so neither ever needs recomputing from
+   scratch. Completing all four fires an immediate "well done" push via
+   push-send.js the moment the last tile is ticked, not on the next
+   scheduled function run. */
+const CHECKLIST_KEYS = ['steps', 'water', 'food', 'weight'];
+let checklistToday = null;     // habit_checklist_log row for today, or a fresh default
+let checklistYesterday = null; // habit_checklist_log row for yesterday, or null
+
+function checklistIsComplete(row) {
+  return !!row && CHECKLIST_KEYS.every(k => row[`${k}_done`]);
+}
+
+// Displayed value for a streak column: today's own count once today
+// (still) carries it, otherwise yesterday's (protects the flame
+// through the day boundary until it's actually broken), else 0.
+function checklistDisplayStreak(field) {
+  return checklistToday?.[field] ?? checklistYesterday?.[field] ?? 0;
+}
+
+async function fetchChecklistRows() {
+  if (!currentUser) return;
+  const today = todayISO();
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const { data } = await db.from('habit_checklist_log')
+    .select('log_date, steps_done, water_done, food_done, weight_done, streak_count, steps_streak, water_streak, food_streak, weight_streak')
+    .eq('user_id', currentUser.id)
+    .in('log_date', [today, yesterday]);
+
+  checklistToday = (data || []).find(r => r.log_date === today) || {
+    log_date: today, streak_count: null,
+    steps_done: false, water_done: false, food_done: false, weight_done: false,
+    steps_streak: null, water_streak: null, food_streak: null, weight_streak: null,
+  };
+  checklistYesterday = (data || []).find(r => r.log_date === yesterday) || null;
+}
+
+function renderChecklist() {
+  if (!el.checklistCard || !checklistToday) return;
+  el.checklistCard.hidden = false;
+
+  CHECKLIST_KEYS.forEach(k => {
+    const tile = el.checklistTiles?.querySelector(`[data-key="${k}"]`);
+    if (!tile) return;
+    tile.classList.toggle('is-done', !!checklistToday[`${k}_done`]);
+    const itemStreak = checklistDisplayStreak(`${k}_streak`);
+    const streakEl = tile.querySelector('.checklist-tile__streak');
+    if (streakEl) {
+      streakEl.hidden = itemStreak === 0;
+      streakEl.textContent = `🔥${itemStreak}`;
+    }
+  });
+
+  const streak = checklistDisplayStreak('streak_count');
+  if (el.checklistStreak) {
+    el.checklistStreak.hidden = streak === 0;
+    if (el.checklistStreakCount) el.checklistStreakCount.textContent = streak;
+  }
+}
+
+async function sendChecklistCompleteNotification(streak) {
+  const { data: subs } = await db.from('push_subscriptions')
+    .select('endpoint, p256dh, auth_key')
+    .eq('user_id', currentUser.id);
+  if (!subs?.length) return;
+
+  const jokes = [
+    `You're smashing it, that's ${streak} day${streak === 1 ? '' : 's'} in a row, keep it up 💪`,
+    `${streak} for ${streak}! Full house again today — keep it up 💪`,
+    `That's ${streak} day${streak === 1 ? '' : 's'} straight, you machine — keep it up 💪`,
+  ];
+  const body = jokes[Math.floor(Math.random() * jokes.length)];
+
+  for (const s of subs) {
+    try {
+      await fetch('/.netlify/functions/push-send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subscription: { endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth_key } },
+          notification: { title: '🔥 Streak alert!', body, url: '/', tag: 'habit-checklist-streak' },
+        }),
+      }).catch(() => {});
+    } catch {}
+  }
+}
+
+async function toggleChecklistItem(key) {
+  if (!currentUser || !checklistToday) return;
+  const wasComplete = checklistIsComplete(checklistToday);
+  const streakField = `${key}_streak`;
+  const wasDone = !!checklistToday[`${key}_done`];
+
+  checklistToday = { ...checklistToday, [`${key}_done`]: !wasDone };
+  const nowComplete = checklistIsComplete(checklistToday);
+
+  const payload = {
+    user_id: currentUser.id,
+    log_date: checklistToday.log_date,
+    steps_done: checklistToday.steps_done,
+    water_done: checklistToday.water_done,
+    food_done: checklistToday.food_done,
+    weight_done: checklistToday.weight_done,
+  };
+
+  // This item's own streak, independent of whether the other three are
+  // also done today — extends yesterday's same-item streak on tick,
+  // clears on untick, same pattern as the combined streak below.
+  if (!wasDone) {
+    const itemStreak = (checklistYesterday?.[streakField] ?? 0) + 1;
+    checklistToday[streakField] = itemStreak;
+    payload[streakField] = itemStreak;
+  } else {
+    checklistToday[streakField] = null;
+    payload[streakField] = null;
+  }
+
+  if (nowComplete && !wasComplete) {
+    // Just completed the day — lock in today's streak length, extending
+    // yesterday's if that was also a complete day.
+    const streak = (checklistYesterday?.streak_count ?? 0) + 1;
+    checklistToday.streak_count = streak;
+    payload.streak_count = streak;
+    renderChecklist();
+    await db.from('habit_checklist_log').upsert(payload, { onConflict: 'user_id,log_date' });
+    await sendChecklistCompleteNotification(streak);
+  } else if (!nowComplete && wasComplete) {
+    // Un-ticked something after completing — clear today's streak
+    // credit rather than leave a stale value from a day that's no
+    // longer actually complete.
+    checklistToday.streak_count = null;
+    payload.streak_count = null;
+    renderChecklist();
+    await db.from('habit_checklist_log').upsert(payload, { onConflict: 'user_id,log_date' });
+  } else {
+    renderChecklist();
+    await db.from('habit_checklist_log').upsert(payload, { onConflict: 'user_id,log_date' });
+  }
+}
+
+el.checklistTiles?.addEventListener('click', (e) => {
+  const tile = e.target.closest('.checklist-tile');
+  if (tile) toggleChecklistItem(tile.dataset.key);
+});
+
+/* ═══ PEPTIDE PROTOCOLS (generic, multi-instance) ═══════════
+   Deliberately generic rather than hardcoded to one peptide (the old
+   BPC-157/Tirzepatide trackers each needed a rebuild whenever the
+   protocol changed) — reads every peptide_protocols row for this user
+   (name, start date, phase schedule) and renders ONE accordion per row,
+   so adding/finishing a peptide is a data change, not new code. A
+   completed course (its own day past its own last defined phase day)
+   starts collapsed, same as BPC-157's history-only accordion always
+   has, but stays fully expandable — nothing is ever hidden outright,
+   only closed by default. */
+const PEPTIDE_SITE_LABELS = {
+  left_thigh: 'left thigh', right_thigh: 'right thigh',
+  left_stomach: 'left stomach', right_stomach: 'right stomach',
+  centre_stomach: 'centre stomach',
+};
+const PEPTIDE_SITE_ORDER = ['left_thigh', 'right_thigh', 'left_stomach', 'right_stomach', 'centre_stomach'];
+function peptideSiteLabel(site) { return PEPTIDE_SITE_LABELS[site] || site || ''; }
+function peptideNextSite(lastSite) {
+  const idx = PEPTIDE_SITE_ORDER.indexOf(lastSite);
+  return PEPTIDE_SITE_ORDER[(idx + 1) % PEPTIDE_SITE_ORDER.length];
+}
+
+// Day 1 = the protocol's own start_date (inclusive) — matches the
+// server-side reminder's dayNumber() in notify-peptide.js exactly, so
+// the in-app phase/day display never disagrees with what the push
+// notification says.
+function peptideDayNumber(protocol) {
+  const start = new Date(protocol.start_date + 'T00:00:00');
+  const today = new Date(todayISO() + 'T00:00:00');
+  return Math.round((today - start) / 86400000) + 1;
+}
+function peptideCurrentPhase(protocol, day) {
+  return protocol.phases.find(p => day >= p.day_start && day <= p.day_end) || null;
+}
+function peptideLastPhaseDay(protocol) {
+  return protocol.phases?.length ? Math.max(...protocol.phases.map(p => p.day_end)) : null;
+}
+function peptideProtocolIsComplete(protocol) {
+  const lastPhaseDay = peptideLastPhaseDay(protocol);
+  return lastPhaseDay != null && peptideDayNumber(protocol) > lastPhaseDay;
+}
+
+// Projects whether what's left in the cartridge actually covers the rest
+// of the defined titration/dosage plan — walks forward day by day from
+// tomorrow through the last defined phase day, summing what each day's
+// scheduled dose would cost. Generic over any protocol's phases array,
+// so this works for whatever peptide/pen gets set up next, not just
+// today's. Returns null when there's nothing to project against (no
+// cartridge size on file, or no phase schedule at all).
+function peptidePlanCoverage(protocol, remainingMg, day) {
+  if (protocol.cartridge_mg == null || !protocol.phases?.length) return null;
+  const lastPhaseDay = peptideLastPhaseDay(protocol);
+  // Nothing left to project once the defined schedule has already run
+  // its course — "covers the rest of your plan through day 10" reads as
+  // stale/confusing once day 10 was 5 days ago and dosing is continuing
+  // past it on whatever's left in the vial.
+  if (day > lastPhaseDay) return null;
+  let mgNeeded = 0;
+  let runsOutOnDay = null;
+  let cursor = remainingMg;
+  for (let d = day + 1; d <= lastPhaseDay; d++) {
+    const phase = peptideCurrentPhase(protocol, d);
+    if (!phase) continue; // a gap in the schedule — nothing owed that day
+    mgNeeded += phase.dose_mg;
+    if (runsOutOnDay == null) {
+      cursor -= phase.dose_mg;
+      if (cursor < 0) runsOutOnDay = d;
+    }
+  }
+  const shortfallMg = Math.max(0, mgNeeded - remainingMg);
+  return { mgNeeded, shortfallMg, runsOutOnDay, lastPhaseDay, coversRestOfPlan: shortfallMg <= 0 };
+}
+
+let peptideProtocolsData = []; // [{id, name, start_date, phases, cartridge_mg, is_active, doses:[...]}]
+const peptideChartState = {}; // protocol id -> { geom, inspectMs } — per-instance, since several charts coexist
+
+async function fetchPeptideProtocols() {
+  if (!currentUser) { peptideProtocolsData = []; return; }
+  // Deliberately NOT filtered to is_active, and NOT limited to one row —
+  // is_active only exists to stop notify-peptide.js's push reminders
+  // once a titration schedule runs out, it was never meant to control
+  // what the tracker shows (see the fix history on this). Every protocol
+  // row this user has ever had gets its own accordion; "protocol
+  // complete" is communicated per-instance via peptideProtocolIsComplete.
+  const { data: protocols } = await db.from('peptide_protocols')
+    .select('id, name, start_date, phases, cartridge_mg, is_active')
+    .eq('user_id', currentUser.id)
+    .order('created_at', { ascending: false });
+  if (!protocols?.length) { peptideProtocolsData = []; return; }
+
+  const ids = protocols.map(p => p.id);
+  const { data: doses } = await db.from('peptide_doses')
+    .select('id, protocol_id, dose_mg, units, site, injected_at')
+    .in('protocol_id', ids)
+    .order('injected_at', { ascending: false });
+  const dosesByProtocol = {};
+  (doses || []).forEach(d => { (dosesByProtocol[d.protocol_id] = dosesByProtocol[d.protocol_id] || []).push(d); });
+
+  peptideProtocolsData = protocols.map(p => ({ ...p, doses: dosesByProtocol[p.id] || [] }));
+}
+
+/* ═══ Estimated-level chart engine (shared by every protocol) ═══
+   Mirrors the Tirzepatide levels chart's model (a two-compartment
+   absorption/elimination curve, doses superposing linearly), but with
+   short-acting-peptide rate constants instead of Tirzepatide's 5-day
+   half-life — most research peptides dosed this way (SS-31/elamipretide,
+   MOTS-C) publish a terminal half-life on the order of hours with a
+   peak within an hour or two, so levels clear close to zero between
+   doses rather than building toward a slow steady state the way
+   Tirzepatide does. Approximate, generic-literature rate constants, not
+   a measured or clinical value — same "not medical advice" caveat as
+   the rest of this engine.
+
+   The future projection also differs from Tirzepatide's: Tirzepatide
+   has no defined schedule, so it just repeats the last real dose
+   weekly. Every protocol tracked here already has a real day-by-day
+   dosing plan on file (protocol.phases), so the projection uses the
+   ACTUAL scheduled dose for each remaining day instead of assuming the
+   dose (or cadence) never changes. */
+const PEPTIDE_KE_PER_HOUR = Math.log(2) / 6; // 6h terminal half-life
+// Solved numerically so Tmax = ln(ka/ke)/(ka-ke) = 1h exactly, given
+// PEPTIDE_KE_PER_HOUR above — same bisection approach as TZ_KA_PER_HOUR.
+const PEPTIDE_KA_PER_HOUR = 3.53710571918688;
+const PEPTIDE_PEAK_HOURS = 1;
+function peptideDoseShape(hoursSince) {
+  if (hoursSince < 0) return 0;
+  return Math.exp(-PEPTIDE_KE_PER_HOUR * hoursSince) - Math.exp(-PEPTIDE_KA_PER_HOUR * hoursSince);
+}
+const PEPTIDE_SHAPE_AT_PEAK = peptideDoseShape(PEPTIDE_PEAK_HOURS);
+function peptideLevelAt(doses, atMs) {
+  let total = 0;
+  for (const d of doses) {
+    const hoursSince = (atMs - d.injectedMs) / 3600000;
+    if (hoursSince < 0) continue;
+    total += d.doseMg * (peptideDoseShape(hoursSince) / PEPTIDE_SHAPE_AT_PEAK);
+  }
+  return total;
+}
+
+function msFromLocalMidnight(ms) {
+  const d = new Date(ms);
+  return ms - new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+}
+
+// "If the plan continues" — one projected dose per remaining scheduled
+// day, at whatever that day's phase actually calls for (so a twice-a-
+// week cadence with rest days in between projects correctly, not just a
+// daily schedule), timed to the same time-of-day as the most recent
+// real dose (or midday, if there's no dose history yet at all) so the
+// projected spikes land where doses actually tend to happen rather than
+// always at midnight.
+function peptideRoutineDoses(protocol, sortedRealDoses, windowEnd) {
+  if (!protocol?.phases?.length) return [];
+  const day = peptideDayNumber(protocol);
+  const lastPhaseDay = peptideLastPhaseDay(protocol);
+  const start = new Date(protocol.start_date + 'T00:00:00');
+  const lastReal = sortedRealDoses[sortedRealDoses.length - 1];
+  const timeOfDayMs = lastReal ? msFromLocalMidnight(lastReal.injectedMs) : 12 * 3600000;
+  const routine = [];
+  for (let d = day + 1; d <= lastPhaseDay; d++) {
+    const phase = peptideCurrentPhase(protocol, d);
+    if (!phase) continue;
+    const injectedMs = start.getTime() + (d - 1) * 86400000 + timeOfDayMs;
+    if (injectedMs > windowEnd) break;
+    routine.push({ doseMg: phase.dose_mg, injectedMs });
+  }
+  return routine;
+}
+
+// `state` is the caller's own {geom, inspectMs} slot (see
+// peptideChartState) — passed in explicitly rather than read off a
+// module global, since several of these charts render at once.
+function drawPeptideChart(canvas, emptyEl, doses, protocol, state) {
+  if (!canvas) return;
+  if (!doses.length) {
+    if (emptyEl) emptyEl.hidden = false;
+    canvas.hidden = true;
+    state.geom = null;
+    return;
+  }
+  if (emptyEl) emptyEl.hidden = true;
+  canvas.hidden = false;
+
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  const MAX_W = 800, MAX_H = 260, MIN_W = 100;
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  const rawW = canvas.parentElement?.clientWidth || 320;
+  const rawH = parseInt(canvas.getAttribute('height')) || 200;
+  const W = Math.min(MAX_W, Math.max(MIN_W, rawW));
+  const H = Math.min(MAX_H, Math.max(120, rawH));
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  canvas.width = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  const now = Date.now();
+  const sorted = [...doses].sort((a, b) => a.injectedMs - b.injectedMs);
+  const windowStart = sorted[0].injectedMs;
+  const dayMs = 24 * 3600000;
+  const routineDoses = protocol ? peptideRoutineDoses(protocol, sorted, now + 60 * dayMs) : [];
+  // At least a couple of days of runway past "now" so the decay after
+  // the most recent dose is visible even once the plan itself is done.
+  const lastProjected = routineDoses.length ? routineDoses[routineDoses.length - 1].injectedMs : now;
+  const windowEnd = Math.max(now + 2 * dayMs, lastProjected + dayMs);
+  const projectionDoses = [...sorted, ...routineDoses];
+
+  const STEP_MS = 30 * 60 * 1000; // 30min resolution — a short half-life needs finer steps than Tirzepatide's 3h
+  const pastPts = [];
+  for (let t = windowStart; t <= now; t += STEP_MS) pastPts.push({ ms: t, v: peptideLevelAt(sorted, t) });
+  pastPts.push({ ms: now, v: peptideLevelAt(sorted, now) });
+  const futurePts = [];
+  for (let t = now; t <= windowEnd; t += STEP_MS) futurePts.push({ ms: t, v: peptideLevelAt(projectionDoses, t) });
+  futurePts.push({ ms: windowEnd, v: peptideLevelAt(projectionDoses, windowEnd) });
+
+  const allVals = [...pastPts, ...futurePts].map(p => p.v);
+  const vMax = Math.max(1, ...allVals) * 1.15;
+
+  const padL = 30, padR = 8, padTop = 8, padBottom = 18;
+  const plotW = W - padL - padR, plotH = H - padTop - padBottom;
+  const xAt = ms => padL + ((ms - windowStart) / (windowEnd - windowStart)) * plotW;
+  const yAt = v => padTop + plotH - (v / vMax) * plotH;
+
+  state.geom = { windowStart, windowEnd, padL, padR, plotW, padTop, plotH };
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  ctx.fillStyle = 'rgba(255,255,255,0.35)';
+  ctx.font = '9px -apple-system, sans-serif';
+  ctx.textAlign = 'right';
+  const step = vMax > 6 ? 2 : vMax > 2 ? 1 : 0.5;
+  for (let v = 0; v <= vMax; v += step) {
+    const y = yAt(v);
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
+    ctx.fillText(fmt1(v), padL - 4, y + 3);
+  }
+
+  ctx.textAlign = 'center';
+  const totalDays = (windowEnd - windowStart) / dayMs;
+  const tickEvery = totalDays > 14 ? 3 : 1;
+  for (let t = windowStart; t <= windowEnd; t += tickEvery * dayMs) {
+    ctx.fillText(new Date(t).toLocaleDateString([], { month: 'short', day: 'numeric' }), xAt(t), H - 4);
+  }
+
+  const xNow = xAt(now);
+  ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+  ctx.setLineDash([2, 3]);
+  ctx.beginPath(); ctx.moveTo(xNow, padTop); ctx.lineTo(xNow, padTop + plotH); ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.strokeStyle = '#3B9EFF';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  pastPts.forEach((p, i) => { const x = xAt(p.ms), y = yAt(p.v); if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
+  ctx.stroke();
+
+  ctx.strokeStyle = 'rgba(59, 158, 255, 0.65)';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([4, 3]);
+  ctx.beginPath();
+  futurePts.forEach((p, i) => { const x = xAt(p.ms), y = yAt(p.v); if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.fillStyle = '#3B9EFF';
+  sorted.forEach(d => {
+    const x = xAt(d.injectedMs), y = yAt(peptideLevelAt(sorted, d.injectedMs));
+    ctx.beginPath(); ctx.arc(x, y, 2.5, 0, Math.PI * 2); ctx.fill();
+  });
+
+  ctx.strokeStyle = 'rgba(59, 158, 255, 0.65)';
+  ctx.lineWidth = 1.5;
+  routineDoses.forEach(d => {
+    const x = xAt(d.injectedMs), y = yAt(peptideLevelAt(projectionDoses, d.injectedMs));
+    ctx.beginPath(); ctx.arc(x, y, 2.5, 0, Math.PI * 2); ctx.stroke();
+  });
+
+  if (state.inspectMs != null) {
+    const ix = xAt(state.inspectMs);
+    ctx.strokeStyle = 'rgba(245, 166, 35, 0.55)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.moveTo(ix, padTop); ctx.lineTo(ix, padTop + plotH); ctx.stroke();
+    ctx.setLineDash([]);
+
+    const iy = yAt(peptideLevelAt(projectionDoses, state.inspectMs));
+    ctx.fillStyle = '#F5A623';
+    ctx.beginPath(); ctx.arc(ix, iy, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#1a1d24'; ctx.lineWidth = 1.5; ctx.stroke();
+  }
+}
+
+function peptideChartXToMs(geom, x) {
+  if (!geom) return null;
+  const { windowStart, windowEnd, padL, plotW } = geom;
+  const frac = (x - padL) / plotW;
+  return windowStart + frac * (windowEnd - windowStart);
+}
+
+function updatePeptideInspectPanel(protocol, sortedDoses) {
+  const panel = $(`peptideInspect-${protocol.id}`);
+  if (!panel) return;
+  const state = peptideChartState[protocol.id];
+  if (state?.inspectMs == null || !sortedDoses?.length || !state?.geom) {
+    panel.hidden = true;
+    return;
+  }
+  const routineDoses = peptideRoutineDoses(protocol, sortedDoses, state.geom.windowEnd);
+  const level = peptideLevelAt([...sortedDoses, ...routineDoses], state.inspectMs);
+  const dateLabel = new Date(state.inspectMs).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+  const tense = state.inspectMs > Date.now() ? 'projected' : 'estimated';
+  panel.hidden = false;
+  panel.innerHTML = `<span class="tz-inspect-panel__value">${fmt1(level)} mg</span><span class="tz-inspect-panel__label">${tense} level — ${dateLabel}</span>`;
+}
+
+function peptideProtocolAccordionHtml(protocol) {
+  const complete = peptideProtocolIsComplete(protocol);
+  const startsOpen = !complete;
+  const badgeClass = complete ? 'peptide-status-badge--completed' : 'peptide-status-badge--active';
+  const badgeLabel = complete ? 'Completed' : 'Active';
+  const bodyId = `peptideBody-${protocol.id}`;
+  return `
+    <div class="peptide-accordion">
+      <button type="button" class="peptide-accordion__header" data-protocol-header="${protocol.id}">
+        <span class="peptide-accordion__name">${escapeHtml(protocol.name)}</span>
+        <span class="peptide-status-badge ${badgeClass}">${badgeLabel}</span>
+        <span class="peptide-accordion__chevron">${startsOpen ? '▾' : '▸'}</span>
+      </button>
+      <div class="peptide-accordion__body" id="${bodyId}"${startsOpen ? '' : ' hidden'}>
+        <div class="chart-wrap">
+          <canvas id="peptideChart-${protocol.id}" height="200"></canvas>
+          <p class="chart-empty" id="peptideChartEmpty-${protocol.id}" hidden>Log a dose to see estimated levels.</p>
+        </div>
+        <div class="history-legend">
+          <span class="legend-item legend-item--actual">— Logged level</span>
+          <span class="legend-item legend-item--proj">- - If the plan continues</span>
+          <span class="legend-item legend-item--tz-preview">● Tap the chart to inspect a day</span>
+        </div>
+        <div id="peptideCurrentLevel-${protocol.id}" class="tz-current-level" hidden></div>
+        <div id="peptideInspect-${protocol.id}" class="tz-inspect-panel" hidden></div>
+        <div class="peptide-today">
+          <div class="peptide-today__phase" id="peptidePhase-${protocol.id}">—</div>
+          <div class="peptide-today__dose-row">
+            <span class="peptide-today__dose" id="peptideDoseToday-${protocol.id}">—</span>
+            <button type="button" class="btn btn--primary btn--small" id="peptideBtnLog-${protocol.id}" data-protocol-log="${protocol.id}">Log today's dose</button>
+          </div>
+          <span class="peptide-logged-badge" id="peptideLoggedBadge-${protocol.id}" hidden>✓ Logged today</span>
+        </div>
+        <div class="peptide-remaining" id="peptideRemaining-${protocol.id}" hidden>
+          <div class="peptide-remaining__row"><span id="peptideRemainingText-${protocol.id}">—</span></div>
+          <div class="peptide-remaining__bar"><div class="peptide-remaining__bar-fill" id="peptideRemainingBarFill-${protocol.id}"></div></div>
+        </div>
+        <p class="peptide-plan-coverage" id="peptidePlanCoverage-${protocol.id}" hidden></p>
+        <div class="peptide-titration" id="peptideTitration-${protocol.id}"></div>
+        <div class="peptide-history" id="peptideHistory-${protocol.id}"></div>
+      </div>
+    </div>`;
+}
+
+function renderPeptideProtocols() {
+  const container = el.peptideProtocolsContainer;
+  if (!container) return;
+  if (!peptideProtocolsData.length) { container.innerHTML = ''; return; }
+
+  container.innerHTML = peptideProtocolsData.map(peptideProtocolAccordionHtml).join('');
+
+  container.querySelectorAll('[data-protocol-header]').forEach(header => {
+    header.addEventListener('click', () => {
+      const body = $(`peptideBody-${header.dataset.protocolHeader}`);
+      if (!body) return;
+      body.hidden = !body.hidden;
+      const chevron = header.querySelector('.peptide-accordion__chevron');
+      if (chevron) chevron.textContent = body.hidden ? '▸' : '▾';
+    });
+  });
+  container.querySelectorAll('[data-protocol-log]').forEach(btn => {
+    btn.addEventListener('click', () => logPeptideDose(btn.dataset.protocolLog));
+  });
+
+  peptideProtocolsData.forEach(renderPeptideProtocolInstance);
+}
+
+function renderPeptideProtocolInstance(protocol) {
+  const day = peptideDayNumber(protocol);
+  const phase = peptideCurrentPhase(protocol, day);
+  const todayStr = todayISO();
+  const doses = protocol.doses || [];
+  const loggedToday = doses.some(d => d.injected_at.slice(0, 10) === todayStr);
+
+  const phaseEl = $(`peptidePhase-${protocol.id}`);
+  const doseTodayEl = $(`peptideDoseToday-${protocol.id}`);
+  const logBtn = $(`peptideBtnLog-${protocol.id}`);
+  const loggedBadge = $(`peptideLoggedBadge-${protocol.id}`);
+  if (!phase) {
+    if (phaseEl) phaseEl.textContent = `Day ${day} — no dose scheduled`;
+    if (doseTodayEl) doseTodayEl.textContent = '—';
+    if (logBtn) logBtn.hidden = true;
+  } else {
+    if (phaseEl) phaseEl.textContent = `Day ${day} — ${phase.label}`;
+    if (doseTodayEl) doseTodayEl.textContent = `${fmt1(phase.dose_mg)}mg (${phase.units} units)`;
+    if (logBtn) logBtn.hidden = loggedToday;
+  }
+  if (loggedBadge) loggedBadge.hidden = !loggedToday;
+
+  let remainingMg = null;
+  const remainingEl = $(`peptideRemaining-${protocol.id}`);
+  if (remainingEl) {
+    if (protocol.cartridge_mg != null) {
+      const total = Number(protocol.cartridge_mg);
+      const totalUsed = doses.reduce((sum, d) => sum + (Number(d.dose_mg) || 0), 0);
+      remainingMg = Math.max(0, total - totalUsed);
+      const pctUsed = total > 0 ? Math.min(100, (totalUsed / total) * 100) : 0;
+      remainingEl.hidden = false;
+      const textEl = $(`peptideRemainingText-${protocol.id}`);
+      if (textEl) textEl.textContent = `${fmt1(remainingMg)}mg remaining of ${fmt1(total)}mg cartridge`;
+      const barFill = $(`peptideRemainingBarFill-${protocol.id}`);
+      if (barFill) barFill.style.width = `${pctUsed}%`;
+      remainingEl.classList.toggle('peptide-remaining--empty', remainingMg <= 0);
+    } else {
+      remainingEl.hidden = true;
+    }
+  }
+
+  const coverageEl = $(`peptidePlanCoverage-${protocol.id}`);
+  if (coverageEl) {
+    const coverage = remainingMg != null ? peptidePlanCoverage(protocol, remainingMg, day) : null;
+    if (coverage) {
+      coverageEl.hidden = false;
+      if (coverage.coversRestOfPlan) {
+        coverageEl.textContent = `✓ Covers the rest of your plan through day ${coverage.lastPhaseDay} (~${fmt1(coverage.mgNeeded)}mg needed).`;
+        coverageEl.classList.remove('peptide-plan-coverage--short');
+      } else {
+        coverageEl.textContent = `⚠️ Won't cover the rest of your plan — runs out around day ${coverage.runsOutOnDay} of ${coverage.lastPhaseDay}, short by ~${fmt1(coverage.shortfallMg)}mg. Order a new cartridge.`;
+        coverageEl.classList.add('peptide-plan-coverage--short');
+      }
+    } else {
+      coverageEl.hidden = true;
+    }
+  }
+
+  const titrationEl = $(`peptideTitration-${protocol.id}`);
+  if (titrationEl) {
+    titrationEl.innerHTML = (protocol.phases || []).map(p => {
+      const isCurrent = phase && p === phase;
+      const isPast = day > p.day_end;
+      const dayRange = p.day_start === p.day_end ? `Day ${p.day_start}` : `Days ${p.day_start}–${p.day_end}`;
+      return `
+        <div class="peptide-titration__row${isCurrent ? ' peptide-titration__row--current' : ''}${isPast ? ' peptide-titration__row--past' : ''}">
+          <span class="peptide-titration__label">${escapeHtml(p.label)}</span>
+          <span class="peptide-titration__days">${dayRange}</span>
+          <span class="peptide-titration__dose">${fmt1(p.dose_mg)}mg · ${p.units}u</span>
+        </div>`;
+    }).join('');
+  }
+
+  const historyEl = $(`peptideHistory-${protocol.id}`);
+  if (historyEl) {
+    historyEl.innerHTML = doses.length
+      ? doses.slice(0, 15).map(d => `
+          <div class="peptide-history__row">
+            <span class="peptide-history__date">${new Date(d.injected_at).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })}</span>
+            <span class="peptide-history__detail">${fmt1(Number(d.dose_mg))}mg${d.site ? ' · ' + peptideSiteLabel(d.site) : ''}</span>
+          </div>`).join('')
+      : '<p class="empty-state">No doses logged yet.</p>';
+  }
+
+  if (!peptideChartState[protocol.id]) peptideChartState[protocol.id] = { geom: null, inspectMs: null };
+  const state = peptideChartState[protocol.id];
+  const canvas = $(`peptideChart-${protocol.id}`);
+  const emptyEl = $(`peptideChartEmpty-${protocol.id}`);
+  const sortedForChart = doses
+    .map(d => ({ doseMg: Number(d.dose_mg), injectedMs: new Date(d.injected_at).getTime() }))
+    .sort((a, b) => a.injectedMs - b.injectedMs);
+  drawPeptideChart(canvas, emptyEl, sortedForChart, protocol, state);
+
+  const currentLevelEl = $(`peptideCurrentLevel-${protocol.id}`);
+  if (currentLevelEl) {
+    if (sortedForChart.length) {
+      const currentLevel = peptideLevelAt(sortedForChart, Date.now());
+      currentLevelEl.hidden = false;
+      currentLevelEl.innerHTML = `<span class="tz-current-level__value">${fmt1(currentLevel)} mg</span><span class="tz-current-level__label">estimated level now</span>`;
+    } else {
+      currentLevelEl.hidden = true;
+    }
+  }
+  updatePeptideInspectPanel(protocol, sortedForChart);
+
+  if (canvas && !canvas.dataset.wired) {
+    canvas.dataset.wired = '1';
+    canvas.addEventListener('click', (e) => {
+      const st = peptideChartState[protocol.id];
+      if (!st?.geom) return;
+      const rect = canvas.getBoundingClientRect();
+      const ms = peptideChartXToMs(st.geom, e.clientX - rect.left);
+      if (ms == null) return;
+      st.inspectMs = Math.min(st.geom.windowEnd, Math.max(st.geom.windowStart, ms));
+      renderPeptideProtocolInstance(protocol);
+    });
+  }
+}
+
+async function logPeptideDose(protocolId) {
+  if (!currentUser) return;
+  const protocol = peptideProtocolsData.find(p => p.id === protocolId);
+  if (!protocol) return;
+  const day = peptideDayNumber(protocol);
+  const phase = peptideCurrentPhase(protocol, day);
+  if (!phase) return;
+
+  const doses = protocol.doses || []; // already sorted newest-first from fetchPeptideProtocols
+  const site = peptideNextSite(doses[0]?.site);
+  const btn = $(`peptideBtnLog-${protocol.id}`);
+  setBtn(btn, true, "Log today's dose");
+  const { error } = await db.from('peptide_doses').insert({
+    user_id: currentUser.id,
+    protocol_id: protocol.id,
+    dose_mg: phase.dose_mg,
+    units: phase.units,
+    site,
+  });
+  setBtn(btn, false, "Log today's dose");
+
+  if (error) { showToast('Could not log dose: ' + error.message, true); return; }
+  showToast(`Logged ${fmt1(phase.dose_mg)}mg (${peptideSiteLabel(site)}).`);
+  await fetchPeptideProtocols();
+  renderPeptideProtocols();
+}
+
+/* ═══ DAILY ORAL MEDS (finasteride, minoxidil, etc.) ═══════════
+   Deliberately much simpler than the peptide accordion above — a plain
+   daily pill has no injection site, no cartridge to track remaining
+   volume against, no titration phases. Just "did I take it today" plus
+   a short recent-history list. */
+let oralMedsData = [];
+
+async function fetchOralMeds() {
+  if (!currentUser) { oralMedsData = []; return; }
+  const { data: meds } = await db.from('oral_meds')
+    .select('id, name, dose_mg, is_active')
+    .eq('user_id', currentUser.id)
+    .eq('is_active', true)
+    .order('created_at', { ascending: true });
+  if (!meds?.length) { oralMedsData = []; return; }
+
+  const ids = meds.map(m => m.id);
+  const { data: doses } = await db.from('oral_med_doses')
+    .select('id, med_id, taken_at')
+    .in('med_id', ids)
+    .order('taken_at', { ascending: false })
+    .limit(200);
+  const dosesByMed = {};
+  (doses || []).forEach(d => { (dosesByMed[d.med_id] = dosesByMed[d.med_id] || []).push(d); });
+
+  oralMedsData = meds.map(m => ({ ...m, doses: dosesByMed[m.id] || [] }));
+}
+
+function oralMedAccordionHtml(med) {
+  const bodyId = `oralMedBody-${med.id}`;
+  return `
+    <div class="peptide-accordion">
+      <button type="button" class="peptide-accordion__header" data-oral-med-header="${med.id}">
+        <span class="peptide-accordion__name">${escapeHtml(med.name)}</span>
+        <span class="peptide-status-badge peptide-status-badge--active">${fmt1(med.dose_mg)}mg</span>
+        <span class="peptide-accordion__chevron">▾</span>
+      </button>
+      <div class="peptide-accordion__body" id="${bodyId}">
+        <div class="peptide-today__dose-row">
+          <span class="peptide-today__dose">${fmt1(med.dose_mg)}mg</span>
+          <button type="button" class="btn btn--primary btn--small" id="oralMedBtnLog-${med.id}" data-oral-med-log="${med.id}">Log today's dose</button>
+        </div>
+        <span class="peptide-logged-badge" id="oralMedLoggedBadge-${med.id}" hidden>✓ Logged today</span>
+        <div class="peptide-history" id="oralMedHistory-${med.id}"></div>
+      </div>
+    </div>`;
+}
+
+function renderOralMeds() {
+  const container = el.oralMedsContainer;
+  if (!container) return;
+  if (!oralMedsData.length) { container.innerHTML = ''; return; }
+
+  container.innerHTML = oralMedsData.map(oralMedAccordionHtml).join('');
+
+  container.querySelectorAll('[data-oral-med-header]').forEach(header => {
+    header.addEventListener('click', () => {
+      const body = $(`oralMedBody-${header.dataset.oralMedHeader}`);
+      if (!body) return;
+      body.hidden = !body.hidden;
+      const chevron = header.querySelector('.peptide-accordion__chevron');
+      if (chevron) chevron.textContent = body.hidden ? '▸' : '▾';
+    });
+  });
+  container.querySelectorAll('[data-oral-med-log]').forEach(btn => {
+    btn.addEventListener('click', () => logOralMedDose(btn.dataset.oralMedLog));
+  });
+
+  oralMedsData.forEach(renderOralMedInstance);
+}
+
+function renderOralMedInstance(med) {
+  const todayStr = todayISO();
+  const doses = med.doses || [];
+  const loggedToday = doses.some(d => d.taken_at.slice(0, 10) === todayStr);
+
+  const logBtn = $(`oralMedBtnLog-${med.id}`);
+  const loggedBadge = $(`oralMedLoggedBadge-${med.id}`);
+  if (logBtn) logBtn.hidden = loggedToday;
+  if (loggedBadge) loggedBadge.hidden = !loggedToday;
+
+  const historyEl = $(`oralMedHistory-${med.id}`);
+  if (historyEl) {
+    historyEl.innerHTML = doses.slice(0, 14).map(d => `
+      <div class="peptide-history__row">
+        <span class="peptide-history__date">${new Date(d.taken_at).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })}</span>
+        <span>${fmt1(med.dose_mg)}mg</span>
+      </div>`).join('') || '<p class="empty-state">No doses logged yet.</p>';
+  }
+}
+
+async function logOralMedDose(medId) {
+  if (!currentUser) return;
+  const med = oralMedsData.find(m => m.id === medId);
+  if (!med) return;
+
+  const btn = $(`oralMedBtnLog-${med.id}`);
+  setBtn(btn, true, "Log today's dose");
+  const { error } = await db.from('oral_med_doses').insert({
+    user_id: currentUser.id,
+    med_id: med.id,
+  });
+  setBtn(btn, false, "Log today's dose");
+
+  if (error) { showToast('Could not log dose: ' + error.message, true); return; }
+  showToast(`Logged ${med.name} ${fmt1(med.dose_mg)}mg.`);
+  await fetchOralMeds();
+  renderOralMeds();
 }
 
 function renderScoreGauges(scores) {
@@ -2196,23 +3437,34 @@ function renderHealthTiles(today, history) {
     fillTop: 'rgba(220,38,38,.2)', fillBottom: 'rgba(220,38,38,0)',
   });
 
-  // ── Estimated HbA1c — from the last 14 days of observed blood glucose,
-  // via the ADAG study's mean-glucose formula (mean mg/dL = 28.7×A1c −
-  // 46.7, rearranged to solve for A1c). An estimate, not a lab result —
-  // needs a handful of days of readings before it's worth showing at all.
+  // ── Estimated HbA1c — from the last 7 days of observed blood glucose
+  // (glucose_avg_mmol, synced from Apple Health's "Blood Glucose" —
+  // Dexcom's own source on this account), via the ADAG study's
+  // mean-glucose formula (mean mg/dL = 28.7×A1c − 46.7, rearranged to
+  // solve for A1c). An estimate, not a lab result — needs a handful of
+  // days of readings before it's worth showing at all. Colour-coded
+  // against the ADA's non-diabetic cutoff (<5.7%) — inside that range is
+  // "good", at or above it is flagged, independent of the tile's own
+  // good/warn/alert state above (which tracks the live reading, not
+  // this rolling estimate).
+  const A1C_NON_DIABETIC_MAX = 5.7;
   const a1cTile = $('tileGlucoseA1c');
   if (a1cTile) {
-    const twoWeeksAgoISO = new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10);
-    const glucose14d = history
-      .filter(h => h.log_date >= twoWeeksAgoISO && h.glucose_avg_mmol != null)
+    const sevenDaysAgoISO = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+    const glucose7d = history
+      .filter(h => h.log_date >= sevenDaysAgoISO && h.glucose_avg_mmol != null)
       .map(h => Number(h.glucose_avg_mmol));
-    if (diabetesOn && glucose14d.length >= 3) {
-      const avgMmol = glucose14d.reduce((a, b) => a + b, 0) / glucose14d.length;
+    if (diabetesOn && glucose7d.length >= 3) {
+      const avgMmol = glucose7d.reduce((a, b) => a + b, 0) / glucose7d.length;
       const estA1c  = (avgMmol * 18.0182 + 46.7) / 28.7;
-      a1cTile.textContent = `Est. A1c ${estA1c.toFixed(1)}% (${glucose14d.length}d)`;
+      const inRange = estA1c < A1C_NON_DIABETIC_MAX;
+      a1cTile.textContent = `Est. A1c ${estA1c.toFixed(1)}% (${glucose7d.length}d)`;
+      a1cTile.classList.toggle('health-tile__sub--good', inRange);
+      a1cTile.classList.toggle('health-tile__sub--alert', !inRange);
       a1cTile.hidden = false;
     } else {
       a1cTile.hidden = true;
+      a1cTile.classList.remove('health-tile__sub--good', 'health-tile__sub--alert');
     }
   }
 
@@ -2249,8 +3501,16 @@ function renderHealthTiles(today, history) {
    NET CALORIES + WEEKLY DEFICIT
 ═══════════════════════════════════════════════════════════ */
 function renderNetCalories(today, history, log, bmrFallback) {
-  const active  = today?.active_energy_kcal ?? log?.active_energy_kcal;
-  const resting = today?.resting_energy_kcal ?? bmrFallback;
+  // Number() first — active_energy_kcal/resting_energy_kcal are Postgres
+  // numeric columns, which can arrive as strings rather than JS numbers;
+  // `(active || 0) + (resting || 0)` on two such strings concatenates
+  // instead of adding ("600" + "1900" -> "6001900"), which then feeds
+  // Math.round or a later `-` and produces a wildly wrong number rather
+  // than an obviously-broken one (see the same fix in totalBurn/loadHistory).
+  const activeRaw  = today?.active_energy_kcal ?? log?.active_energy_kcal;
+  const restingRaw = today?.resting_energy_kcal ?? bmrFallback;
+  const active  = activeRaw  != null ? Number(activeRaw)  : null;
+  const resting = restingRaw != null ? Number(restingRaw) : null;
   const burned  = (active == null && resting == null) ? null
                 : Math.round((active || 0) + (resting || 0));
   // If burn data is flowing but nothing eaten is logged yet, eaten = 0 (not yesterday's total)
@@ -2308,12 +3568,13 @@ function renderNetCalories(today, history, log, bmrFallback) {
   const last7 = history.slice(-7);
   let weeklyNet = 0, weekDays = 0;
   last7.forEach(h => {
-    const hActive   = h.active_energy_kcal;
-    const hResting  = h.resting_energy_kcal;
+    const hActive   = h.active_energy_kcal  != null ? Number(h.active_energy_kcal)  : null;
+    const hResting  = h.resting_energy_kcal != null ? Number(h.resting_energy_kcal) : null;
     const hBurned   = (hActive != null && hResting != null) ? hActive + hResting
                     : (hActive != null)                     ? hActive
                     : null;
-    const hConsumed = h.cal_fitl00p ?? h.cal_mfp ?? h.dietary_energy_kcal;
+    const hConsumedRaw = h.cal_fitl00p ?? h.cal_mfp ?? h.dietary_energy_kcal;
+    const hConsumed = hConsumedRaw != null ? Number(hConsumedRaw) : null;
     if (hConsumed != null && hBurned != null) {
       weeklyNet += (hConsumed - hBurned);
       weekDays++;
@@ -2345,7 +3606,7 @@ function renderNetCalories(today, history, log, bmrFallback) {
   }
 }
 async function loadLog() {
-  const unit = profile?.weight_unit || 'kg';
+  const unit = BODY_WEIGHT_UNIT;
   el.logWeightUnit.textContent = unit;
   el.logDate.value = el.logDate.value || todayISO();
 
@@ -2362,10 +3623,10 @@ async function fetchAndRenderLog(date) {
     .maybeSingle();
 
   todayLog = data;
-  const unit = profile?.weight_unit || 'kg';
+  const unit = BODY_WEIGHT_UNIT;
   const stepsGoal = profile?.steps_goal || 10000;
 
-  el.logWeight.value  = data?.weight      ?? '';
+  el.logWeight.value  = data?.weight != null ? fmt1(weightFromKg(data.weight, unit)) : '';
   el.logSteps.value   = data?.steps       ?? '';
   el.logActiveCal.value = data?.active_energy_kcal ?? '';
   el.mBreakfast.value = data?.cal_breakfast ?? '';
@@ -2390,16 +3651,16 @@ function calcMealTotal() {
 
 function updateCalTarget() {
   if (!activePlan) { el.calTarget.textContent = '— kcal'; return; }
-  const unit    = profile?.weight_unit || 'kg';
   const today   = new Date(); today.setHours(0,0,0,0);
   const end     = new Date(activePlan.target_date + 'T00:00:00');
   const daysLeft = Math.max(1, Math.round((end - today) / 86400000));
 
-  // Use the most recent logged weight
+  // Use the most recent logged weight — todayLog.weight and
+  // activePlan.*_weight are canonical kg, so this deficit math stays in
+  // kg throughout (KCAL_PER_KG only — no display-unit branch needed).
   const latestW = todayLog?.weight ?? activePlan.start_weight;
   const remaining = activePlan.target_weight - latestW;
-  const kcalPer   = unit === 'kg' ? KCAL_PER_KG : KCAL_PER_LB;
-  const deficit   = -((remaining / daysLeft) * kcalPer);
+  const deficit   = -((remaining / daysLeft) * KCAL_PER_KG);
   const target    = Math.max(1200, Math.round((profile?.tdee || 2200) - deficit));
   el.calTarget.textContent = `${target.toLocaleString()} kcal`;
   return target;
@@ -2429,10 +3690,12 @@ el.logForm.addEventListener('submit', async e => {
   el.logStatus.classList.remove('is-visible', 'is-error');
 
   const calTotal = calcMealTotal() || null;
+  const unit = BODY_WEIGHT_UNIT;
+  const typedWeight = parseFloat(el.logWeight.value);
   const row = {
     user_id:       currentUser.id,
     log_date:      el.logDate.value,
-    weight:        parseFloat(el.logWeight.value)  || null,
+    weight:        Number.isFinite(typedWeight) ? weightToKg(typedWeight, unit) : null,
     steps:         parseInt(el.logSteps.value)     || null,
     active_energy_kcal: parseFloat(el.logActiveCal.value) || null,
     cal_breakfast: parseInt(el.mBreakfast.value)   || null,
@@ -2529,6 +3792,11 @@ const elW = {
   routineFilters:$('routineFilters'),
   routineList:       $('routineList'),
   readinessBanner:   $('readinessBanner'),
+  activeWorkoutBanner:      $('activeWorkoutBanner'),
+  activeWorkoutBannerTitle: $('activeWorkoutBannerTitle'),
+  activeWorkoutBannerDesc:  $('activeWorkoutBannerDesc'),
+  btnContinueWorkout:       $('btnContinueWorkout'),
+  btnAbandonWorkout:        $('btnAbandonWorkout'),
   workoutDate:       $('workoutDate'),
   activeHeader:      $('activeWorkoutHeader'),
   activeExList:      $('activeExerciseList'),
@@ -2643,10 +3911,51 @@ async function loadWorkout() {
   elW.picker.hidden  = false;
   elW.active.hidden  = true;
   elW.historyPanel.hidden = true;
+  renderActiveWorkoutBanner();
   renderWorkoutReadinessBanner();
   populateDxWorkoutImpactTypes();
   await loadRoutines();
 }
+
+// Surfaces a "Continue workout" / "Abandon workout" banner on the picker
+// screen whenever a workout has been started but not saved yet — the
+// backstop against an in-progress session silently looking lost after
+// navigating to another tab and back, or an accidental "← Routines" tap
+// (see backToPicker, which used to wipe activeExercises outright on every
+// tap; it no longer does — see its own comment).
+//
+// activeRoutine/activeExercises being empty here doesn't necessarily mean
+// there's nothing to resume — a hard page reload resets those globals, but
+// restoreWorkoutState() (already the source of truth localStorage mirrors
+// on every change via saveWorkoutState) can still hydrate them from what
+// was saved before the reload, as long as it's not stale (>12h old).
+function renderActiveWorkoutBanner() {
+  if (!activeRoutine || !activeExercises.length) restoreWorkoutState();
+  if (!elW.activeWorkoutBanner) return;
+  if (!activeRoutine || !activeExercises.length) {
+    elW.activeWorkoutBanner.hidden = true;
+    return;
+  }
+  const doneSets = activeExercises.reduce((n, ex) => n + ex.sets.filter(s => s.done).length, 0);
+  const totalSets = activeExercises.reduce((n, ex) => n + ex.sets.length, 0);
+  elW.activeWorkoutBanner.hidden = false;
+  elW.activeWorkoutBannerTitle.textContent = `Workout in progress — ${activeRoutine.name}`;
+  elW.activeWorkoutBannerDesc.textContent = `${activeExercises.length} exercise${activeExercises.length === 1 ? '' : 's'} · ${doneSets}/${totalSets} sets done`;
+}
+
+elW.btnContinueWorkout?.addEventListener('click', () => {
+  if (!activeRoutine || !activeExercises.length) return;
+  renderActiveWorkout();
+  elW.picker.hidden = true;
+  elW.active.hidden = false;
+});
+
+elW.btnAbandonWorkout?.addEventListener('click', () => {
+  if (!confirm(`Abandon "${activeRoutine?.name || 'this workout'}"? Nothing logged so far will be saved.`)) return;
+  activeRoutine = null; activeExercises = []; workoutStartedAtMs = null;
+  clearWorkoutState();
+  renderActiveWorkoutBanner();
+});
 
 // Reads today's Recovery score (same formula as the dashboard) and, if
 // recovery is running low, surfaces a banner offering to filter the routine
@@ -3172,6 +4481,27 @@ async function getSuggestedReplacements(exerciseName) {
 }
 
 async function selectRoutine(routineId) {
+  // Tapping the routine that's already in progress should just resume it
+  // in place — re-fetching from user_routine_customizations below would
+  // reload the exercise list fresh from the DB and silently wipe out
+  // whatever reps/weights/completed sets have been entered this session
+  // but not saved yet.
+  if (activeRoutine && activeExercises.length && activeRoutine.id === routineId) {
+    renderActiveWorkout();
+    elW.picker.hidden = true;
+    elW.active.hidden = false;
+    return;
+  }
+  // A DIFFERENT workout is already in progress — tapping another routine
+  // card would silently overwrite it (same accidental-loss shape as the
+  // old backToPicker bug). Require an explicit confirmation first.
+  if (activeRoutine && activeExercises.length) {
+    if (!confirm(`"${activeRoutine.name}" is still in progress. Discard it and start a new workout instead?`)) {
+      return;
+    }
+    clearWorkoutState();
+  }
+
   elW.routineList.innerHTML = '<p class="empty-state">Loading exercises…</p>';
 
   // 1. Fetch the routine template
@@ -3188,7 +4518,7 @@ async function selectRoutine(routineId) {
   // 4. Fetch media data from Supabase for all exercises
   const exNames = [...new Set(exercises.map(e => e.name))];
   const { data: mediaRows } = await db.from('exercise_media')
-    .select('exercise_name, search_name, gif_url, muscles_primary, muscles_secondary, key_cues, common_mistakes')
+    .select('exercise_name, search_name, gif_url, muscles_primary, muscles_secondary, key_cues, common_mistakes, equipment_type, base_weight_kg')
     .in('exercise_name', exNames);
 
   const mediaByName = {};
@@ -3203,30 +4533,90 @@ async function selectRoutine(routineId) {
   const prByName = {};
   (prRows || []).forEach(p => { prByName[p.exercise_name] = p; });
 
+  // Fetch recent session history once for the whole routine (same
+  // session_date + workout_exercises + workout_sets shape
+  // fetchExerciseHistory uses for the "🕘 Previous sets" drawer, just
+  // unfiltered by name so one query covers every exercise in this
+  // routine) to find each exercise's most recent top set — the real
+  // basis for "add a bit more than last time", which the all-time PR
+  // above isn't: a PR can be from months ago or a one-off max attempt,
+  // not what was actually lifted last time this exercise came up.
+  const { data: recentSessions } = await db.from('workout_sessions')
+    .select(`session_date, workout_exercises (name, workout_sets (reps, weight, unit))`)
+    .eq('user_id', currentUser.id)
+    .order('session_date', { ascending: false })
+    .limit(60);
+
+  const lastByName = {};
+  (recentSessions || []).forEach(s => {
+    (s.workout_exercises || []).forEach(wex => {
+      if (lastByName[wex.name]) return; // sessions already ordered newest-first — first hit wins
+      const sets = (wex.workout_sets || []).filter(st => st.weight != null);
+      if (!sets.length) return;
+      const topSet = sets.reduce((best, st) => (st.weight > best.weight || (st.weight === best.weight && (st.reps || 0) > (best.reps || 0))) ? st : best);
+      lastByName[wex.name] = { date: s.session_date, weight: Number(topSet.weight), reps: Number(topSet.reps) || 0 };
+    });
+  });
+
   // 5. Build active exercise state with per-set tracking
-  const userUnit = profile?.weight_unit || 'kg';
+  const userUnit = EXERCISE_WEIGHT_UNIT;
   // Determine rest seconds (user override takes priority over routine default)
   const goalKey = { weight_loss: 'rest_weight_loss', tone: 'rest_tone', strength: 'rest_strength' }[profile?.goal || 'tone'];
   const restSecs = profile?.[goalKey] ?? routine.rest_seconds;
 
   activeRoutine = routine;
   workoutStartedAtMs = Date.now();
-  activeExercises = exercises.map(ex => ({
-    ...ex,
-    media: mediaByName[ex.name] || null,
-    pr: prByName[ex.name] || null,
-    // Per-exercise override (set e.g. for a superset/circuit authored with
-    // its own specific rest period) takes priority over the profile/routine
-    // default, matching the comment above — this field was already being
-    // fetched onto every exercise row but never actually consulted here.
-    restSeconds: ex.rest_seconds_override ?? restSecs,
-    sets: Array.from({ length: ex.sets }, (_, i) => ({
-      setNum: i + 1,
-      reps:   ex.reps ? String(ex.reps) : '',
-      weight: '',
-      done:   false,
-    })),
-  }));
+  activeExercises = exercises.map(ex => {
+    const equipmentType = mediaByName[ex.name]?.equipment_type || null;
+    // Per-exercise override for the plate calculator's bar/sled weight —
+    // most barbell-classified exercises really are a standard 20kg
+    // Olympic bar, but some ("Hip Thrust" on this gym's plate-loaded
+    // machine, for one) have their own base weight, so the generic
+    // BARBELL_BAR_KG default is wrong for them specifically.
+    const rawBaseWeight = mediaByName[ex.name]?.base_weight_kg;
+    const baseWeightKg = rawBaseWeight != null ? Number(rawBaseWeight) : null;
+    const last = lastByName[ex.name] || null;
+    const suggestedWeight = computeSuggestedWeight(equipmentType, last, ex.reps);
+    // Pre-fill priority: all-time heaviest completed (the actual ask —
+    // "how heavy have I gone", visible the instant the card opens rather
+    // than a number requiring the PR line to be read first) beats the
+    // progressive-overload suggestion, which only kicks in as a fallback
+    // for an exercise with no PR logged yet.
+    const pr = prByName[ex.name] || null;
+    const prWeight = pr?.best_weight != null ? Number(pr.best_weight) : null;
+    const prefillWeight = prWeight != null ? prWeight : suggestedWeight;
+
+    return {
+      ...ex,
+      media: mediaByName[ex.name] || null,
+      pr,
+      equipmentType,
+      baseWeightKg,
+      lastSession: last,
+      suggestedWeight,
+      prefillWeight,
+      // Per-exercise override (set e.g. for a superset/circuit authored with
+      // its own specific rest period) takes priority over the profile/routine
+      // default, matching the comment above — this field was already being
+      // fetched onto every exercise row but never actually consulted here.
+      // rest_seconds_override itself is already carried through by the
+      // ...ex spread above — kept there (rather than folded away) so the
+      // UI can flag when an exercise's rest differs from the routine's
+      // stated default, otherwise a shorter/longer countdown shows up
+      // with no visible reason.
+      restSeconds: ex.rest_seconds_override ?? restSecs,
+      sets: Array.from({ length: ex.sets }, (_, i) => ({
+        setNum: i + 1,
+        reps:   ex.reps ? String(ex.reps) : '',
+        // Pre-filled with the heaviest weight ever completed for this
+        // exercise (falling back to the progressive-overload suggestion
+        // when there's no PR yet) as a starting point — freely editable,
+        // not locked in.
+        weight: prefillWeight != null ? String(prefillWeight) : '',
+        done:   false,
+      })),
+    };
+  });
 
   // Default Superset Mode on if this routine was authored with predefined
   // pairs; off otherwise (the toggle can still turn it on for any routine —
@@ -3245,6 +4635,7 @@ function pairExercises(idxA, idxB) {
   [idxA, idxB].forEach(idx => {
     const g = activeExercises[idx].superset_group;
     if (g) activeExercises.forEach(e => { if (e.superset_group === g) e.superset_group = null; });
+    activeExercises[idx].supersetExcluded = false; // re-eligible after being deliberately re-paired
   });
 
   const groupId = `manual-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -3261,16 +4652,29 @@ function pairExercises(idxA, idxB) {
 
 function unlinkPair(ei) {
   const g = activeExercises[ei]?.superset_group;
-  if (!g) return;
-  activeExercises.forEach(e => { if (e.superset_group === g) e.superset_group = null; });
-  // getBlockExercises() falls back to pairing consecutive exercises purely by
-  // array position whenever Superset Mode is on and nothing has a real
-  // superset_group left — that fallback exists for routines that never had
-  // explicit pairs authored at all. Leaving Superset Mode on here would
-  // immediately re-trigger it once the group we just cleared was the last
-  // one left, silently re-pairing whatever now happens to sit next to each
-  // other — the opposite of "unlink this pair back to individual exercises".
-  if (!activeExercises.some(e => e.superset_group)) supersetModeOn = false;
+  if (g) {
+    activeExercises.forEach(e => { if (e.superset_group === g) e.superset_group = null; });
+    // getBlockExercises() falls back to pairing consecutive exercises purely by
+    // array position whenever Superset Mode is on and nothing has a real
+    // superset_group left — that fallback exists for routines that never had
+    // explicit pairs authored at all. Leaving Superset Mode on here would
+    // immediately re-trigger it once the group we just cleared was the last
+    // one left, silently re-pairing whatever now happens to sit next to each
+    // other — the opposite of "unlink this pair back to individual exercises".
+    if (!activeExercises.some(e => e.superset_group)) supersetModeOn = false;
+  } else {
+    // This block has no real superset_group at all — it only exists because
+    // Superset Mode's position-based fallback (see getBlockExercises) paired
+    // two adjacent standalone exercises. There's nothing to clear, but the
+    // "Unpair" button still needs to DO something, so flag every member of
+    // the block as excluded from that fallback — otherwise it just gets
+    // silently re-paired by position on the very next render, which used to
+    // make Unpair a no-op here (previously this branch didn't exist at all;
+    // the function just returned early with nothing to do).
+    const block = getBlockExercises(ei);
+    if (!block || block.length < 2) return;
+    block.forEach(idx => { activeExercises[idx].supersetExcluded = true; });
+  }
   saveWorkoutState();
 }
 
@@ -3300,10 +4704,23 @@ function getBlockExercises(ei) {
   }
 
   // No predefined pairs anywhere in this routine — the toggle still does
-  // something useful by pairing consecutive exercises by position, 2 at a time.
-  if (ei % 2 !== 0) return null; // second-of-pair by position — covered by ei-1
-  const partnerIndex = ei + 1;
-  return partnerIndex < activeExercises.length ? [ei, partnerIndex] : [ei];
+  // something useful by pairing consecutive exercises by position, 2 at a
+  // time, skipping anything flagged supersetExcluded (unpaired via the
+  // "Unpair" button — see unlinkPair) so it renders standalone instead of
+  // being silently re-paired with whatever now sits next to it. Pairing is
+  // computed over the eligible (non-excluded) exercises' own order rather
+  // than raw index parity — an excluded exercise sitting at an odd index
+  // would otherwise desync ei%2 for everything after it and drop an
+  // exercise from rendering entirely.
+  if (ex.supersetExcluded) return [ei];
+  const eligible = [];
+  for (let j = 0; j < activeExercises.length; j++) {
+    if (!activeExercises[j].supersetExcluded) eligible.push(j);
+  }
+  const pos = eligible.indexOf(ei);
+  if (pos % 2 !== 0) return null; // second-of-pair among eligible — covered by its partner's start
+  const partnerIndex = eligible[pos + 1];
+  return partnerIndex != null ? [ei, partnerIndex] : [ei];
 }
 
 // Moves the whole block starting at fromEi to sit immediately before (or,
@@ -3387,8 +4804,74 @@ function renderInfoDrawer(ei, ex) {
       </div>`;
 }
 
+// Collapsed by default, lazily filled in by openExerciseHistory() on first
+// tap of the "🕘 Previous sets" button — reuses the exact same drawer
+// shell/animation as renderInfoDrawer (just a distinct id prefix so the
+// two toggle independently) rather than introducing new drawer CSS.
+function renderExerciseHistoryDrawer(ei) {
+  return `
+      <div class="exercise-info-drawer" id="history-drawer-${ei}">
+        <div class="exercise-info-drawer__inner exercise-history-list" id="history-drawer-inner-${ei}"></div>
+      </div>`;
+}
+
+// Previous reps/weights for one exercise, by name, across past logged
+// sessions — mid-workout reference for "what did I lift last time" so it
+// doesn't require leaving the exercise card and digging through the
+// history list. Same top-down fetch (sessions -> exercises -> sets, then
+// filtered client-side by name) as loadWorkoutHistory/computeExerciseTrends
+// use, rather than a reverse query filtered server-side on a nested
+// column — keeps this on the one join pattern already proven to work here.
+// Cached per exercise name for the rest of this page load — past sessions
+// don't change mid-workout, so there's no reason to re-fetch on every
+// drawer open.
+const exerciseHistoryCache = {};
+async function fetchExerciseHistory(exerciseName) {
+  if (exerciseHistoryCache[exerciseName]) return exerciseHistoryCache[exerciseName];
+  if (!currentUser) return [];
+  const { data, error } = await db.from('workout_sessions')
+    .select(`session_date, workout_exercises (name, workout_sets (set_number, reps, weight, unit))`)
+    .eq('user_id', currentUser.id)
+    .order('session_date', { ascending: false })
+    .limit(60);
+  if (error) { console.error('fetchExerciseHistory error:', error.message); return []; }
+
+  const rows = [];
+  (data || []).forEach(s => {
+    (s.workout_exercises || []).forEach(ex => {
+      if (ex.name !== exerciseName) return;
+      const sets = (ex.workout_sets || []).slice().sort((a, b) => a.set_number - b.set_number);
+      if (sets.length) rows.push({ date: s.session_date, sets });
+    });
+  });
+
+  const result = rows.slice(0, 8); // most recent 8 sessions that featured this exercise
+  exerciseHistoryCache[exerciseName] = result;
+  return result;
+}
+
+// Fills in a history drawer opened via the "🕘 Previous sets" button —
+// reuses the .wh-exercise/.set-chips/.set-chip classes the (now-summary-
+// only) workout history cards used to render this exact shape with.
+async function openExerciseHistory(ei) {
+  const ex = activeExercises[ei];
+  const inner = $(`history-drawer-inner-${ei}`);
+  if (!ex || !inner) return;
+  inner.innerHTML = `<span class="exercise-info-drawer__gif--loading">⏳</span>`;
+  const rows = await fetchExerciseHistory(ex.name);
+  if (!rows.length) {
+    inner.innerHTML = `<p class="empty-state" style="margin:0">No previous sessions logged for this exercise yet.</p>`;
+    return;
+  }
+  inner.innerHTML = rows.map(r => `
+    <div class="wh-exercise">
+      <div class="wh-exercise__name">${fmtDate(r.date)}</div>
+      <div class="set-chips">${r.sets.map(st => `<span class="set-chip">${st.reps ?? '—'} × ${st.weight ?? '—'} ${st.unit || EXERCISE_WEIGHT_UNIT}</span>`).join('')}</div>
+    </div>`).join('');
+}
+
 function renderStandaloneCard(ei) {
-  const unit = profile?.weight_unit || 'kg';
+  const unit = EXERCISE_WEIGHT_UNIT;
   const ex = activeExercises[ei];
   const hasMedia = !!ex.media;
   // NOTE: injury-substitution system removed. wasSubstituted is never set
@@ -3408,7 +4891,8 @@ function renderStandaloneCard(ei) {
         <td><input type="number" class="set-input ${s.done?'is-done':''}" step="0.5" min="0"
           placeholder="0" value="${s.weight}"
           data-ei="${ei}" data-si="${si}" data-field="weight" inputmode="decimal"
-          ${s.done?'readonly':''}></td>
+          ${s.done?'readonly':''}>
+          ${ex.equipmentType === 'barbell' ? `<div class="plate-hint" id="plateHint-${ei}-${si}">${formatPlateHint(ex.equipmentType, s.weight, ex.baseWeightKg)}</div>` : ''}</td>
         <td style="font-size:11px;color:var(--ink-3)">${unit}</td>
         <td>
           ${s.done
@@ -3423,20 +4907,22 @@ function renderStandaloneCard(ei) {
         <span class="drag-handle" title="Drag to reorder">⠿</span>
         <div class="exercise-card__name">
           ${ei === 0 ? '<span class="exercise-card__focus-tag">FOCUS</span>' : ''}
-          <div class="exercise-card__name-text">${ex.name} ${subBadge}</div>
+          <div class="exercise-card__name-text">${ex.name} ${subBadge} ${restBadgeHtml(ex)}</div>
         </div>
         <div class="exercise-card__actions">
           ${linkModeOn ? `<button type="button" class="exercise-card__link-btn ${linkPendingIndex === ei ? 'is-pending' : ''}" data-ei="${ei}" title="Tap to pair with another exercise">🔗</button>` : ''}
+          <button type="button" class="exercise-card__history-btn" data-ei="${ei}" title="Previous sets">🕘</button>
           ${hasMedia ? `<button type="button" class="exercise-card__info-btn" data-ei="${ei}" title="Exercise guide">ⓘ</button>` : ''}
           <button type="button" class="exercise-card__equip-btn" data-ei="${ei}" title="Change equipment">🔁</button>
           <button type="button" class="exercise-card__remove-btn" data-ei="${ei}" title="Remove exercise">✕</button>
         </div>
       </div>
       ${ex.pr && ex.pr.best_weight != null ? `<div class="exercise-card__pr" style="font-size:12px;color:var(--ink-2);margin:0 16px 4px">
-        🏆 Last best: ${ex.pr.best_weight}${ex.pr.best_weight_unit || 'kg'} × ${ex.pr.best_weight_reps || '?'} reps
-      </div>` : ''}
+        🏆 Prefilled with your heaviest: ${ex.pr.best_weight}${ex.pr.best_weight_unit || 'kg'} × ${ex.pr.best_weight_reps || '?'} reps — beat it!
+      </div>` : renderProgressionHint(ex)}
       ${ex.notes ? `<div class="exercise-card__notes">${ex.notes}</div>` : ''}
       ${hasMedia ? renderInfoDrawer(ei, ex) : ''}
+      ${renderExerciseHistoryDrawer(ei)}
       <table class="active-sets-table">
         <thead>
           <tr>
@@ -3456,20 +4942,22 @@ function renderStandaloneCard(ei) {
 // actually performed (straight from one exercise into the next, then
 // rest). group is 2 or more activeExercises indices, in order.
 function renderSupersetCard(group) {
-  const unit = profile?.weight_unit || 'kg';
+  const unit = EXERCISE_WEIGHT_UNIT;
   const members = group.map(ei => ({ ei, ex: activeExercises[ei] }));
   const roundCount = Math.max(...members.map(({ ex }) => ex.sets.length));
 
   const exHeaderRow = (ei, ex) => `
       <div class="superset-card__exrow">
-        <span class="superset-card__exname">${ex.name}</span>
+        <span class="superset-card__exname">${ex.name} ${restBadgeHtml(ex)}</span>
         <div class="superset-card__exactions">
+          <button type="button" class="exercise-card__history-btn" data-ei="${ei}" title="Previous sets">🕘</button>
           ${ex.media ? `<button type="button" class="exercise-card__info-btn" data-ei="${ei}" title="Exercise guide">ⓘ</button>` : ''}
           <button type="button" class="exercise-card__equip-btn" data-ei="${ei}" title="Change equipment">🔁</button>
           <button type="button" class="exercise-card__remove-btn" data-ei="${ei}" title="Remove exercise">✕</button>
         </div>
       </div>
-      ${ex.media ? renderInfoDrawer(ei, ex) : ''}`;
+      ${ex.media ? renderInfoDrawer(ei, ex) : ''}
+      ${renderExerciseHistoryDrawer(ei)}`;
 
   let activeAssigned = false;
   const roundsHtml = [];
@@ -3494,6 +4982,7 @@ function renderSupersetCard(group) {
                 placeholder="0" value="${s.weight}"
                 data-ei="${ei}" data-si="${ri}" data-field="weight" inputmode="decimal" ${s.done?'readonly':''}>
               <span class="round-ex__unit">${unit}</span>
+              ${ex.equipmentType === 'barbell' ? `<div class="plate-hint" id="plateHint-${ei}-${ri}">${formatPlateHint(ex.equipmentType, s.weight, ex.baseWeightKg)}</div>` : ''}
             </div>
           </div>`).join('');
 
@@ -3569,14 +5058,21 @@ function renderActiveWorkout() {
   const addBtn = document.getElementById('btnAddExercise');
   if (addBtn) addBtn.addEventListener('click', () => openAddExercisePicker());
 
+  // Only one drawer (info OR history, on any exercise) open at a time —
+  // both button classes and both drawer flavors share this helper so
+  // opening one always cleanly closes whatever else was open.
+  const closeAllExerciseDrawers = () => {
+    elW.activeExList.querySelectorAll('.exercise-info-drawer').forEach(d => d.classList.remove('is-open'));
+    elW.activeExList.querySelectorAll('.exercise-card__info-btn, .exercise-card__history-btn').forEach(b => b.classList.remove('is-open'));
+  };
+
   // Wire info buttons
   elW.activeExList.querySelectorAll('.exercise-card__info-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       const ei = +btn.dataset.ei;
       const drawer = $(`drawer-${ei}`);
       const isOpen = drawer.classList.contains('is-open');
-      elW.activeExList.querySelectorAll('.exercise-info-drawer').forEach(d => d.classList.remove('is-open'));
-      elW.activeExList.querySelectorAll('.exercise-card__info-btn').forEach(b => b.classList.remove('is-open'));
+      closeAllExerciseDrawers();
       if (!isOpen) {
         drawer.classList.add('is-open');
         btn.classList.add('is-open');
@@ -3585,6 +5081,22 @@ function renderActiveWorkout() {
         if (!ex.media?.gif_url && ex.media?.search_name) {
           await fetchExerciseGif(ei);
         }
+      }
+    });
+  });
+
+  // Wire "🕘 Previous sets" buttons
+  elW.activeExList.querySelectorAll('.exercise-card__history-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const ei = +btn.dataset.ei;
+      const drawer = $(`history-drawer-${ei}`);
+      if (!drawer) return;
+      const isOpen = drawer.classList.contains('is-open');
+      closeAllExerciseDrawers();
+      if (!isOpen) {
+        drawer.classList.add('is-open');
+        btn.classList.add('is-open');
+        await openExerciseHistory(ei);
       }
     });
   });
@@ -3650,7 +5162,19 @@ function renderActiveWorkout() {
     inp.addEventListener('input', () => {
       const ei = +inp.dataset.ei, si = +inp.dataset.si;
       activeExercises[ei].sets[si][inp.dataset.field] = inp.value;
+      // Typing a weight by hand is a deliberate value (planning ahead, a
+      // drop set, whatever) — clears the auto-filled flag so a later
+      // completed set's cascade (below) won't steamroll it.
+      if (inp.dataset.field === 'weight') activeExercises[ei].sets[si].weightAutoFilled = false;
       saveWorkoutState(); // persist every keystroke
+
+      // Live plate breakdown as the weight is typed — the hint div (only
+      // present for barbell exercises) sits right next to this same
+      // input, keyed by the same ei/si so it doesn't need a full re-render.
+      if (inp.dataset.field === 'weight') {
+        const hint = $(`plateHint-${ei}-${si}`);
+        if (hint) hint.textContent = formatPlateHint(activeExercises[ei].equipmentType, inp.value, activeExercises[ei].baseWeightKg);
+      }
     });
   });
 
@@ -3661,18 +5185,19 @@ function renderActiveWorkout() {
       const ex = activeExercises[ei];
       ex.sets[si].done = true;
 
-      // Carry this set's weight into any remaining not-yet-done sets
-      // for the same exercise, as a starting-point default rather than
-      // an overwrite — a set the person already typed a weight into
-      // (planning ahead, or a deliberate different load) is left alone.
-      // The existing generic input handler (data-field="weight") already
-      // lets these pre-populated values be freely edited afterward,
-      // exactly the same as any value the person typed themselves.
+      // Carry this set's weight into any remaining not-yet-done sets for
+      // the same exercise — the LATEST completed set is the reference
+      // going forward, not just set 1. A set the person already typed a
+      // weight into by hand (planning ahead, a deliberate different load)
+      // is left alone; one still holding an earlier set's auto-filled
+      // value gets updated to track the most recent completion instead.
+      ex.sets[si].weightAutoFilled = false; // this set's own weight is now a confirmed, real value
       const completedWeight = ex.sets[si].weight;
       if (completedWeight) {
         for (let laterSi = si + 1; laterSi < ex.sets.length; laterSi++) {
-          if (!ex.sets[laterSi].done && !ex.sets[laterSi].weight) {
+          if (!ex.sets[laterSi].done && (!ex.sets[laterSi].weight || ex.sets[laterSi].weightAutoFilled)) {
             ex.sets[laterSi].weight = completedWeight;
+            ex.sets[laterSi].weightAutoFilled = true;
           }
         }
       }
@@ -3727,8 +5252,13 @@ function renderActiveWorkout() {
       exs.forEach((ex, i) => {
         const s = sets[i];
         if (!s || !s.weight) return;
+        s.weightAutoFilled = false; // this round's own weight is now a confirmed, real value
         for (let laterSi = si + 1; laterSi < ex.sets.length; laterSi++) {
-          if (!ex.sets[laterSi].done && !ex.sets[laterSi].weight) ex.sets[laterSi].weight = s.weight;
+          const later = ex.sets[laterSi];
+          if (!later.done && (!later.weight || later.weightAutoFilled)) {
+            later.weight = s.weight;
+            later.weightAutoFilled = true;
+          }
         }
       });
 
@@ -3871,19 +5401,25 @@ function wireGifRefreshButton(ei) {
 }
 
 // ── Back to picker ────────────────────────────────────────
+// Purely a navigation action — switches which screen is visible, nothing
+// more. This used to also wipe activeRoutine/activeExercises outright, so
+// one accidental tap (easy to fat-finger — it sits top-left of the active
+// workout screen) silently discarded an entire in-progress session with no
+// confirmation. The workout now stays alive in memory (and localStorage,
+// via saveWorkoutState) until it's explicitly saved or abandoned — see
+// renderActiveWorkoutBanner's "Continue workout"/"Abandon workout" banner,
+// which is what a returning user sees here instead of a blank picker.
 elW.backToPicker.addEventListener('click', () => {
-  activeRoutine   = null;
-  activeExercises = [];
-  workoutStartedAtMs = null;
   elW.active.hidden  = true;
   elW.picker.hidden  = false;
+  renderActiveWorkoutBanner();
   loadRoutines();
 });
 
 // ── Save workout ──────────────────────────────────────────
 elW.btnSaveWorkout.addEventListener('click', async () => {
   if (!activeRoutine) return;
-  const unit = profile?.weight_unit || 'kg';
+  const unit = EXERCISE_WEIGHT_UNIT;
   const date = elW.workoutDate.value || todayISO();
 
   setBtn(elW.btnSaveWorkout, true, 'Save workout');
@@ -3919,8 +5455,10 @@ elW.btnSaveWorkout.addEventListener('click', async () => {
   setBtn(elW.btnSaveWorkout, false, 'Save workout');
   flash(elW.workoutStatus, `Workout saved — ${activeExercises.length} exercise${activeExercises.length===1?'':'s'}.`);
   activeRoutine = null; activeExercises = []; workoutStartedAtMs = null;
+  clearWorkoutState(); // otherwise a stale copy lingers and could get restored/re-saved after a later reload
   elW.active.hidden = true;
   elW.picker.hidden = false;
+  renderActiveWorkoutBanner();
   loadRoutines();
 });
 
@@ -3936,19 +5474,32 @@ elW.btnCloseHistory.addEventListener('click', () => {
 });
 elW.historyFilterSplit.addEventListener('change', loadWorkoutHistory);
 
+// Summary only, not a full exercise/set-by-set dump — matches the same
+// "one card, key stats" shape as renderActivityHistoryCard below rather
+// than the two systems reading as visually different. The per-exercise
+// set detail this used to show lives on the exercise's own "🕘 Previous"
+// button during an active workout instead (see fetchExerciseHistory) —
+// genuinely useful mid-set, not something worth re-scanning in a history
+// list of many past sessions.
 function renderStrengthHistoryCard(s, appleMatch) {
-  const exHtml = (s.workout_exercises || [])
-    .sort((a,b) => a.sort_order - b.sort_order)
-    .map(ex => {
-      const chips = (ex.workout_sets || [])
-        .sort((a,b) => a.set_number - b.set_number)
-        .map(st => `<span class="set-chip">${st.reps??'—'} × ${st.weight??'—'} ${st.unit}</span>`)
-        .join('');
-      return `<div class="wh-exercise">
-        <div class="wh-exercise__name">${ex.name}</div>
-        <div class="set-chips">${chips || '<span style="color:var(--ink-faint);font-size:11px">No sets logged</span>'}</div>
-      </div>`;
-    }).join('');
+  const exercises = s.workout_exercises || [];
+  let totalSets = 0, totalVolume = 0;
+  exercises.forEach(ex => {
+    (ex.workout_sets || []).forEach(st => {
+      if (st.reps != null || st.weight != null) totalSets++;
+      const w = Number(st.weight), r = Number(st.reps);
+      if (Number.isFinite(w) && w > 0 && Number.isFinite(r) && r > 0) totalVolume += w * r;
+    });
+  });
+
+  const ownParts = [];
+  if (exercises.length) ownParts.push(`<span class="last-workout-stat">🏋️ ${exercises.length} exercise${exercises.length === 1 ? '' : 's'}</span>`);
+  if (totalSets) ownParts.push(`<span class="last-workout-stat">🔢 ${totalSets} set${totalSets === 1 ? '' : 's'}</span>`);
+  if (totalVolume > 0) ownParts.push(`<span class="last-workout-stat">📦 ${Math.round(totalVolume).toLocaleString()} ${EXERCISE_WEIGHT_UNIT} volume</span>`);
+
+  // Apple-matched stats (duration/kcal/HR/distance) lead when present —
+  // real measured data over fitl00p's own derived-from-logged-sets ones.
+  const allParts = [...(appleMatch ? workoutStatParts(appleMatch) : []), ...ownParts];
 
   return `<div class="wh-card">
     <div class="wh-card__head">
@@ -3956,8 +5507,7 @@ function renderStrengthHistoryCard(s, appleMatch) {
       ${splitTag(s.split_type)}
     </div>
     <div class="wh-card__body">
-      ${appleMatch ? workoutStatsRowHtml(appleMatch) : ''}
-      ${exHtml || '<p class="empty-state">No exercises</p>'}
+      ${allParts.length ? `<div class="last-workout-stats">${allParts.join('')}</div>` : '<p class="empty-state">No stats recorded</p>'}
     </div>
   </div>`;
 }
@@ -4011,7 +5561,7 @@ async function loadWorkoutHistory() {
   const [sessionsRes, appleRes, manualRes] = await Promise.all([
     sessionsQ,
     splitFilterActive ? Promise.resolve({ data: [] }) : db.from('apple_health_workouts')
-      .select('id, workout_type, started_at, ended_at, active_energy_kcal, total_energy_kcal, avg_heart_rate, max_heart_rate')
+      .select('id, workout_type, started_at, ended_at, active_energy_kcal, total_energy_kcal, avg_heart_rate, max_heart_rate, distance_km')
       .eq('user_id', currentUser.id)
       .order('started_at', { ascending: false })
       .limit(60),
@@ -4097,7 +5647,7 @@ function renderStrengthProgress(sessions) {
   const names = Object.keys(trends);
   if (!names.length) { elW.strengthProgress.innerHTML = ''; return; }
 
-  const unit = profile?.weight_unit || 'kg';
+  const unit = EXERCISE_WEIGHT_UNIT;
 
   // Most recently trained lifts first, capped at 6 to keep this scannable
   const ranked = names
@@ -4142,7 +5692,7 @@ function splitTag(type) {
 ═══════════════════════════════════════════════════════════ */
 async function loadHistory() {
   if (!currentUser) return;
-  const unit = profile?.weight_unit || 'kg';
+  const unit = BODY_WEIGHT_UNIT;
 
   // Manual weight logging — button only shown for an account with the
   // Settings toggle on; card itself starts closed on every tab visit.
@@ -4150,6 +5700,15 @@ async function loadHistory() {
   if (weightLogToggle) weightLogToggle.hidden = !profile?.manual_weight_logging;
   const weightLogCard = $('weightLogCard');
   if (weightLogCard) weightLogCard.hidden = true;
+
+  // Peptides (Tirzepatide/MOTS-C/BPC-157) — Lewy's account only. The 💉
+  // entry point and the panel behind it both hide for Gemma, who doesn't
+  // use any peptides, rather than relying on the panel just looking empty.
+  const isGemma = currentUser.id === GEMMA_USER_ID;
+  if (el.btnTzToggle) el.btnTzToggle.hidden = isGemma;
+  if (el.peptideSection) el.peptideSection.hidden = true;
+  if (el.btnOralMedsToggle) el.btnOralMedsToggle.hidden = isGemma;
+  if (el.oralMedsSection) el.oralMedsSection.hidden = true;
 
   // Fetch daily logs
   const { data } = await db
@@ -4178,8 +5737,12 @@ async function loadHistory() {
 
   const burnByDate = {};
   (healthRows || []).forEach(h => {
-    const a = h.active_energy_kcal;
-    const r = h.resting_energy_kcal;
+    // Postgres numeric columns can arrive as strings rather than JS
+    // numbers — plain `a + r` on two such strings concatenates instead
+    // of adding ("524.8" + "1431.2" -> "524.81431.2", not 1956), which
+    // Math.round then turns into NaN. Number() first avoids that.
+    const a = h.active_energy_kcal  != null ? Number(h.active_energy_kcal)  : null;
+    const r = h.resting_energy_kcal != null ? Number(h.resting_energy_kcal) : null;
     burnByDate[h.log_date] = (a != null && r != null) ? Math.round(a + r)
                            : (a != null)              ? Math.round(a)
                            : null;
@@ -4203,23 +5766,24 @@ async function loadHistory() {
   el.historyTableBody.innerHTML = rows.map(r => {
     const cals    = pickConsumedCalories({ ...r, cal_fitl00p: foodByDate[r.log_date] ?? null }, null);
     const burned  = burnByDate[r.log_date] ?? null;
+    const displayWeight = r.weight != null ? weightFromKg(r.weight, unit) : null; // r.weight is kg
     return `
     <tr>
       <td>${fmtDate(r.log_date)}</td>
-      <td class="${r.weight ? '' : 'dim'}">${r.weight ? fmt1(r.weight) + ' ' + unit : '—'}</td>
+      <td class="${displayWeight != null ? '' : 'dim'}">${displayWeight != null ? fmt1(displayWeight) + ' ' + unit : '—'}</td>
       <td class="${r.steps ? '' : 'dim'}">${r.steps ? fmtInt(r.steps) : '—'}</td>
       <td class="${cals  ? '' : 'dim'}">${cals   != null ? fmtInt(cals)   + ' kcal' : '—'}</td>
       <td class="${burned ? '' : 'dim'}">${burned != null ? fmtInt(burned) + ' kcal' : '—'}</td>
     </tr>`;
   }).join('');
 
-  const series = rows.filter(r => r.weight != null).reverse();
+  const series = rows.filter(r => r.weight != null).reverse(); // weight stays canonical kg
 
   drawChart(
     el.historyChart,
     el.historyChartEmpty,
-    series.map(r => ({ date: r.log_date, weight: r.weight })),
-    activePlan || null
+    series.map(r => ({ date: r.log_date, weight: weightFromKg(r.weight, unit) })),
+    activePlan ? { ...activePlan, start_weight: weightFromKg(activePlan.start_weight, unit), target_weight: weightFromKg(activePlan.target_weight, unit) } : null
   );
 
   renderWeightVariance(series);
@@ -4249,13 +5813,16 @@ function renderWeightVariance(series) {
   const expectedNow = activePlan.start_weight +
     (activePlan.target_weight - activePlan.start_weight) * pctElapsed;
 
-  // Latest actual weight — use realSeries not synthetic entry
+  // Latest actual weight — use realSeries not synthetic entry. Both this
+  // and expectedNow (derived from activePlan.*_weight) are canonical kg —
+  // the diff/tolerance below stays in kg; only the displayed number is
+  // converted to the current unit.
   const latestActual = realSeries[realSeries.length - 1]?.weight;
   if (latestActual == null) { el2.hidden = true; return; }
 
-  const unit = profile?.weight_unit || 'kg';
-  const diff = expectedNow - latestActual; // positive = ahead (lost more than projected)
-  const absDiff = Math.abs(diff).toFixed(1);
+  const unit = BODY_WEIGHT_UNIT;
+  const diff = expectedNow - latestActual; // kg, positive = ahead (lost more than projected)
+  const absDiff = Math.abs(weightFromKg(diff, unit)).toFixed(1);
   const isAhead = diff > 0.1;
   const isBehind = diff < -0.1;
 
@@ -4310,9 +5877,10 @@ function tzLevelAt(doses, atMs) {
   return total;
 }
 
-// Kernow Peptides 40mg pen: a fixed 8 clicks per mg on the dial.
-const TZ_CLICKS_PER_MG = 8;
-function tzClicksForDose(doseMg) { return Math.round(doseMg * TZ_CLICKS_PER_MG); }
+// This pen's concentration puts 5mg at 40 units on the syringe — 8
+// units per mg, not the 1:1 it was previously set to.
+const TZ_UNITS_PER_MG = 8;
+function tzUnitsForDose(doseMg) { return Math.round(doseMg * TZ_UNITS_PER_MG * 10) / 10; }
 
 // "If the current routine is adhered to" — Tirzepatide is dosed weekly,
 // so the routine is simply the most recent real dose repeated every 7
@@ -4521,7 +6089,7 @@ function renderTzSection(doses) {
     el.tzDoseList.innerHTML = sortedDesc.map(d => `
       <div class="tz-dose-item" data-id="${d.id}">
         <div>
-          <div class="tz-dose-item__meta">${fmt1(d.doseMg)} mg (${tzClicksForDose(d.doseMg)} clicks)${d.site ? ' · ' + TZ_SITE_LABELS[d.site] : ''}</div>
+          <div class="tz-dose-item__meta">${fmt1(d.doseMg)} mg (${fmt1(tzUnitsForDose(d.doseMg))} units)${d.site ? ' · ' + TZ_SITE_LABELS[d.site] : ''}</div>
           <div class="tz-dose-item__date">${new Date(d.injectedMs).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</div>
         </div>
         <button type="button" class="btn btn--icon" data-action="tz-delete" data-id="${d.id}" title="Delete">🗑</button>
@@ -4675,21 +6243,58 @@ function tzXToMs(x) {
   return windowStart + frac * (windowEnd - windowStart);
 }
 
-// Opens both peptide trackers together — each still closes independently
-// via its own ✕ (btnTzClose / btnBpcClose above), so looking at just one
-// afterwards doesn't require reopening both from scratch.
-el.btnTzToggle?.addEventListener('click', () => {
-  el.tzCard.hidden = false;
+el.btnTzToggle?.addEventListener('click', async () => {
+  el.peptideSection.hidden = false;
   loadTirzepatideSection();
-  if (el.bpcCard) {
-    el.bpcCard.hidden = false;
-    loadBpcSection();
-  }
+  await fetchPeptideProtocols();
+  renderPeptideProtocols();
+  await loadBpcHistorySection();
 });
 
-el.btnTzClose?.addEventListener('click', () => {
-  el.tzCard.hidden = true;
+el.btnPeptideSectionClose?.addEventListener('click', () => {
+  el.peptideSection.hidden = true;
 });
+
+el.btnOralMedsToggle?.addEventListener('click', async () => {
+  el.oralMedsSection.hidden = false;
+  await fetchOralMeds();
+  renderOralMeds();
+});
+
+el.btnOralMedsSectionClose?.addEventListener('click', () => {
+  el.oralMedsSection.hidden = true;
+});
+
+// Each accordion header shows/hides its own body only — independent of
+// the other two, and independent of the outer section's own open/close.
+document.querySelectorAll('.peptide-accordion__header').forEach(header => {
+  header.addEventListener('click', () => {
+    const body = $(header.dataset.target);
+    if (!body) return;
+    body.hidden = !body.hidden;
+    const chevron = header.querySelector('.peptide-accordion__chevron');
+    if (chevron) chevron.textContent = body.hidden ? '▸' : '▾';
+  });
+});
+
+// Read-only — BPC-157 is discontinued, so this only ever displays
+// existing bpc157_doses history, never logs a new one.
+async function loadBpcHistorySection() {
+  if (!currentUser || !el.bpcHistory) return;
+  const { data: doses } = await db.from('bpc157_doses')
+    .select('dose_mg, site, injected_at')
+    .eq('user_id', currentUser.id)
+    .order('injected_at', { ascending: false })
+    .limit(30);
+
+  el.bpcHistory.innerHTML = doses?.length
+    ? doses.map(d => `
+        <div class="peptide-history__row">
+          <span class="peptide-history__date">${new Date(d.injected_at).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })}</span>
+          <span class="peptide-history__detail">${fmt1(Number(d.dose_mg))}mg${d.site ? ' · ' + peptideSiteLabel(d.site) : ''}</span>
+        </div>`).join('')
+    : '<p class="empty-state">No doses logged.</p>';
+}
 
 // Tap/click anywhere on the chart to inspect that day's level — works
 // for touch (a tap fires a synthetic click) and mouse alike, no drag
@@ -4806,328 +6411,8 @@ el.tzPenHistory?.addEventListener('click', async (e) => {
   await loadTirzepatideSection();
 });
 
-/* ═══════════════════════════════════════════════════════════
-   BPC-157 TRACKER — same needle icon as Tirzepatide (btnTzToggle
-   below opens both together), independent ✕. No pen/vial tracker —
-   doses are drawn from a vial by syringe, not a fixed-click pen, so
-   there's no equivalent "clicks per mg"/inventory concept to track.
-
-   Same two-phase Bateman absorption/elimination shape as Tirzepatide
-   (see the big comment above TZ_KE_PER_HOUR), just with its own ka/ke
-   solved for a much faster peptide: no rigorous published human PK
-   study exists for BPC-157 (unlike Tirzepatide's clinical data), so
-   these are community-estimated figures — ~4h terminal half-life,
-   ~30min time-to-peak for a subcutaneous dose — not a precise number.
-   Doses superpose linearly, same principle as everywhere else in this
-   app that models an active-substance curve.
-═══════════════════════════════════════════════════════════ */
-const BPC_KE_PER_HOUR = Math.log(2) / 4; // ~4h estimated terminal half-life
-// Solved numerically so Tmax = ln(ka/ke)/(ka-ke) = 0.5h exactly, given
-// BPC_KE_PER_HOUR above — same bisection approach as TZ_KA_PER_HOUR.
-const BPC_KA_PER_HOUR = 7.782710769449455;
-const BPC_PEAK_HOURS = 0.5;
-function bpcDoseShape(hoursSince) {
-  if (hoursSince < 0) return 0;
-  return Math.exp(-BPC_KE_PER_HOUR * hoursSince) - Math.exp(-BPC_KA_PER_HOUR * hoursSince);
-}
-const BPC_SHAPE_AT_PEAK = bpcDoseShape(BPC_PEAK_HOURS);
-function bpcLevelAt(doses, atMs) {
-  let total = 0;
-  for (const d of doses) {
-    const hoursSince = (atMs - d.injectedMs) / 3600000;
-    if (hoursSince < 0) continue;
-    total += d.doseMg * (bpcDoseShape(hoursSince) / BPC_SHAPE_AT_PEAK);
-  }
-  return total;
-}
-
-let bpcDosesCache = null;
-let bpcChartGeom = null;
-let bpcInspectMs = null;
-
-// "If daily routine continues" — same idea as tzRoutineDoses but at a
-// 24h cadence and a much shorter runway (BPC-157's fast clearance means
-// steady-state shows up within a couple of days, not months).
-const BPC_DAY_MS = 24 * 3600000;
-function bpcRoutineDoses(sortedRealDoses, windowEnd) {
-  if (!sortedRealDoses.length) return [];
-  const last = sortedRealDoses[sortedRealDoses.length - 1];
-  const routine = [];
-  for (let t = last.injectedMs + BPC_DAY_MS; t <= windowEnd; t += BPC_DAY_MS) {
-    routine.push({ doseMg: last.doseMg, injectedMs: t });
-  }
-  return routine;
-}
-
-async function fetchBpc157Doses() {
-  if (!currentUser) return [];
-  const { data, error } = await db.from('bpc157_doses')
-    .select('id, dose_mg, injected_at, site')
-    .eq('user_id', currentUser.id)
-    .order('injected_at', { ascending: true })
-    .limit(200);
-  if (error) { console.error('fetchBpc157Doses error:', error.message); return []; }
-  return (data || []).map(d => ({ id: d.id, doseMg: Number(d.dose_mg), injectedMs: new Date(d.injected_at).getTime(), site: d.site || null }));
-}
-
-async function loadBpcSection() {
-  const doses = await fetchBpc157Doses();
-  bpcDosesCache = doses;
-  bpcInspectMs = null;
-  renderBpcSection(doses);
-}
-
-function updateBpcInspectPanel() {
-  if (!el.bpcInspectPanel) return;
-  if (bpcInspectMs == null || !bpcDosesCache?.length || !bpcChartGeom) {
-    el.bpcInspectPanel.hidden = true;
-    return;
-  }
-  const sorted = [...bpcDosesCache].sort((a, b) => a.injectedMs - b.injectedMs);
-  const routineDoses = bpcRoutineDoses(sorted, bpcChartGeom.windowEnd);
-  const level = bpcLevelAt([...sorted, ...routineDoses], bpcInspectMs);
-  const dateLabel = new Date(bpcInspectMs).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-  const tense = bpcInspectMs > Date.now() ? 'projected' : 'estimated';
-  el.bpcInspectPanel.hidden = false;
-  el.bpcInspectPanel.innerHTML = `<span class="tz-inspect-panel__value">${fmt1(level)} mg</span><span class="tz-inspect-panel__label">${tense} level — ${dateLabel}</span>`;
-}
-
-function renderBpcSection(doses) {
-  if (!el.bpcCard) return;
-
-  if (!doses.length) {
-    if (el.bpcCurrentLevel) el.bpcCurrentLevel.hidden = true;
-    if (el.bpcInspectPanel) el.bpcInspectPanel.hidden = true;
-    if (el.bpcDoseList) el.bpcDoseList.innerHTML = '<p class="empty-state">No injections logged yet.</p>';
-    drawBpcChart(el.bpcChart, el.bpcChartEmpty, []);
-    return;
-  }
-
-  const now = Date.now();
-  const currentLevel = bpcLevelAt(doses, now);
-  if (el.bpcCurrentLevel) {
-    el.bpcCurrentLevel.hidden = false;
-    el.bpcCurrentLevel.innerHTML = `<span class="tz-current-level__value">${fmt1(currentLevel)} mg</span><span class="tz-current-level__label">estimated level now</span>`;
-  }
-
-  const sortedDesc = [...doses].sort((a, b) => b.injectedMs - a.injectedMs);
-  if (el.bpcDoseList) {
-    el.bpcDoseList.innerHTML = sortedDesc.map(d => `
-      <div class="tz-dose-item" data-id="${d.id}">
-        <div>
-          <div class="tz-dose-item__meta">${fmt1(d.doseMg)} mg${d.site ? ' · ' + TZ_SITE_LABELS[d.site] : ''}</div>
-          <div class="tz-dose-item__date">${new Date(d.injectedMs).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</div>
-        </div>
-        <button type="button" class="btn btn--icon" data-action="bpc-delete" data-id="${d.id}" title="Delete">🗑</button>
-      </div>
-    `).join('');
-  }
-
-  drawBpcChart(el.bpcChart, el.bpcChartEmpty, doses);
-  updateBpcInspectPanel();
-}
-
-function drawBpcChart(canvas, emptyEl, doses) {
-  if (!canvas) return;
-  if (!doses.length) {
-    if (emptyEl) emptyEl.hidden = false;
-    canvas.hidden = true;
-    bpcChartGeom = null;
-    return;
-  }
-  if (emptyEl) emptyEl.hidden = true;
-  canvas.hidden = false;
-
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return;
-
-  const MAX_W = 800, MAX_H = 260, MIN_W = 100;
-  const dpr = Math.min(window.devicePixelRatio || 1, 3);
-  const rawW = canvas.parentElement?.clientWidth || 320;
-  const rawH = parseInt(canvas.getAttribute('height')) || 200;
-  const W = Math.min(MAX_W, Math.max(MIN_W, rawW));
-  const H = Math.min(MAX_H, Math.max(120, rawH));
-  canvas.style.width = W + 'px';
-  canvas.style.height = H + 'px';
-  canvas.width = Math.round(W * dpr);
-  canvas.height = Math.round(H * dpr);
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, W, H);
-
-  const now = Date.now();
-  const sorted = [...doses].sort((a, b) => a.injectedMs - b.injectedMs);
-  const windowStart = sorted[0].injectedMs;
-  // 5 days out — BPC-157's ~4h half-life reaches daily-dosing steady
-  // state within a day or two, so a long runway like Tirzepatide's 90
-  // days would just be mostly-flat dead space.
-  const FUTURE_MS = 5 * 24 * 3600 * 1000;
-  const windowEnd = now + FUTURE_MS;
-
-  const routineDoses = bpcRoutineDoses(sorted, windowEnd);
-  const projectionDoses = [...sorted, ...routineDoses];
-
-  const STEP_MS = 20 * 60 * 1000; // 20min resolution — the whole curve plays out over hours, not weeks
-  const pastPts = [];
-  for (let t = windowStart; t <= now; t += STEP_MS) pastPts.push({ ms: t, v: bpcLevelAt(sorted, t) });
-  pastPts.push({ ms: now, v: bpcLevelAt(sorted, now) });
-  const futurePts = [];
-  for (let t = now; t <= windowEnd; t += STEP_MS) futurePts.push({ ms: t, v: bpcLevelAt(projectionDoses, t) });
-  futurePts.push({ ms: windowEnd, v: bpcLevelAt(projectionDoses, windowEnd) });
-
-  const allVals = [...pastPts, ...futurePts].map(p => p.v);
-  const vMax = Math.max(0.1, ...allVals) * 1.15;
-
-  const padL = 30, padR = 8, padTop = 8, padBottom = 18;
-  const plotW = W - padL - padR, plotH = H - padTop - padBottom;
-  const xAt = ms => padL + ((ms - windowStart) / (windowEnd - windowStart)) * plotW;
-  const yAt = v => padTop + plotH - (v / vMax) * plotH;
-
-  bpcChartGeom = { windowStart, windowEnd, padL, padR, plotW, padTop, plotH };
-
-  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
-  ctx.fillStyle = 'rgba(255,255,255,0.35)';
-  ctx.font = '9px -apple-system, sans-serif';
-  ctx.textAlign = 'right';
-  const step = vMax > 1.5 ? 0.5 : vMax > 0.6 ? 0.2 : 0.1;
-  for (let v = 0; v <= vMax; v += step) {
-    const y = yAt(v);
-    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
-    ctx.fillText(v.toFixed(1), padL - 4, y + 3);
-  }
-
-  ctx.textAlign = 'center';
-  const dayMs = 24 * 3600 * 1000;
-  const totalDays = (windowEnd - windowStart) / dayMs;
-  const tickEvery = totalDays > 14 ? 2 : 1; // days between x-axis labels
-  for (let t = windowStart; t <= windowEnd; t += tickEvery * dayMs) {
-    ctx.fillText(new Date(t).toLocaleDateString([], { month: 'short', day: 'numeric' }), xAt(t), H - 4);
-  }
-
-  const xNow = xAt(now);
-  ctx.strokeStyle = 'rgba(255,255,255,0.2)';
-  ctx.setLineDash([2, 3]);
-  ctx.beginPath(); ctx.moveTo(xNow, padTop); ctx.lineTo(xNow, padTop + plotH); ctx.stroke();
-  ctx.setLineDash([]);
-
-  ctx.strokeStyle = '#3B9EFF';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  pastPts.forEach((p, i) => { const x = xAt(p.ms), y = yAt(p.v); if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
-  ctx.stroke();
-
-  ctx.strokeStyle = 'rgba(59, 158, 255, 0.65)';
-  ctx.lineWidth = 1.5;
-  ctx.setLineDash([4, 3]);
-  ctx.beginPath();
-  futurePts.forEach((p, i) => { const x = xAt(p.ms), y = yAt(p.v); if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
-  ctx.stroke();
-  ctx.setLineDash([]);
-
-  ctx.fillStyle = '#3B9EFF';
-  sorted.forEach(d => {
-    const x = xAt(d.injectedMs), y = yAt(bpcLevelAt(sorted, d.injectedMs));
-    ctx.beginPath(); ctx.arc(x, y, 2.5, 0, Math.PI * 2); ctx.fill();
-  });
-
-  ctx.strokeStyle = 'rgba(59, 158, 255, 0.65)';
-  ctx.lineWidth = 1.5;
-  routineDoses.forEach(d => {
-    const x = xAt(d.injectedMs), y = yAt(bpcLevelAt(projectionDoses, d.injectedMs));
-    ctx.beginPath(); ctx.arc(x, y, 2.5, 0, Math.PI * 2); ctx.stroke();
-  });
-
-  if (bpcInspectMs != null) {
-    const ix = xAt(bpcInspectMs);
-    ctx.strokeStyle = 'rgba(245, 166, 35, 0.55)';
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([3, 3]);
-    ctx.beginPath(); ctx.moveTo(ix, padTop); ctx.lineTo(ix, padTop + plotH); ctx.stroke();
-    ctx.setLineDash([]);
-
-    const iy = yAt(bpcLevelAt(projectionDoses, bpcInspectMs));
-    ctx.fillStyle = '#F5A623';
-    ctx.beginPath(); ctx.arc(ix, iy, 4, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = '#1a1d24'; ctx.lineWidth = 1.5; ctx.stroke();
-  }
-}
-
-function bpcXToMs(x) {
-  if (!bpcChartGeom) return null;
-  const { windowStart, windowEnd, padL, plotW } = bpcChartGeom;
-  const frac = (x - padL) / plotW;
-  return windowStart + frac * (windowEnd - windowStart);
-}
-
-el.btnBpcClose?.addEventListener('click', () => {
-  el.bpcCard.hidden = true;
-});
-
-el.bpcChart?.addEventListener('click', (e) => {
-  if (!bpcChartGeom || !bpcDosesCache?.length) return;
-  const rect = el.bpcChart.getBoundingClientRect();
-  const x = e.clientX - rect.left;
-  const ms = bpcXToMs(x);
-  if (ms == null) return;
-  const { windowStart, windowEnd } = bpcChartGeom;
-  bpcInspectMs = Math.min(windowEnd, Math.max(windowStart, ms));
-  drawBpcChart(el.bpcChart, el.bpcChartEmpty, bpcDosesCache);
-  updateBpcInspectPanel();
-});
-
-el.btnBpcLog?.addEventListener('click', () => {
-  el.bpcLogButtonWrap.hidden = true;
-  el.bpcLogForm.hidden = false;
-  el.bpcInjectedAt.value = toLocalDatetimeInputValue(new Date());
-  if (bpcDosesCache?.length) {
-    const last = [...bpcDosesCache].sort((a, b) => b.injectedMs - a.injectedMs)[0];
-    el.bpcDoseMg.value = last.doseMg;
-    if (el.bpcSite) el.bpcSite.value = tzNextSite(last.site);
-  } else {
-    el.bpcDoseMg.value = 0.5;
-    if (el.bpcSite) el.bpcSite.value = TZ_SITE_ORDER[0];
-  }
-});
-
-el.btnBpcCancel?.addEventListener('click', () => {
-  el.bpcLogForm.hidden = true;
-  el.bpcLogButtonWrap.hidden = false;
-  el.bpcFormStatus.textContent = '';
-});
-
-el.btnBpcSave?.addEventListener('click', async () => {
-  if (!currentUser) return;
-  const doseMg = parseFloat(el.bpcDoseMg.value);
-  const injectedAtLocal = el.bpcInjectedAt.value;
-  if (!Number.isFinite(doseMg) || doseMg <= 0) { el.bpcFormStatus.textContent = 'Enter a valid dose.'; return; }
-  if (!injectedAtLocal) { el.bpcFormStatus.textContent = 'Pick a date and time.'; return; }
-  const injectedAtIso = new Date(injectedAtLocal).toISOString();
-  const site = el.bpcSite?.value || null;
-
-  setBtn(el.btnBpcSave, true, 'Save injection', 'Saving…');
-  const { error } = await db.from('bpc157_doses').insert({
-    user_id: currentUser.id, dose_mg: doseMg, injected_at: injectedAtIso, site,
-  });
-  setBtn(el.btnBpcSave, false, 'Save injection');
-
-  if (error) { el.bpcFormStatus.textContent = 'Error: ' + error.message; return; }
-
-  el.bpcLogForm.hidden = true;
-  el.bpcLogButtonWrap.hidden = false;
-  el.bpcFormStatus.textContent = '';
-  await loadBpcSection();
-});
-
-el.bpcDoseList?.addEventListener('click', async (e) => {
-  const btn = e.target.closest('[data-action="bpc-delete"]');
-  if (!btn || !currentUser) return;
-  if (!confirm('Delete this injection entry?')) return;
-  const { error } = await db.from('bpc157_doses').delete().eq('id', btn.dataset.id).eq('user_id', currentUser.id);
-  if (error) { showToast('Failed: ' + error.message, true); return; }
-  await loadBpcSection();
-});
-
 el.btnExportCsv.addEventListener('click', async () => {
-  const unit = profile?.weight_unit || 'kg';
+  const unit = BODY_WEIGHT_UNIT;
   const { data } = await db
     .from('daily_logs')
     .select('log_date, weight, steps, cal_breakfast, cal_lunch, cal_dinner, cal_snacks, cal_total, notes')
@@ -5135,7 +6420,7 @@ el.btnExportCsv.addEventListener('click', async () => {
     .order('log_date', { ascending: true });
 
   const rows = [['date', `weight_${unit}`, 'steps', 'cal_breakfast', 'cal_lunch', 'cal_dinner', 'cal_snacks', 'cal_total', 'water_L', 'notes']];
-  (data || []).forEach(r => rows.push([r.log_date, r.weight??'', r.steps??'', r.cal_breakfast??'', r.cal_lunch??'', r.cal_dinner??'', r.cal_snacks??'', r.cal_total??'', r.notes??'']));
+  (data || []).forEach(r => rows.push([r.log_date, r.weight != null ? fmt1(weightFromKg(r.weight, unit)) : '', r.steps??'', r.cal_breakfast??'', r.cal_lunch??'', r.cal_dinner??'', r.cal_snacks??'', r.cal_total??'', r.notes??'']));
   const blob = new Blob([rows.map(r => r.join(',')).join('\n')], { type: 'text/csv' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -5211,12 +6496,65 @@ function drawChart(canvas, emptyEl, series, plan) {
   const rangeEnd   = planEnd   && planEnd   > dataEnd   ? planEnd   : dataEnd;
   const rangeMs    = Math.max(1, rangeEnd - rangeStart);
 
+  // Small cards (the dashboard's weight-plan mini chart, height=80) drop
+  // the raw daily dots/fill/ahead-behind ribbon that make sense at full
+  // History-chart size but just read as noise this small — see below.
+  const compact = H <= 100;
+
+  // ── 7-day trailing-average trend, and where it's actually headed ──
+  // The card's own "weekly pace" text is the pace STILL NEEDED to reach
+  // the target by the deadline — by definition that always lands exactly
+  // on goal, so it can't show whether today's real trajectory is on
+  // track. This is the OBSERVED pace instead: the trend's slope over
+  // its own recent history, projected forward from today to the plan's
+  // target date — i.e. "at the rate you're actually going, here's where
+  // you'll really be."
+  const smoothed = dataDates.map((d) => {
+    const windowStart = new Date(d.getTime() - 6 * 86400000);
+    const vals = series
+      .filter((p, j) => dataDates[j] >= windowStart && dataDates[j] <= d)
+      .map(p => Number(p.weight))
+      .filter(w => isFinite(w) && w > 0);
+    return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+  });
+  let projectedPoint = null; // { weight, onTrack }
+  const lastSmoothedIdx = smoothed.length - 1;
+  const lastSmoothed = smoothed[lastSmoothedIdx];
+  if (lastSmoothed != null && planEnd) {
+    // Anchor on the earliest smoothed sample within the last 14 days —
+    // recent enough to reflect current behaviour, but requiring at
+    // least 5 days of spread so one or two entries can't fake a slope.
+    let anchorIdx = -1;
+    for (let i = 0; i <= lastSmoothedIdx; i++) {
+      if (smoothed[i] == null) continue;
+      if ((dataDates[lastSmoothedIdx] - dataDates[i]) / 86400000 > 14) continue;
+      anchorIdx = i;
+      break;
+    }
+    if (anchorIdx !== -1) {
+      const gapDays = (dataDates[lastSmoothedIdx] - dataDates[anchorIdx]) / 86400000;
+      if (gapDays >= 5) {
+        const dailyRate = (lastSmoothed - smoothed[anchorIdx]) / gapDays;
+        const daysToEnd = Math.max(0, (planEnd - dataDates[lastSmoothedIdx]) / 86400000);
+        const projectedWeight = lastSmoothed + dailyRate * daysToEnd;
+        const losing = Number(plan?.target_weight) < Number(plan?.start_weight);
+        const onTrack = losing ? projectedWeight <= Number(plan.target_weight)
+                                : projectedWeight >= Number(plan.target_weight);
+        projectedPoint = { weight: projectedWeight, onTrack };
+      }
+    }
+  }
+
   // ── Y axis — clamp to sane weight range (10–500 kg) ──────
   let lo = Math.min(...weights);
   let hi = Math.max(...weights);
   if (planStart) {
     lo = Math.min(lo, plan.target_weight || lo, plan.start_weight || lo);
     hi = Math.max(hi, plan.target_weight || hi, plan.start_weight || hi);
+  }
+  if (projectedPoint) {
+    lo = Math.min(lo, projectedPoint.weight);
+    hi = Math.max(hi, projectedPoint.weight);
   }
   // Safety: prevent zero-range or absurd ranges
   if (!isFinite(lo) || !isFinite(hi) || hi <= lo) { lo = 50; hi = 150; }
@@ -5233,7 +6571,9 @@ function drawChart(canvas, emptyEl, series, plan) {
   const yAt   = w  => top + innerH - ((w - lo) / (hi - lo)) * innerH;
 
   // ── Projected trajectory (straight line start → target) ──
-  if (plan && plan.start_weight && plan.target_weight && planStart && planEnd) {
+  // Full-size chart only (History page) — the compact dashboard card
+  // shows the observed-pace projection instead, drawn further below.
+  if (!compact && plan && plan.start_weight && plan.target_weight && planStart && planEnd) {
     const xS = xDate(planStart);
     const xE = xDate(planEnd);
     const yS = yAt(plan.start_weight);
@@ -5299,81 +6639,131 @@ function drawChart(canvas, emptyEl, series, plan) {
   }
 
   // ── Actual weight line ────────────────────────────────────
-  // Fill under curve
-  ctx.save();
-  ctx.beginPath();
-  ctx.moveTo(xDate(dataDates[0]), innerH + top + pad);
-  series.forEach((p, i) => ctx.lineTo(xDate(dataDates[i]), yAt(Number(p.weight))));
-  ctx.lineTo(xDate(dataDates[dataDates.length-1]), innerH + top + pad);
-  ctx.closePath();
-  const grad = ctx.createLinearGradient(0, top, 0, innerH + top);
-  grad.addColorStop(0,   'rgba(59,127,245,.2)');
-  grad.addColorStop(1,   'rgba(59,127,245,0)');
-  ctx.fillStyle = grad;
-  ctx.fill();
-
-  // Line
-  ctx.strokeStyle = '#3B7FF5';
-  ctx.lineWidth   = 2;
-  ctx.lineJoin    = 'round';
-  ctx.beginPath();
-  series.forEach((p, i) => {
-    const x = xDate(dataDates[i]);
-    const y = yAt(Number(p.weight));
-    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-  });
-  ctx.stroke();
-
-  // Dots
-  ctx.fillStyle = '#3B7FF5';
-  series.forEach((p, i) => {
+  // Full-size chart only — at compact size the raw daily dots and area
+  // fill are just texture; the trend line below carries the signal.
+  if (!compact) {
+    // Fill under curve
+    ctx.save();
     ctx.beginPath();
-    ctx.arc(xDate(dataDates[i]), yAt(Number(p.weight)), 2.5, 0, Math.PI * 2);
+    ctx.moveTo(xDate(dataDates[0]), innerH + top + pad);
+    series.forEach((p, i) => ctx.lineTo(xDate(dataDates[i]), yAt(Number(p.weight))));
+    ctx.lineTo(xDate(dataDates[dataDates.length-1]), innerH + top + pad);
+    ctx.closePath();
+    const grad = ctx.createLinearGradient(0, top, 0, innerH + top);
+    grad.addColorStop(0,   'rgba(59,127,245,.2)');
+    grad.addColorStop(1,   'rgba(59,127,245,0)');
+    ctx.fillStyle = grad;
     ctx.fill();
-  });
-  ctx.restore();
+
+    // Line
+    ctx.strokeStyle = '#3B7FF5';
+    ctx.lineWidth   = 2;
+    ctx.lineJoin    = 'round';
+    ctx.beginPath();
+    series.forEach((p, i) => {
+      const x = xDate(dataDates[i]);
+      const y = yAt(Number(p.weight));
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    // Dots
+    ctx.fillStyle = '#3B7FF5';
+    series.forEach((p, i) => {
+      ctx.beginPath();
+      ctx.arc(xDate(dataDates[i]), yAt(Number(p.weight)), 2.5, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    ctx.restore();
+  }
+
+  // ── Target line — compact mode only ────────────────────────
+  // A flat reference at the goal weight, labelled on the left where it
+  // can't collide with the projected-outcome dot/label on the right.
+  if (compact && plan?.target_weight) {
+    const yTarget = yAt(Number(plan.target_weight));
+    ctx.save();
+    ctx.strokeStyle = 'rgba(140,140,160,.45)';
+    ctx.lineWidth   = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(px, yTarget);
+    ctx.lineTo(W - px, yTarget);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle    = 'rgba(150,150,170,.9)';
+    ctx.font         = `9.5px -apple-system,sans-serif`;
+    ctx.textBaseline = yTarget < top + 10 ? 'top' : 'bottom';
+    ctx.textAlign    = 'left';
+    ctx.fillText(`target ${fmt1(plan.target_weight)}`, px, yTarget - 2);
+    ctx.restore();
+  }
 
   // ── 7-day trailing-average trend line ─────────────────────
   // Smooths daily water/glycogen noise so the underlying direction reads
-  // clearly at a glance, drawn on top of the raw daily dots above.
+  // clearly at a glance. Full-size: drawn on top of the raw daily dots
+  // above. Compact: this IS the primary line, since the raw dots/fill
+  // are skipped.
+  let trendLastPt = null;
   if (series.length >= 3) {
-    const smoothed = dataDates.map((d) => {
-      const windowStart = new Date(d.getTime() - 6 * 86400000);
-      const windowVals = series
-        .filter((p, j) => dataDates[j] >= windowStart && dataDates[j] <= d)
-        .map(p => Number(p.weight))
-        .filter(w => isFinite(w) && w > 0);
-      return windowVals.length
-        ? windowVals.reduce((a, b) => a + b, 0) / windowVals.length
-        : null;
-    });
-
-    const trendColor = getComputedStyle(document.documentElement).getPropertyValue('--green').trim() || '#16A34A';
+    const trendColor = compact
+      ? '#3B7FF5'
+      : (getComputedStyle(document.documentElement).getPropertyValue('--green').trim() || '#16A34A');
 
     ctx.save();
     ctx.strokeStyle = trendColor;
-    ctx.lineWidth   = 2.5;
+    ctx.lineWidth   = compact ? 2 : 2.5;
     ctx.lineJoin    = 'round';
     ctx.lineCap     = 'round';
     ctx.beginPath();
     let started = false;
-    let lastPt = null;
     smoothed.forEach((w, i) => {
       if (w == null) return;
       const x = xDate(dataDates[i]);
       const y = yAt(w);
       if (!started) { ctx.moveTo(x, y); started = true; } else { ctx.lineTo(x, y); }
-      lastPt = { x, y };
+      trendLastPt = { x, y };
     });
     ctx.stroke();
 
-    if (lastPt && H >= 120) {
+    if (!compact && trendLastPt && H >= 120) {
       ctx.fillStyle    = trendColor;
       ctx.font         = `10px -apple-system,sans-serif`;
       ctx.textBaseline = 'bottom';
       ctx.textAlign    = 'left';
-      ctx.fillText('trend', Math.min(lastPt.x + 4, W - px - 32), lastPt.y - 2);
+      ctx.fillText('trend', Math.min(trendLastPt.x + 4, W - px - 32), trendLastPt.y - 2);
     }
+    ctx.restore();
+  }
+
+  // ── Projected outcome — compact mode only ──────────────────
+  // Dashed continuation of the trend line from today to the plan's
+  // target date, at the pace the trend is ACTUALLY moving (not the pace
+  // still needed) — colour says at a glance whether that lands on goal.
+  if (compact && projectedPoint && trendLastPt && planEnd) {
+    const xEnd = xDate(planEnd);
+    const yEnd = yAt(projectedPoint.weight);
+    const color = projectedPoint.onTrack ? '#16A34A' : '#D97706';
+
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth   = 2;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    ctx.moveTo(trendLastPt.x, trendLastPt.y);
+    ctx.lineTo(xEnd, yEnd);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(xEnd, yEnd, 3, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.font         = `10px -apple-system,sans-serif`;
+    ctx.textBaseline = yEnd < top + 10 ? 'top' : 'bottom';
+    ctx.textAlign    = 'right';
+    ctx.fillText(fmt1(projectedPoint.weight), Math.min(xEnd, W - px), yEnd - 2);
     ctx.restore();
   }
 
@@ -5423,7 +6813,7 @@ async function loadSettings() {
   if (adminSec) adminSec.hidden = profile?.role !== 'admin';
 
   // Sync theme picker
-  const currentTheme = localStorage.getItem(THEME_KEY) || 'slate';
+  const currentTheme = localStorage.getItem(THEME_KEY) || 'nebula';
   document.querySelectorAll('.theme-btn').forEach(btn => {
     btn.classList.toggle('is-active', btn.dataset.theme === currentTheme);
   });
@@ -5486,7 +6876,6 @@ async function loadSettings() {
   renderMfpImportSettings();
 
   el.setDisplayName.value  = profile.display_name || '';
-  el.setUnit.value         = profile.weight_unit  || 'kg';
   el.setTdee.value         = profile.tdee         || 2200;
   el.setStepsGoal.value    = profile.steps_goal   || 10000;
   el.setEatTargetManual.value = profile.eat_target_manual_kcal ?? '';
@@ -5525,8 +6914,10 @@ async function loadSettings() {
   if (setRestS)  setRestS.value  = profile.rest_strength    || 120;
 
   if (activePlan) {
-    el.setPlanStart.value      = activePlan.start_weight;
-    el.setPlanTarget.value     = activePlan.target_weight;
+    // activePlan.start_weight/target_weight are canonical kg — shown in
+    // lb (BODY_WEIGHT_UNIT) for editing.
+    el.setPlanStart.value      = fmt1(weightFromKg(activePlan.start_weight, BODY_WEIGHT_UNIT));
+    el.setPlanTarget.value     = fmt1(weightFromKg(activePlan.target_weight, BODY_WEIGHT_UNIT));
     el.setPlanStartDate.value  = activePlan.start_date;
     el.setPlanTargetDate.value = activePlan.target_date;
   }
@@ -5540,7 +6931,6 @@ el.btnSaveSettings.addEventListener('click', async () => {
 
   const profileUpdates = {
     display_name:     el.setDisplayName.value.trim() || null,
-    weight_unit:      el.setUnit.value,
     uses_apple_health: !!$('setUsesAppleHealth')?.checked,
     tdee:             parseInt(el.setTdee.value)      || 2200,
     steps_goal:       parseInt(el.setStepsGoal.value) || 10000,
@@ -5578,6 +6968,8 @@ el.btnSaveSettings.addEventListener('click', async () => {
   const pTDate  = el.setPlanTargetDate.value;
 
   if (pStart && pTarget && pSDate && pTDate) {
+    // pStart/pTarget were typed in lb (BODY_WEIGHT_UNIT) — converted to
+    // canonical kg before storing, same convention as daily_logs.weight.
     await db.from('weight_plans')
       .update({ is_active: false })
       .eq('user_id', currentUser.id)
@@ -5586,11 +6978,11 @@ el.btnSaveSettings.addEventListener('click', async () => {
     const { data: newPlan, error: ple } = await db.from('weight_plans')
       .insert({
         user_id:       currentUser.id,
-        start_weight:  pStart,
-        target_weight: pTarget,
+        start_weight:  weightToKg(pStart, BODY_WEIGHT_UNIT),
+        target_weight: weightToKg(pTarget, BODY_WEIGHT_UNIT),
         start_date:    pSDate,
         target_date:   pTDate,
-        unit:          el.setUnit.value,
+        unit:          'kg',
         is_active:     true,
       })
       .select().single();
@@ -5744,16 +7136,22 @@ async function fetchTodaysDxMeals() {
   return data || [];
 }
 
-// Distinct meals logged TODAY, most-recently-used first, for the
-// meal-dose helper's "Today's meals" picker — carries each meal's
-// last-logged macros too, so selecting one repopulates Carbs/Fat/Protein
-// instead of just filling in the name. Same rows suggestMacroMealDose
-// matches on to personalize, so "what actually worked last time" for the
-// macros lines up with what the dose suggestion is itself drawing on.
+// Today's meals for the meal-dose helper's "Today's meals" picker —
+// carries each meal's current aggregate macros too, so selecting one
+// repopulates Carbs/Fat/Protein instead of just filling in the name.
+// Same rows suggestMacroMealDose matches on to personalize, so "what
+// actually worked last time" for the macros lines up with what the dose
+// suggestion is itself drawing on.
+//
 // Scoped to today only (not all-time history) — picking a meal from a
 // different day here would tie a dose calculated NOW onto that old row
 // via recordMacroMeal's existingMealId, silently rewriting its dose
 // fields instead of the meal actually being calculated for right now.
+//
+// No per-name dedup needed (unlike before this fed from one row per
+// logged item): upsertDiabetesMealSection already keeps at most one row
+// per section per day, so each row here already IS a distinct meal —
+// Breakfast, Lunch, etc. — not an individual ingredient.
 async function fetchMealPresets() {
   if (!currentUser) return [];
   const startOfDay = new Date();
@@ -5770,22 +7168,15 @@ async function fetchMealPresets() {
     console.error('fetchMealPresets error:', error.message);
     return [];
   }
-  const seen = new Set();
-  const presets = [];
-  for (const r of data || []) {
-    const name = (r.meal_name || '').trim();
-    if (name && !seen.has(name.toLowerCase())) {
-      seen.add(name.toLowerCase());
-      presets.push({
-        id: r.id,
-        name,
-        carbs: Number(r.carbs_g) || 0,
-        fat: Number(r.fat_g) || 0,
-        protein: Number(r.protein_g) || 0,
-      });
-    }
-  }
-  return presets;
+  return (data || [])
+    .map(r => (r.meal_name || '').trim() && {
+      id: r.id,
+      name: r.meal_name.trim(),
+      carbs: Number(r.carbs_g) || 0,
+      fat: Number(r.fat_g) || 0,
+      protein: Number(r.protein_g) || 0,
+    })
+    .filter(Boolean);
 }
 
 // existingMealId ties the dose onto the SAME diabetes_meals row the
@@ -5821,6 +7212,220 @@ async function recordMacroMeal(entry, doseResult, existingMealId) {
     ...dosePayload,
   });
   if (error) console.error('recordMacroMeal (insert) error:', error.message);
+}
+
+// Keeps diabetes_meals in sync with a Log Food section's items — at
+// most one diabetes_meals row per (day, section) rather than one per
+// item, so the dose calculator's "Today's meals" picker offers whole
+// meals to dose for, not individual ingredients (see LF_SECTIONS).
+// Called after any food_log insert/delete that touches a
+// diabetes-tracked section, for the specific section that changed —
+// re-sums that section's current items from scratch rather than
+// incrementing, so it's correct regardless of what changed or in what
+// order.
+//
+// Safety: if the existing row's dose was already linked to a REAL bolus
+// (match_status set, or matched_bolus_units present), that link is never
+// touched or deleted, even if every item in the section is later removed
+// — it's a record of insulin actually given. Macros/name still update so
+// the row reflects what's really been eaten. If the dose was only ever
+// an unconfirmed suggestion, it's cleared on any macro change instead of
+// being left showing a number that no longer matches the new total.
+// Returns { error: string|null } — callers that need to tell the user
+// about a failure (rather than just console.error, which is how this
+// went unnoticed for the plain per-item bridge insert before) can surface
+// the message; internal callers that don't care can ignore the return.
+async function upsertDiabetesMealSection(logDate, mealSlot, isHypo) {
+  if (!currentUser || profile?.diabetes_enabled === false) return { error: null };
+
+  // logDate is a UTC calendar day (matches food_log.log_date/todayISO(),
+  // both toISOString()-derived) — the explicit 'Z' keeps this window on
+  // the same UTC day rather than local midnight, which would drift by
+  // the local UTC offset and could miss/misclassify rows near midnight.
+  const startOfDay = new Date(logDate + 'T00:00:00Z');
+  const endOfDay = new Date(startOfDay.getTime() + 86400000);
+
+  let itemsQuery = db.from('food_log')
+    .select('food_name, calories_kcal, carbs_g, fat_g, protein_g, logged_at')
+    .eq('user_id', currentUser.id)
+    .eq('log_date', logDate);
+  itemsQuery = isHypo
+    ? itemsQuery.eq('hypo_treatment', true)
+    : itemsQuery.eq('meal_slot', mealSlot).eq('hypo_treatment', false);
+  const { data: items, error: itemsErr } = await itemsQuery.order('logged_at', { ascending: true });
+  if (itemsErr) { console.error('upsertDiabetesMealSection items fetch error:', itemsErr.message); return { error: itemsErr.message }; }
+
+  let existingQuery = db.from('diabetes_meals')
+    .select('id, match_status, matched_bolus_units')
+    .eq('user_id', currentUser.id)
+    .gte('eaten_at', startOfDay.toISOString())
+    .lt('eaten_at', endOfDay.toISOString());
+  existingQuery = isHypo
+    ? existingQuery.eq('hypo_treatment', true)
+    : existingQuery.eq('meal_slot', mealSlot).eq('hypo_treatment', false);
+  const { data: existingRows, error: existingErr } = await existingQuery.limit(1);
+  if (existingErr) { console.error('upsertDiabetesMealSection lookup error:', existingErr.message); return { error: existingErr.message }; }
+  const existing = existingRows?.[0] || null;
+
+  const totals = (items || []).reduce((t, r) => ({
+    carbs: t.carbs + (Number(r.carbs_g) || 0),
+    fat: t.fat + (Number(r.fat_g) || 0),
+    protein: t.protein + (Number(r.protein_g) || 0),
+  }), { carbs: 0, fat: 0, protein: 0 });
+  const hasMacros = totals.carbs > 0 || totals.fat > 0 || totals.protein > 0;
+  const hasRealBolus = existing && (existing.matched_bolus_units != null ||
+    ['manual', 'auto', 'hypo-manual', 'hypo-auto', 'below-target'].includes(existing.match_status));
+
+  if (!hasMacros) {
+    // Nothing left worth dosing for in this section (last item deleted,
+    // or everything in it is macro-free) — remove its row so it stops
+    // showing up as a pickable "meal", unless a real injection is
+    // already linked to it (never silently delete that record).
+    if (existing && !hasRealBolus) {
+      const { error: delErr } = await db.from('diabetes_meals').delete().eq('id', existing.id);
+      if (delErr) { console.error('upsertDiabetesMealSection cleanup delete error:', delErr.message); return { error: delErr.message }; }
+    }
+    return { error: null };
+  }
+
+  const sectionLabel = LF_SECTIONS.find(s => s.key === (isHypo ? 'hypo' : mealSlot))?.label || mealSlot;
+  const mealName = `${sectionLabel} — ${items.map(r => r.food_name).join(', ')}`.slice(0, 300);
+  // Earliest item in the section — roughly "when this meal started" and
+  // stable against later additions, rather than drifting forward every
+  // time one more item gets added (which would keep sliding it out of
+  // range of whatever real bolus it should end up matched against).
+  const eatenAt = new Date(items[0].logged_at).toISOString();
+
+  const payload = {
+    meal_name: mealName,
+    eaten_at: eatenAt,
+    carbs_g: Math.round(totals.carbs * 10) / 10,
+    fat_g: Math.round(totals.fat * 10) / 10,
+    protein_g: Math.round(totals.protein * 10) / 10,
+  };
+
+  if (existing) {
+    if (!hasRealBolus) {
+      payload.suggested_units = null;
+      payload.upfront_units = null;
+      payload.delayed_units = null;
+      payload.delay_minutes = null;
+      payload.dose_source = null;
+    }
+    const { error: updErr } = await db.from('diabetes_meals').update(payload).eq('id', existing.id);
+    if (updErr) console.error('upsertDiabetesMealSection update error:', updErr.message);
+    return { error: updErr?.message || null };
+  }
+  const { error: insErr } = await db.from('diabetes_meals').insert({
+    user_id: currentUser.id,
+    meal_slot: isHypo ? null : mealSlot,
+    hypo_treatment: isHypo,
+    match_status: isHypo ? 'hypo-manual' : null,
+    source: 'manual',
+    ...payload,
+  });
+  if (insErr) console.error('upsertDiabetesMealSection insert error:', insErr.message);
+  return { error: insErr?.message || null };
+}
+
+// Snacks are dosed individually rather than aggregated like breakfast/
+// lunch/dinner — a 10am snack and a 3pm snack aren't one "meal" the way
+// a section's ingredients eaten together are, so each keeps its own
+// diabetes_meals row. Linked via food_log_id (the same 1:1 link the
+// pre-redesign per-item bridge used, still present in the schema).
+//
+// `item` is the food_log row's dosing-relevant fields — {food_name,
+// carbs_g, fat_g, protein_g, logged_at} — passed explicitly rather than
+// re-fetched by this function, because by the time some callers reach
+// this point the food_log row may already reflect a DIFFERENT section
+// than the one being synced (e.g. edited from Snacks to Breakfast — the
+// row now says "breakfast", but this call is specifically cleaning up
+// the now-stale Snacks dose for it). Pass null for `item` to force that
+// cleanup — same as "the item's food_log row no longer belongs here."
+// Same real-bolus protection as upsertDiabetesMealSection: a row already
+// linked to a real injection is never touched or deleted.
+async function upsertDiabetesMealItem(foodLogId, item) {
+  if (!currentUser || profile?.diabetes_enabled === false) return { error: null };
+
+  const { data: existingRows, error: existingErr } = await db.from('diabetes_meals')
+    .select('id, match_status, matched_bolus_units')
+    .eq('user_id', currentUser.id)
+    .eq('food_log_id', foodLogId)
+    .limit(1);
+  if (existingErr) { console.error('upsertDiabetesMealItem lookup error:', existingErr.message); return { error: existingErr.message }; }
+  const existing = existingRows?.[0] || null;
+  const hasRealBolus = existing && (existing.matched_bolus_units != null ||
+    ['manual', 'auto', 'hypo-manual', 'hypo-auto', 'below-target'].includes(existing.match_status));
+
+  const carbs = item ? Number(item.carbs_g) || 0 : 0;
+  const fat = item ? Number(item.fat_g) || 0 : 0;
+  const protein = item ? Number(item.protein_g) || 0 : 0;
+  const hasMacros = !!item && (carbs > 0 || fat > 0 || protein > 0);
+
+  if (!hasMacros) {
+    if (existing && !hasRealBolus) {
+      const { error: delErr } = await db.from('diabetes_meals').delete().eq('id', existing.id);
+      if (delErr) { console.error('upsertDiabetesMealItem cleanup delete error:', delErr.message); return { error: delErr.message }; }
+    }
+    return { error: null };
+  }
+
+  const payload = {
+    meal_name: (item.food_name || 'Snack').slice(0, 300),
+    eaten_at: new Date(item.logged_at).toISOString(),
+    carbs_g: Math.round(carbs * 10) / 10,
+    fat_g: Math.round(fat * 10) / 10,
+    protein_g: Math.round(protein * 10) / 10,
+  };
+
+  if (existing) {
+    if (!hasRealBolus) {
+      payload.suggested_units = null;
+      payload.upfront_units = null;
+      payload.delayed_units = null;
+      payload.delay_minutes = null;
+      payload.dose_source = null;
+    }
+    const { error: updErr } = await db.from('diabetes_meals').update(payload).eq('id', existing.id);
+    if (updErr) console.error('upsertDiabetesMealItem update error:', updErr.message);
+    return { error: updErr?.message || null };
+  }
+  const { error: insErr } = await db.from('diabetes_meals').insert({
+    user_id: currentUser.id,
+    meal_slot: 'snack',
+    hypo_treatment: false,
+    match_status: null,
+    source: 'manual',
+    food_log_id: foodLogId,
+    ...payload,
+  });
+  if (insErr) console.error('upsertDiabetesMealItem insert error:', insErr.message);
+  return { error: insErr?.message || null };
+}
+
+// Single entry point every Log Food call site routes a food_log change
+// through — which sections get aggregated (upsertDiabetesMealSection)
+// vs. dosed per-item (upsertDiabetesMealItem, Snacks only) lives here
+// and nowhere else, so that policy never has to be duplicated at each
+// call site. See upsertDiabetesMealItem's own comment for why `item`
+// (the snack row's dosing fields, or null to force cleanup) is passed
+// explicitly rather than re-fetched.
+//
+// One automatic retry on failure — seen in practice, a request can drop
+// between its CORS preflight and the real call landing (a flaky mobile
+// connection, the tab backgrounded for a moment) even though the food_log
+// save immediately before it succeeded. The food_log row is already
+// committed by the time this runs, so a dropped write here silently
+// loses just the dosing link, not the log itself — worth one retry
+// before actually surfacing the error/toast to the user.
+async function bridgeLfMealChange(logDate, mealSlot, isHypo, foodLogId, item) {
+  const attempt = () => (!isHypo && mealSlot === 'snack')
+    ? upsertDiabetesMealItem(foodLogId, item)
+    : upsertDiabetesMealSection(logDate, mealSlot, isHypo);
+  const first = await attempt();
+  if (!first.error) return first;
+  await new Promise(r => setTimeout(r, 800));
+  return attempt();
 }
 
 $('btnDxGoToSettings')?.addEventListener('click', () => navigateTo('settings'));
@@ -6146,13 +7751,10 @@ let dxSelectedMealPresetId = null; // set when a preset is picked — ties the n
 let dxLatestWeightKg = null; // populated by loadDiabetes(); feeds dxSettings()'s dose-per-kg/BMI calc
 
 // Latest known weight in true kg, checked across both possible sources:
-// health_daily.weight_kg (Apple Health sync — always metric internally
-// regardless of display unit) and daily_logs.weight (manual entry,
-// stored in whatever profile.weight_unit was at the time — converted
-// here since dose-per-kg/BMI need real kg regardless of how it's
-// displayed elsewhere). Whichever source has the more recent log_date
-// wins.
-const LB_TO_KG = 0.45359237;
+// health_daily.weight_kg (Apple Health sync, always metric) and
+// daily_logs.weight (manual entry — canonical kg too, see the
+// weightToKg/weightFromKg comment above). Whichever source has the more
+// recent log_date wins.
 async function fetchLatestWeightKg() {
   if (!currentUser) return null;
   const [{ data: healthRows }, { data: logRows }] = await Promise.all([
@@ -6163,9 +7765,8 @@ async function fetchLatestWeightKg() {
   ]);
   const h = healthRows?.[0];
   const l = logRows?.[0];
-  const logKg = l ? (profile?.weight_unit === 'lb' ? Number(l.weight) * LB_TO_KG : Number(l.weight)) : null;
   if (h && (!l || h.log_date >= l.log_date)) return Number(h.weight_kg) || null;
-  if (logKg != null) return logKg;
+  if (l) return Number(l.weight) || null;
   return h ? Number(h.weight_kg) || null : null;
 }
 const DIABETES_CACHE_MS = 4 * 60000; // avoid re-hitting Nightscout on every tab switch
@@ -6411,7 +8012,7 @@ let dxChartAnchorMs = null; // preserved left-edge scroll time across auto-redra
 let dxChartLastScale = null; // {msForScroll} from the most recent draw, used by the scroll listener
 let dxChartScrollWired = false;
 
-function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
+function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts, insulinGaps) {
   if (!canvas) return;
   const MAX_H = 260, MIN_VISIBLE_W = 100;
   const ctx = canvas.getContext('2d');
@@ -6434,11 +8035,13 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
   const rawH = parseInt(canvas.getAttribute('height')) || 180;
   const H = Math.min(MAX_H, Math.max(120, rawH));
 
-  // Default visible view is the last 4h + 2h projected, but the canvas is
-  // rendered wide enough to hold a full 24h + 2h so the user can scroll
-  // back to see earlier history without a new data fetch (14 days of
-  // Nightscout history is already loaded client-side).
-  const VISIBLE_PAST_MIN = 240, FUTURE_MIN = 120, MAX_PAST_MIN = 24 * 60;
+  // Default visible view is the last 2h + 30min projected — zoomed in
+  // enough to actually see what's happening right now rather than a flat
+  // 6h-wide line — but the canvas is still rendered wide enough to hold
+  // a full 24h + 30min so the user can scroll back to see earlier
+  // history without a new data fetch (14 days of Nightscout history is
+  // already loaded client-side).
+  const VISIBLE_PAST_MIN = 120, FUTURE_MIN = 30, MAX_PAST_MIN = 24 * 60;
   const VISIBLE_SPAN_MIN = VISIBLE_PAST_MIN + FUTURE_MIN;
   const TOTAL_SPAN_MIN = MAX_PAST_MIN + FUTURE_MIN;
   const W = Math.round(visibleW * (TOTAL_SPAN_MIN / VISIBLE_SPAN_MIN));
@@ -6468,7 +8071,9 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
   canvas.hidden = false;
 
   const input = { ...data, settings, activities: { workouts: [] } };
-  const projected = DiabetesEngine.projectedGlucoseCurve(input, now, FUTURE_MIN, 15);
+  // 5min steps over the shorter 30min horizon — 15min steps would only
+  // give 2-3 points to draw a dashed line through.
+  const projected = DiabetesEngine.projectedGlucoseCurve(input, now, FUTURE_MIN, 5);
 
   const curveOpts = DiabetesEngine.insulinCurveOpts(settings);
   const iobSeries = [];
@@ -6543,6 +8148,25 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
   });
   ctx.fillStyle = 'rgba(129, 140, 248, 0.14)';
   activityBands.forEach(b => ctx.fillRect(b.x0, padTop, b.x1 - b.x0, mainH));
+
+  // Insulin gap bands — an unplanned "no insulin since X" stretch (site
+  // failure, missed dose, pump issue), open-ended until resolved. Tinted
+  // red rather than the activity bands' indigo so a resulting high reads
+  // as "known cause, already explained" at a glance rather than looking
+  // like an unexplained spike.
+  const gapBands = [];
+  (insulinGaps || []).forEach(g => {
+    const startMs = Number(new Date(g.started_at).getTime());
+    if (!Number.isFinite(startMs)) return;
+    const endMs = g.ended_at ? Number(new Date(g.ended_at).getTime()) : now;
+    if (endMs < windowStart || startMs > now) return;
+    const x0 = xAt(Math.max(startMs, windowStart));
+    const x1 = Math.max(x0 + 4, xAt(Math.min(endMs, now)));
+    const label = DX_GAP_REASON_LABELS[g.reason] || g.reason;
+    gapBands.push({ x0, x1, label, startMs, endMs, ongoing: !g.ended_at });
+  });
+  ctx.fillStyle = 'rgba(248, 113, 113, 0.16)';
+  gapBands.forEach(b => ctx.fillRect(b.x0, padTop, b.x1 - b.x0, mainH));
 
   // Y gridlines span the full width so they're always visible; the value
   // labels anchor to whatever's currently scrolled into view (see
@@ -6694,6 +8318,20 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
     chartHits.push({ x: midX, y, title: band.label, body });
   });
 
+  // Gap band labels — sit just below the bolus/correction row rather than
+  // sharing the activity labels' stagger logic, since a gap band is wide
+  // and rare enough that overlap with an activity band is unlikely.
+  ctx.font = '11px -apple-system, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(252, 165, 165, 0.95)';
+  gapBands.forEach(band => {
+    const midX = (band.x0 + band.x1) / 2;
+    const y = padTop + 22;
+    ctx.fillText(`⚠️ ${band.label}`, midX, y);
+    const body = `${dxFormatMarkerTime(band.startMs)}${band.ongoing ? ' – still ongoing' : ` – ${new Date(band.endMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`}`;
+    chartHits.push({ x: midX, y, title: `No insulin — ${band.label}`, body });
+  });
+
   // IOB strip (own 0..max scale)
   const maxIob = Math.max(0.5, ...iobSeries.map(p => p.value));
   const iobY = v => iobTop + iobStripH - (v / maxIob) * iobStripH;
@@ -6762,7 +8400,7 @@ function drawDxGlucoseChart(canvas, emptyEl, data, settings, now, workouts) {
 
   dxUpdateBasalFreshness(basalSegments, now);
 
-  // Horizontal scroll: default to the last 4h + 2h projected, but track
+  // Horizontal scroll: default to the last 2h + 30min projected, but track
   // the user's chosen left-edge time (not raw scrollLeft pixels) so an
   // auto-refresh redraw doesn't yank their scroll position around as
   // `now` — and therefore windowStart/windowEnd — keeps advancing.
@@ -6849,7 +8487,7 @@ el.dxMarkerModal?.addEventListener('click', (e) => { if (e.target === el.dxMarke
 
 async function renderDiabetesTab(data) {
   const settings = dxSettings();
-  const [macroMealLog, workouts] = await Promise.all([fetchMacroMealLog(), fetchDxWorkouts()]);
+  const [macroMealLog, workouts, wideData, insulinGaps] = await Promise.all([fetchMacroMealLog(), fetchDxWorkouts(), fetchDiabetesDataWide(), fetchInsulinGaps()]);
   // Tandem's Control-IQ can reduce or withhold a bolus entirely when
   // current BG is low, so Nightscout's own carbs figure for that meal
   // can be missing or wrong — the MFP-logged entry's own timestamp
@@ -6863,17 +8501,19 @@ async function renderDiabetesTab(data) {
   const input = { ...data, boluses: carbBoluses, settings, activities: { workouts }, macroMealLog };
   const now = Date.now();
 
-  drawDxGlucoseChart(el.dxGlucoseChart, el.dxGlucoseChartEmpty, input, settings, now, workouts);
+  drawDxGlucoseChart(el.dxGlucoseChart, el.dxGlucoseChartEmpty, input, settings, now, workouts, insulinGaps);
+  renderDxInsulinGaps(insulinGaps);
 
   const ctx = DiabetesEngine.dosingContext(input, now);
-  renderDxNow(ctx);
+  renderDxNow(ctx, settings);
 
   const forecast = DiabetesEngine.hypoForecast2h(input, now);
-  renderDxForecast(forecast);
+  renderDxForecast(forecast, settings);
 
   const resolved = DiabetesEngine.resolveCorrections(data.corrections, data.glucoseHistory, carbBoluses, now);
   const factor = DiabetesEngine.personalCorrectionFactor(resolved);
-  const suggestion = DiabetesEngine.suggestCorrectionDose(ctx, factor, carbBoluses, data.corrections, now);
+  const retrospective = DiabetesEngine.retrospectiveCorrection(input, now);
+  const suggestion = DiabetesEngine.suggestCorrectionDose(ctx, factor, carbBoluses, data.corrections, now, retrospective.discrepancy, input);
   renderDxCorrection(suggestion);
 
   const patterns = DiabetesEngine.analyzePatterns(input, now);
@@ -6888,14 +8528,42 @@ async function renderDiabetesTab(data) {
   const todaysMeals = await fetchTodaysDxMeals();
   renderDxTodaysMeals(todaysMeals, data.boluses || []);
 
+  // Two separate prescribed-profile tables at two different granularities
+  // — Sensitivity map keeps its original 4x6h Night/Morning/Afternoon/
+  // Evening split (it's cross-tabbed against exercise context too, which
+  // the finer regimen table below doesn't have), while the regimen
+  // review below wants the finer 3h blocks someone would actually edit
+  // in their pump. Same underlying pump profile, just time-weighted
+  // against different bucket sets.
+  const prescribedSensitivity = DiabetesEngine.prescribedRegimenTable(profile?.diabetes_pump_profile, DiabetesEngine.SENSITIVITY_TOD_BUCKETS);
   const prescribed = DiabetesEngine.prescribedRegimenTable(profile?.diabetes_pump_profile);
   const hasThuProfile = !!profile?.diabetes_pump_profile?.thu;
 
   const sensitivity = DiabetesEngine.sensitivityMap(input, now);
-  renderDxSensitivity(sensitivity, prescribed);
+  renderDxSensitivity(sensitivity, prescribedSensitivity);
 
-  const regimen = DiabetesEngine.regimenReview(input, now);
-  renderDxRegimen(regimen, prescribed, hasThuProfile);
+  // Reviewed per actually-active pump profile (Nightscout's own switch
+  // history), not pooled — the same "Thur" profile covers both deliberate
+  // exercise-day switches and low-tirzepatide Thursdays, so splitting by
+  // what was really active at each moment captures both without having to
+  // separately detect either one.
+  //
+  // Uses the wide (31-day-capped) fetch, not the tab's usual 14-day
+  // `input` — the regimen review needs several clean, exercise-free,
+  // IOB/COB-free instances of EVERY 3h block before it'll suggest
+  // anything, and requiring all of that to fall inside just 14 days
+  // (worse, whatever the last 7 happened to look like, before this fix)
+  // was starving it even when the person is simply active most days.
+  // Falls back to the regular window if the wide fetch didn't return
+  // anything (e.g. rate-limited) rather than showing nothing at all.
+  const regimenSource = wideData || data;
+  const wideCarbBoluses = DiabetesEngine.mergeMealCarbsIntoBoluses(regimenSource.boluses, macroMealLog);
+  // pumpProfile lets the correction-factor comparison use each block's
+  // REAL per-time-of-day programmed factor instead of one flat setting —
+  // see correctionFactorByWindowReview's comment for why that matters.
+  const regimenInput = { ...regimenSource, boluses: wideCarbBoluses, settings, activities: { workouts }, macroMealLog, pumpProfile: profile?.diabetes_pump_profile };
+  const regimenByProfile = DiabetesEngine.regimenReviewByProfile(regimenInput, now);
+  renderDxRegimen(regimenByProfile, profile?.diabetes_pump_profile, hasThuProfile);
 
   el.dxLastSync.textContent = `Last synced ${new Date(diabetesFetchedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
 
@@ -6946,12 +8614,137 @@ function renderDxActivityLog(rows) {
 }
 
 async function refreshDxActivityMarkers() {
-  const [data, macroMealLog, workouts] = await Promise.all([fetchDiabetesData(), fetchMacroMealLog(), fetchDxWorkouts()]);
+  const [data, macroMealLog, workouts, insulinGaps] = await Promise.all([fetchDiabetesData(), fetchMacroMealLog(), fetchDxWorkouts(), fetchInsulinGaps()]);
   if (!data) return;
   const carbBoluses = DiabetesEngine.mergeMealCarbsIntoBoluses(data.boluses, macroMealLog);
-  drawDxGlucoseChart(el.dxGlucoseChart, el.dxGlucoseChartEmpty, { ...data, boluses: carbBoluses }, dxSettings(), Date.now(), workouts);
+  drawDxGlucoseChart(el.dxGlucoseChart, el.dxGlucoseChartEmpty, { ...data, boluses: carbBoluses }, dxSettings(), Date.now(), workouts, insulinGaps);
   renderDxActivityLog(await fetchManualActivities());
+  renderDxInsulinGaps(insulinGaps);
 }
+
+/* ── Insulin gap log — "my infusion site has come out" ──────────
+   Distinct from the activity log's 🔌 unplugged flag (a deliberate,
+   fixed-duration disconnect for a workout): this is an open-ended,
+   unplanned gap in delivery — logged as "no insulin since X", closed out
+   later once a new site/pump is running again. Feeds the glucose chart
+   (a shaded band so a resulting high reads as explained, not alarming)
+   and an active-gap banner above it so the cause stays visible the whole
+   time it's ongoing, not just at the moment it was logged. ────────── */
+const DX_GAP_REASON_LABELS = {
+  site_failure: 'Infusion site came out',
+  pump_issue: 'Pump issue',
+  missed_dose: 'Missed a dose',
+  other: 'Other',
+};
+
+async function fetchInsulinGaps() {
+  if (!currentUser) return [];
+  const { data, error } = await db.from('diabetes_insulin_gaps')
+    .select('id, started_at, ended_at, reason, note')
+    .eq('user_id', currentUser.id)
+    .order('started_at', { ascending: false })
+    .limit(10);
+  if (error) { console.error('fetchInsulinGaps error:', error.message); return []; }
+  return data || [];
+}
+
+function renderDxInsulinGaps(rows) {
+  const active = rows.find(g => !g.ended_at);
+  if (el.dxGapBanner) {
+    el.dxGapBanner.hidden = !active;
+    if (active && el.dxGapBannerText) {
+      const label = DX_GAP_REASON_LABELS[active.reason] || active.reason;
+      el.dxGapBannerText.textContent = `⚠️ No insulin since ${dxFormatMarkerTime(new Date(active.started_at).getTime())} — ${label}${active.note ? ' · ' + active.note : ''}`;
+    }
+    if (el.btnDxResolveGap) el.btnDxResolveGap.dataset.id = active?.id || '';
+  }
+
+  if (!el.dxInsulinGapList) return;
+  if (!rows.length) { el.dxInsulinGapList.innerHTML = ''; return; }
+  el.dxInsulinGapList.innerHTML = `
+    <div class="dx-workout-history__title" style="margin-top:14px">Insulin gaps logged</div>
+    ${rows.map(r => {
+      const start = new Date(r.started_at);
+      const dateStr = start.toLocaleDateString([], { day: 'numeric', month: 'short' });
+      const timeStr = start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const label = DX_GAP_REASON_LABELS[r.reason] || r.reason;
+      const status = r.ended_at
+        ? `resolved ${Math.round((new Date(r.ended_at) - start) / 60000)}min later`
+        : 'still ongoing';
+      return `
+        <div class="dx-workout-history__row">
+          <div class="dx-workout-history__when">
+            <span>⚠️ ${escapeHtml(label)} · ${dateStr} · ${timeStr} · ${status}</span>
+            ${r.note ? `<span class="dx-workout-history__dur">${escapeHtml(r.note)}</span>` : ''}
+          </div>
+          <button class="btn btn--ghost btn--small" data-action="gap-delete" data-id="${r.id}">Delete</button>
+        </div>`;
+    }).join('')}
+  `;
+}
+
+el.btnDxLogInsulinGap?.addEventListener('click', () => {
+  if (!el.dxInsulinGapForm) return;
+  el.dxInsulinGapForm.hidden = false;
+  const now = new Date();
+  if (el.dxGapDate) el.dxGapDate.value = now.toISOString().slice(0, 10);
+  if (el.dxGapTime) el.dxGapTime.value = now.toTimeString().slice(0, 5);
+  if (el.dxGapNote) el.dxGapNote.value = '';
+  if (el.dxGapLogStatus) el.dxGapLogStatus.textContent = '';
+});
+el.btnCancelDxGap?.addEventListener('click', () => {
+  if (el.dxInsulinGapForm) el.dxInsulinGapForm.hidden = true;
+});
+
+el.btnSaveDxGap?.addEventListener('click', async () => {
+  if (!currentUser) return;
+  const reason = el.dxGapReason?.value || 'other';
+  const dateStr = el.dxGapDate?.value;
+  const timeStr = el.dxGapTime?.value;
+  const note = el.dxGapNote?.value.trim() || null;
+  if (!dateStr || !timeStr) {
+    if (el.dxGapLogStatus) el.dxGapLogStatus.textContent = 'Fill in the date and time insulin stopped first.';
+    return;
+  }
+  const startedAt = new Date(`${dateStr}T${timeStr}`);
+  if (Number.isNaN(startedAt.getTime())) {
+    if (el.dxGapLogStatus) el.dxGapLogStatus.textContent = "That date/time didn't parse — check the fields.";
+    return;
+  }
+
+  setBtn(el.btnSaveDxGap, true, 'Save', 'Saving…');
+  try {
+    const { error } = await db.from('diabetes_insulin_gaps').insert({
+      user_id: currentUser.id, started_at: startedAt.toISOString(), reason, note,
+    });
+    if (error) {
+      if (el.dxGapLogStatus) el.dxGapLogStatus.textContent = `Couldn't save: ${error.message}`;
+      return;
+    }
+    if (el.dxInsulinGapForm) el.dxInsulinGapForm.hidden = true;
+    await refreshDxActivityMarkers();
+  } finally {
+    setBtn(el.btnSaveDxGap, false, 'Save');
+  }
+});
+
+el.btnDxResolveGap?.addEventListener('click', async () => {
+  const id = el.btnDxResolveGap.dataset.id;
+  if (!id) return;
+  setBtn(el.btnDxResolveGap, true, 'Mark resolved', 'Saving…');
+  const { error } = await db.from('diabetes_insulin_gaps').update({ ended_at: new Date().toISOString() }).eq('id', id);
+  setBtn(el.btnDxResolveGap, false, 'Mark resolved');
+  if (error) { showToast("Couldn't resolve: " + error.message, true); return; }
+  await refreshDxActivityMarkers();
+});
+
+el.dxInsulinGapList?.addEventListener('click', async e => {
+  const btn = e.target.closest('[data-action="gap-delete"]');
+  if (!btn) return;
+  const { error } = await db.from('diabetes_insulin_gaps').delete().eq('id', btn.dataset.id);
+  if (error) { showToast("Couldn't delete: " + error.message, true); return; }
+  await refreshDxActivityMarkers();
+});
 
 el.btnDxLogActivity?.addEventListener('click', () => {
   if (!el.dxActivityLogForm) return;
@@ -7012,8 +8805,21 @@ el.dxActivityLogList?.addEventListener('click', async e => {
   await refreshDxActivityMarkers();
 });
 
-function renderDxNow(ctx) {
+// Range tag drives both the big glucose number's color and the Now
+// card's background wash — the same at-a-glance read every CGM app
+// gives you, rather than a flat neutral number sitting in a plain card.
+function dxRangeTag(glucose, settings) {
+  if (glucose == null) return '';
+  if (settings?.targetLow != null && glucose < settings.targetLow) return 'low';
+  if (settings?.targetHigh != null && glucose > settings.targetHigh) return 'high';
+  return 'in-range';
+}
+
+function renderDxNow(ctx, settings) {
   el.dxCurrentGlucose.textContent = ctx.currentGlucose != null ? fmt1(ctx.currentGlucose) : '—';
+  const tag = dxRangeTag(ctx.currentGlucose, settings);
+  el.dxCurrentGlucose.className = 'dx-now-glucose__val' + (tag ? ` dx-now-glucose__val--${tag}` : '');
+  if (el.dxNowCard) el.dxNowCard.className = 'card card--dx-now' + (tag ? ` card--dx-now--${tag}` : '');
   el.dxTrendArrow.textContent = trendArrow(ctx.trendPerMinute);
   el.dxIob.textContent = ctx.iob != null ? `${fmt1(ctx.iob)}u` : '—';
   el.dxCob.textContent = ctx.cob != null ? `${Math.round(ctx.cob)}g` : '—';
@@ -7030,7 +8836,29 @@ const DX_TIER_LABEL = {
   minimal:  { label: 'Minimal risk',  badge: 'badge--green' },
 };
 
-function renderDxForecast(forecast) {
+// Only worth mentioning once the retrospective-correction nudge is big
+// enough to actually matter — a fraction of a mmol/L of noise isn't
+// worth a line of UI every time the tab renders.
+const DX_RC_NOTE_THRESHOLD = 0.3;
+function dxRetrospectiveNote(effect) {
+  if (effect == null || Math.abs(effect) < DX_RC_NOTE_THRESHOLD) return '';
+  const direction = effect < 0 ? 'lower' : 'higher';
+  return `<p class="dx-note">Adjusted ${fmt1(Math.abs(effect))} mmol/L — glucose has been running ${direction} than insulin+carbs alone would predict over the last 30 min.</p>`;
+}
+
+// Same noise floor as the retrospective note above — only worth a line
+// once carbs still absorbing (see suggestCorrectionDose's cobRiseMmol)
+// account for a meaningful chunk of the suggested dose.
+const DX_COB_NOTE_THRESHOLD = 0.3;
+function dxCobNote(cobGrams, cobRiseMmol, personalized, personalizedSampleSize) {
+  if (!cobGrams || cobRiseMmol == null || cobRiseMmol < DX_COB_NOTE_THRESHOLD) return '';
+  const source = personalized
+    ? `personalized from ${personalizedSampleSize} similar past meals`
+    : 'your pump\'s carb ratio';
+  return `<p class="dx-note">Includes ${fmt1(cobGrams)}g of carbs still digesting (~${fmt1(cobRiseMmol)} mmol/L still to come, priced using ${source}) — this dose is sized for where that'll take you, not just the current reading.</p>`;
+}
+
+function renderDxForecast(forecast, settings) {
   if (!forecast.tier) {
     const msg = typeof WITHHELD_MESSAGES[forecast.withheldReason] === 'function'
       ? WITHHELD_MESSAGES[forecast.withheldReason](forecast.factor?.sampleSize)
@@ -7039,18 +8867,28 @@ function renderDxForecast(forecast) {
     return;
   }
   const t = DX_TIER_LABEL[forecast.tier];
+  // Same preventativeCarbAdvice the Simple view's action banner already
+  // uses for a trending-low reading — the advanced tab's forecast card
+  // used to just name the risk tier with no "so what do I actually do
+  // about it" line, which is the whole point of a forecast.
+  const advice = forecast.tier !== 'minimal' && settings
+    ? DiabetesEngine.preventativeCarbAdvice(forecast.forecastGlucose, 120, forecast.factor, settings)
+    : null;
   el.dxForecastBody.innerHTML = `
     <div class="dx-forecast-row">
       <span class="badge ${t.badge}">${t.label}</span>
       <span class="dx-forecast-val">${fmt1(forecast.forecastGlucose)} mmol/L projected</span>
     </div>
+    ${advice?.message ? `<p class="dx-note dx-note--carb">${escapeHtml(advice.message)}</p>` : ''}
     ${forecast.bumpedForTimeOfDay ? '<p class="dx-note">This time of day has run low recently, so the forecast was bumped up a tier.</p>' : ''}
+    ${forecast.forecastCapped ? '<p class="dx-note">Capped at 25 mmol/L — the raw math projected higher, likely a large meal stretched across your current correction factor further than it\'s really been tested at. Treat this as "very high", not a precise number.</p>' : ''}
+    ${dxRetrospectiveNote(forecast.retrospectiveEffect)}
   `;
 }
 
 function renderDxCorrection(s) {
   if (s.withheldReason === 'stacking-caution') {
-    const doses = s.stackingDoses.map(d => `${fmt1(d.units)}u, ${dxAgeLabel(d.ageMinutes)}`).join('; ');
+    const doses = s.stackingDoses.map(d => `${fmtDose(d.units)}u, ${dxAgeLabel(d.ageMinutes)}`).join('; ');
     el.dxCorrectionBody.innerHTML = `<p class="empty-state">Recent dose still active (${escapeHtml(doses)}) — wait before correcting again.</p>`;
     return;
   }
@@ -7063,10 +8901,12 @@ function renderDxCorrection(s) {
   }
   el.dxCorrectionBody.innerHTML = `
     <div class="dx-suggestion">
-      <span class="dx-suggestion__val">${fmt1(s.suggestedUnits)}u</span>
+      <span class="dx-suggestion__val">${fmtDose(s.suggestedUnits)}u</span>
       <span class="dx-suggestion__meta">factor ${fmt1(s.factor)} mmol/L/u, from ${s.factorSampleSize} corrections</span>
     </div>
     ${s.cappedAt10 ? '<p class="dx-note">Capped at 10u — the raw math suggested more.</p>' : ''}
+    ${dxRetrospectiveNote(s.retrospectiveEffect)}
+    ${dxCobNote(s.cob, s.cobRiseMmol, s.cobPersonalized, s.cobPersonalizedSampleSize)}
   `;
 }
 
@@ -7098,7 +8938,7 @@ function stopDxAutoRefresh() {
 async function refreshDxLive() {
   if (!profile?.diabetes_ns_url) return;
   try {
-    const [data, macroMealLog, workouts] = await Promise.all([fetchDiabetesData(true), fetchMacroMealLog(), fetchDxWorkouts()]);
+    const [data, macroMealLog, workouts, insulinGaps] = await Promise.all([fetchDiabetesData(true), fetchMacroMealLog(), fetchDxWorkouts(), fetchInsulinGaps()]);
     const settings = dxSettings();
     const now = Date.now();
     // Same MFP-supersedes-Nightscout-carbs correction as renderDiabetesTab
@@ -7106,19 +8946,21 @@ async function refreshDxLive() {
     // correction suggestion and Simple View all stay accurate between
     // full tab reloads, not just right after one.
     const carbBoluses = DiabetesEngine.mergeMealCarbsIntoBoluses(data.boluses, macroMealLog);
-    const input = { ...data, boluses: carbBoluses, settings };
+    const input = { ...data, boluses: carbBoluses, settings, activities: { workouts }, macroMealLog };
 
     const ctx = DiabetesEngine.dosingContext(input, now);
-    renderDxNow(ctx);
-    drawDxGlucoseChart(el.dxGlucoseChart, el.dxGlucoseChartEmpty, input, settings, now, workouts);
+    renderDxNow(ctx, settings);
+    drawDxGlucoseChart(el.dxGlucoseChart, el.dxGlucoseChartEmpty, input, settings, now, workouts, insulinGaps);
+    renderDxInsulinGaps(insulinGaps);
 
     const resolved = DiabetesEngine.resolveCorrections(data.corrections, data.glucoseHistory, carbBoluses, now);
     const factor = DiabetesEngine.personalCorrectionFactor(resolved);
-    const suggestion = DiabetesEngine.suggestCorrectionDose(ctx, factor, carbBoluses, data.corrections, now);
+    const retrospective = DiabetesEngine.retrospectiveCorrection(input, now);
+    const suggestion = DiabetesEngine.suggestCorrectionDose(ctx, factor, carbBoluses, data.corrections, now, retrospective.discrepancy, input);
     renderDxCorrection(suggestion);
 
     const forecast = DiabetesEngine.hypoForecast2h(input, now);
-    renderDxForecast(forecast);
+    renderDxForecast(forecast, settings);
 
     if (el.screenDxSimple && !el.screenDxSimple.hidden) {
       renderDxSimple(data, ctx, suggestion, forecast, settings, factor.factor);
@@ -7137,7 +8979,13 @@ async function refreshDxLive() {
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') {
     stopDxAutoRefresh();
-  } else if (views.diabetes && !views.diabetes.hidden) {
+  // el.viewDiabetes is nested inside el.viewDashboard now (not its own
+  // top-level view — see the "views" comment above), so both need
+  // checking: viewDiabetes' own hidden attribute only reflects whether
+  // diabetes tracking is enabled at all (applyDiabetesTabVisibility),
+  // not whether the dashboard (its ancestor) is the tab actually on
+  // screen right now.
+  } else if (el.viewDashboard && !el.viewDashboard.hidden && el.viewDiabetes && !el.viewDiabetes.hidden) {
     startDxAutoRefresh();
     refreshDxLive();
   }
@@ -7224,17 +9072,29 @@ function renderDxSimple(data, ctx, correctionSuggestion, forecast, settings, fac
     actionText = 'No recent reading — check your sensor.';
     actionClass = null;
   } else if (target != null && g != null && g < target - DX_SIMPLE_TARGET_BAND_MMOL) {
-    // More than the band below target — always says something, current
-    // state takes priority over the forecast below, and can't wait on
-    // the forecast engine's own data requirements (>=3 resolved
-    // corrections) which a low-history account may not have yet.
-    const carbRatio = Number(settings.carbRatio) || null;
-    const grams = (effFactor && carbRatio) ? Math.round(((target - g) / effFactor) * carbRatio) : null;
+    // More than the band below target. Below the hard safety floor is
+    // always urgent regardless of what's forecast — COB acting slowly
+    // over the next couple hours doesn't help a low that needs treating
+    // in the next few minutes. But merely below the softer personal
+    // target is a different case: the 2h forecast (hypoForecast2h)
+    // already models IOB decay AND carbs-on-board absorption, so if it's
+    // sitting at minimal/low risk, it already knows about COB that's
+    // expected to bring this back up on its own — the plain
+    // distance-below-target math below doesn't know that, and used to
+    // recommend eating even when the main tab's own forecast card was
+    // showing "minimal risk, trending up" right next to it.
     const urgent = g < settings.targetLow; // below the hard safety floor, not just off personal target
-    actionText = grams != null
-      ? (urgent ? `Eat ~${grams}g carbs now — low (${fmt1(g)})` : `Eat ~${grams}g carbs${fromPrescribed ? ' (from pump settings)' : ''} — ${fmt1(g)} → target ${fmt1(target)}`)
-      : (urgent ? `Low now (${fmt1(g)}) — treat with fast-acting carbs` : `${fmt1(g)} is below target (${fmt1(target)}) — consider some carbs`);
-    actionClass = 'dx-simple--action-carbs';
+    if (!urgent && (forecast?.tier === 'minimal' || forecast?.tier === 'low') && forecast.forecastGlucose != null) {
+      actionText = `${fmt1(g)} is below target (${fmt1(target)}) but trending up — projected ${fmt1(forecast.forecastGlucose)} in 2h, no action needed.`;
+      actionClass = 'dx-simple--action-ok';
+    } else {
+      const carbRatio = Number(settings.carbRatio) || null;
+      const grams = (effFactor && carbRatio) ? Math.round(((target - g) / effFactor) * carbRatio) : null;
+      actionText = grams != null
+        ? (urgent ? `Eat ~${grams}g carbs now — low (${fmt1(g)})` : `Eat ~${grams}g carbs${fromPrescribed ? ' (from pump settings)' : ''} — ${fmt1(g)} → target ${fmt1(target)}`)
+        : (urgent ? `Low now (${fmt1(g)}) — treat with fast-acting carbs` : `${fmt1(g)} is below target (${fmt1(target)}) — consider some carbs`);
+      actionClass = 'dx-simple--action-carbs';
+    }
   } else if (target == null && ctx.currentGlucose != null && ctx.currentGlucose < settings.targetLow) {
     const advice = factorValue ? DiabetesEngine.preventativeCarbAdvice(ctx.currentGlucose, 0, factorValue, settings) : null;
     actionText = advice?.gramsNeeded
@@ -7255,16 +9115,16 @@ function renderDxSimple(data, ctx, correctionSuggestion, forecast, settings, fac
       units = correctionSuggestion.suggestedUnits;
     } else if (prescribedFactor) {
       const raw = (g - target) / prescribedFactor - (ctx.iob || 0);
-      units = Math.min(10, Math.max(0, Math.round(raw * 2) / 2));
+      units = Math.min(10, Math.max(0, DiabetesEngine.roundDose(raw)));
       usedPrescribed = true;
     }
     const urgentHigh = g > settings.targetHigh; // above the hard safety ceiling, not just off personal target
     actionText = units != null
-      ? (urgentHigh ? `Correct: ${fmt1(units)}u insulin now — high (${fmt1(g)})` : `Correct: ${fmt1(units)}u insulin${usedPrescribed ? ' (from pump settings)' : ''} — ${fmt1(g)} → target ${fmt1(target)}`)
+      ? (urgentHigh ? `Correct: ${fmtDose(units)}u insulin now — high (${fmt1(g)})` : `Correct: ${fmtDose(units)}u insulin${usedPrescribed ? ' (from pump settings)' : ''} — ${fmt1(g)} → target ${fmt1(target)}`)
       : `${fmt1(g)} is above target (${fmt1(target)}) — not enough dose history yet for a suggestion`;
     actionClass = 'dx-simple--action-correct';
   } else if (correctionSuggestion && !correctionSuggestion.withheldReason && correctionSuggestion.suggestedUnits > 0) {
-    actionText = `Correct: ${fmt1(correctionSuggestion.suggestedUnits)}u insulin`;
+    actionText = `Correct: ${fmtDose(correctionSuggestion.suggestedUnits)}u insulin`;
     actionClass = 'dx-simple--action-correct';
   } else if (target == null && ctx.currentGlucose != null && ctx.currentGlucose > settings.targetHigh) {
     actionText = `High now (${fmt1(ctx.currentGlucose)}) — not enough dose history yet for a suggestion`;
@@ -7349,30 +9209,43 @@ $('btnDxMealDose')?.addEventListener('click', async () => {
       ? `${fmt1(r.currentGlucose)} mmol/L now ${trendGlyph}${projectedShown ? ` (~${fmt1(r.effectiveGlucose)} in 30min, used for the correction below)` : ''}${r.idealTarget != null ? ` → target ${fmt1(r.idealTarget)}` : ''}`
       : null;
 
+    // Real split, from the actual (post-rounding, post-high-protein-bump)
+    // upfront/delayed units — not the guide's nominal 50/50 or 65/35,
+    // which can drift from what actually gets suggested once rounding
+    // and the high-protein bump (added only to the delayed dose) are
+    // applied.
+    const splitPct = r.suggestedUnits > 0
+      ? { upfront: Math.round((r.upfrontUnits / r.suggestedUnits) * 100), delayed: Math.round((r.delayedUnits / r.suggestedUnits) * 100) }
+      : { upfront: 0, delayed: 0 };
+
     const doseHtml = r.guide.tier === 'single'
       ? `<div class="dx-suggestion">
-          <span class="dx-suggestion__val">${fmt1(r.suggestedUnits)}u</span>
+          <span class="dx-suggestion__val">${fmtDose(r.suggestedUnits)}u</span>
           <span class="dx-suggestion__meta">${escapeHtml(r.guide.message)}</span>
         </div>`
-      : `<div class="dx-split-dose">
+      : `<div class="dx-suggestion">
+          <span class="dx-suggestion__val">${fmtDose(r.suggestedUnits)}u total</span>
+          <span class="dx-suggestion__meta">split ${splitPct.upfront}% / ${splitPct.delayed}%</span>
+        </div>
+        <div class="dx-split-dose">
           <div class="dx-split-dose__part">
-            <span class="dx-split-dose__label">Now</span>
-            <span class="dx-split-dose__val">${fmt1(r.upfrontUnits)}u</span>
+            <span class="dx-split-dose__label">Now (${splitPct.upfront}%)</span>
+            <span class="dx-split-dose__val">${fmtDose(r.upfrontUnits)}u</span>
           </div>
           <div class="dx-split-dose__arrow">→</div>
           <div class="dx-split-dose__part">
-            <span class="dx-split-dose__label">+${r.guide.delayMinutes}min</span>
-            <span class="dx-split-dose__val">${fmt1(r.delayedUnits)}u</span>
+            <span class="dx-split-dose__label">+${r.guide.delayMinutes}min (${splitPct.delayed}%)</span>
+            <span class="dx-split-dose__val">${fmtDose(r.delayedUnits)}u</span>
           </div>
         </div>
         <p class="dx-note">${escapeHtml(r.guide.message)}</p>`;
 
     const breakdownParts = [];
-    if (carbs > 0) breakdownParts.push(`${fmt1(r.carbUnits)}u for carbs`);
-    if (r.correctionAvailable && Math.abs(r.correctionUnits) >= 0.05) {
-      breakdownParts.push(`${fmtSigned(r.correctionUnits, 1)}u correction (factor ${fmt1(r.factor)}, ${r.factorSource === 'pump-setting' ? 'from pump settings' : `learned from ${r.factorSampleSize} corrections`})`);
+    if (carbs > 0) breakdownParts.push(`${fmtDose(r.carbUnits)}u for carbs`);
+    if (r.correctionAvailable && Math.abs(r.correctionUnits) >= 0.005) {
+      breakdownParts.push(`${fmtSigned(r.correctionUnits, 2)}u correction (factor ${fmt1(r.factor)}, ${r.factorSource === 'pump-setting' ? 'from pump settings' : `learned from ${r.factorSampleSize} corrections`})`);
     }
-    if (r.iob >= 0.05) breakdownParts.push(`−${fmt1(r.iob)}u active IOB`);
+    if (r.iob >= 0.005) breakdownParts.push(`−${fmtDose(r.iob)}u active IOB`);
 
     const personalizedNote = carbs > 0
       ? (r.personalized
@@ -7406,32 +9279,65 @@ const DX_CATEGORY = {
   'worth-knowing':    { label: 'Worth knowing',    badge: 'badge--blue' },
 };
 
+function dxInsightCard(i, keyMap) {
+  const cat = DX_CATEGORY[i.category] || DX_CATEGORY[keyMap[i.category]] || { label: i.category, badge: 'badge--gray' };
+  return `
+    <div class="dx-insight">
+      <div class="dx-insight__head">
+        <span class="badge ${cat.badge}">${cat.label}</span>
+        <span class="dx-insight__n">n=${i.n}</span>
+      </div>
+      <div class="dx-insight__title">${escapeHtml(i.title)}</div>
+      <div class="dx-insight__summary">${escapeHtml(i.summary)}</div>
+      ${i.tryText ? `<div class="dx-insight__try"><b>Try:</b> ${escapeHtml(i.tryText)}</div>` : ''}
+    </div>`;
+}
+
+// Leads with what needs attention — the whole point of checking Patterns
+// is to catch issues, and those were getting buried under a wall of
+// reassuring "going well" cards ahead of them. Going-well/worth-knowing
+// still exist (nothing's lost) but sit collapsed behind a toggle so the
+// issues are what's actually on screen without scrolling.
 function renderDxPatterns(patterns) {
   if (!patterns.sufficient) {
     el.dxPatternsBody.innerHTML = `<p class="empty-state">Need at least ${patterns.minReadingsNeeded} readings in the last 7 days (have ${patterns.readingCount}).</p>`;
     return;
   }
-  const groups = ['needsAttention', 'goingWell', 'worthKnowing'];
   const keyMap = { needsAttention: 'needs-attention', goingWell: 'going-well', worthKnowing: 'worth-knowing' };
-  const items = groups.flatMap(g => patterns[g]);
-  if (!items.length) {
+  const issues = patterns.needsAttention || [];
+  const secondary = [...(patterns.goingWell || []), ...(patterns.worthKnowing || [])];
+  if (!issues.length && !secondary.length) {
     el.dxPatternsBody.innerHTML = '<p class="empty-state">No notable patterns this week.</p>';
     return;
   }
-  el.dxPatternsBody.innerHTML = items.map(i => {
-    const cat = DX_CATEGORY[i.category] || DX_CATEGORY[keyMap[i.category]] || { label: i.category, badge: 'badge--gray' };
-    return `
-      <div class="dx-insight">
-        <div class="dx-insight__head">
-          <span class="badge ${cat.badge}">${cat.label}</span>
-          <span class="dx-insight__n">n=${i.n}</span>
-        </div>
-        <div class="dx-insight__title">${escapeHtml(i.title)}</div>
-        <div class="dx-insight__summary">${escapeHtml(i.summary)}</div>
-        ${i.tryText ? `<div class="dx-insight__try"><b>Try:</b> ${escapeHtml(i.tryText)}</div>` : ''}
-      </div>`;
-  }).join('');
+
+  const issuesHtml = issues.length
+    ? issues.map(i => dxInsightCard(i, keyMap)).join('')
+    : '<p class="empty-state">🎉 No issues flagged this week.</p>';
+
+  const secondaryHtml = secondary.length
+    ? `<button type="button" class="btn btn--ghost btn--small dx-patterns-toggle" id="dxPatternsToggle" aria-expanded="false">
+         Show ${secondary.length} going well / worth knowing ▾
+       </button>
+       <div class="dx-patterns-secondary" id="dxPatternsSecondary" hidden>
+         ${secondary.map(i => dxInsightCard(i, keyMap)).join('')}
+       </div>`
+    : '';
+
+  el.dxPatternsBody.innerHTML = issuesHtml + secondaryHtml;
 }
+
+el.dxPatternsBody?.addEventListener('click', e => {
+  const btn = e.target.closest('#dxPatternsToggle');
+  if (!btn) return;
+  const panel = $('dxPatternsSecondary');
+  if (!panel) return;
+  const nowHidden = !panel.hidden;
+  panel.hidden = nowHidden;
+  btn.setAttribute('aria-expanded', String(!nowHidden));
+  const count = panel.querySelectorAll('.dx-insight').length;
+  btn.textContent = nowHidden ? `Show ${count} going well / worth knowing ▾` : `Hide going well / worth knowing ▴`;
+});
 
 function renderDxHealth(h) {
   if (!h.sufficient) {
@@ -7576,7 +9482,7 @@ function renderDxWorkoutHistory(rows, workoutType) {
             <div><span class="dx-workout-history__label">Before</span><span class="dx-workout-history__val">${r.bgBefore != null ? fmt1(r.bgBefore) : '—'}</span></div>
             <div><span class="dx-workout-history__label">After</span><span class="dx-workout-history__val">${r.bgAfter != null ? fmt1(r.bgAfter) : '—'}</span></div>
             <div><span class="dx-workout-history__label">Lowest (4h)</span><span class="dx-workout-history__val">${r.lowestPost4h != null ? fmt1(r.lowestPost4h) : '—'}</span></div>
-            <div><span class="dx-workout-history__label">Basal</span><span class="dx-workout-history__val">${r.basalUnits != null ? fmt1(r.basalUnits) + 'u' : '—'}</span></div>
+            <div><span class="dx-workout-history__label">Basal</span><span class="dx-workout-history__val">${r.basalUnits != null ? fmtDose(r.basalUnits) + 'u' : '—'}</span></div>
           </div>
         </div>`;
     }).join('')}
@@ -7670,7 +9576,7 @@ function renderDxUnplugResult(result) {
   const riskLine = `<div class="dx-simulate-result__line"><b>Risk:</b> ${hypoBadge || hyperBadge ? `${hypoBadge}${hyperBadge}` : '<span class="badge badge--green">low</span>'}</div>`;
 
   const missedLine = result.missedUnits > 0
-    ? `<div class="dx-simulate-result__line">${fmt1(result.missedUnits)}u basal missed over ${result.durationMin}min${result.riseFromMissedBasal != null ? ` (~${fmtSigned(result.riseFromMissedBasal, 1)} mmol/L on its own)` : ''}</div>`
+    ? `<div class="dx-simulate-result__line">${fmtDose(result.missedUnits)}u basal missed over ${result.durationMin}min${result.riseFromMissedBasal != null ? ` (~${fmtSigned(result.riseFromMissedBasal, 1)} mmol/L on its own)` : ''}</div>`
     : '';
 
   el.dxWorkoutImpactBody.innerHTML = `
@@ -7764,7 +9670,7 @@ function renderDxTodaysMeals(items, boluses) {
     let suggestedHtml = '';
     let actionHtml;
     if (isMatched) {
-      actionHtml = `<span class="badge badge--green">✓ ${fmt1(it.matched_bolus_units)}u${it.match_status === 'manual' ? ' (linked)' : ''}</span>`;
+      actionHtml = `<span class="badge badge--green">✓ ${fmtDose(it.matched_bolus_units)}u${it.match_status === 'manual' ? ' (linked)' : ''}</span>`;
     } else if (it.hypo_treatment) {
       actionHtml = `<span class="badge badge--blue">Hypo treatment — no bolus needed</span>
         <button class="btn btn--ghost btn--small" data-action="unclassify" data-id="${it.id}" style="margin-left:6px">Not a hypo?</button>`;
@@ -7784,8 +9690,8 @@ function renderDxTodaysMeals(items, boluses) {
       // in Nightscout to confirm yet) still need the same "link once you've
       // actually dosed" action — a suggestion isn't a substitute for that.
       if (isSuggested) {
-        suggestedHtml = `<div style="margin-bottom:6px"><span class="badge badge--orange">Suggested ${fmt1(it.suggested_units)}u</span>
-          ${it.delayed_units > 0 ? `<span class="field-hint" style="margin-left:6px">${fmt1(it.upfront_units)}u now, ${fmt1(it.delayed_units)}u delayed</span>` : ''}</div>`;
+        suggestedHtml = `<div style="margin-bottom:6px"><span class="badge badge--orange">Suggested ${fmtDose(it.suggested_units)}u</span>
+          ${it.delayed_units > 0 ? `<span class="field-hint" style="margin-left:6px">${fmtDose(it.upfront_units)}u now, ${fmtDose(it.delayed_units)}u delayed</span>` : ''}</div>`;
       }
       // Same-calendar-day used to gate this list, but that silently drops
       // a real bolus given a few minutes on the other side of local
@@ -7796,18 +9702,25 @@ function renderDxTodaysMeals(items, boluses) {
       // (4h) than that 90min auto-match window since this is a manual
       // fallback for whatever the auto-matcher missed — too narrow here
       // would just recreate the same "why isn't my dose showing" problem.
-      // A bolus Nightscout itself tagged with carbs is shown regardless
-      // of that window too — carbs on a bolus is itself strong evidence
-      // it was a meal dose, and a mistimed log entry shouldn't hide it.
+      // A bolus Nightscout itself tagged with carbs is shown even outside
+      // that 4h window too — carbs on a bolus is itself strong evidence
+      // it was a meal dose, and a mistimed log entry shouldn't hide it —
+      // but that exception still needs SOME bound (same local calendar
+      // day as the meal) rather than none at all, or every past bolus
+      // that ever carried a carbs figure (nearly all of them) shows up
+      // in the picker regardless of how long ago it was.
       const NEARBY_BOLUS_WINDOW_MS = 4 * 3600000;
-      const nearbyBoluses = boluses.filter(b =>
-        Number(b.units) > 0 &&
-        (Math.abs(Number(b.time) - eatenMs) <= NEARBY_BOLUS_WINDOW_MS || Number(b.carbs) > 0)
-      );
+      const mealDayStr = new Date(eatenMs).toDateString();
+      const nearbyBoluses = boluses.filter(b => {
+        if (Number(b.units) <= 0) return false;
+        const bTimeMs = Number(b.time);
+        if (Math.abs(bTimeMs - eatenMs) <= NEARBY_BOLUS_WINDOW_MS) return true;
+        return Number(b.carbs) > 0 && new Date(bTimeMs).toDateString() === mealDayStr;
+      });
       actionHtml = `
         <select data-role="mfp-bolus-pick" data-id="${it.id}">
           <option value="">Link the actual dose…</option>
-          ${nearbyBoluses.map(b => `<option value="${b.time}|${b.units}">${new Date(Number(b.time)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} — ${fmt1(b.units)}u${Number(b.carbs) > 0 ? ` (${fmt1(b.carbs)}g carbs)` : ''}</option>`).join('')}
+          ${nearbyBoluses.map(b => `<option value="${b.time}|${b.units}">${new Date(Number(b.time)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} — ${fmtDose(b.units)}u${Number(b.carbs) > 0 ? ` (${fmt1(b.carbs)}g carbs)` : ''}</option>`).join('')}
         </select>
         <button class="btn btn--ghost btn--small" data-action="link" data-id="${it.id}">Link</button>
         <button class="btn btn--ghost btn--small" data-action="hypo" data-id="${it.id}">Mark hypo</button>
@@ -7903,52 +9816,145 @@ function renderDxSensitivity(cells, prescribed) {
   `;
 }
 
-function renderDxRegimen(regimen, prescribed, hasThuProfile) {
-  const activeBasal = (regimen.basalByWindow || []).filter(w => !w.withheldReason);
-  const ratio = regimen.carbRatio;
-  const hasRatio = ratio && !ratio.withheldReason;
+// One cell = current value (prescribed pump setting if known, else
+// whatever reference number the review itself observed) plus a
+// suggested new value when the data actually supports one — never just
+// the suggestion alone, since "current" is what anchors the % change
+// and capped-at-limit context that make the number trustworthy rather
+// than a bare "try 0.75u/hr" floating with no reference point.
+// Current (pump-prescribed/observed) and suggested (this week's analysis)
+// as two separate cells, not one merged "a → b" cell — makes it clear
+// which number is what's actually programmed into the pump right now vs.
+// what the analysis is proposing, rather than requiring a read of the
+// column footnote to know which side of the arrow is which.
+function dxRegimenCurrentCell(current, unit) {
+  return current != null ? `${fmt1(current)}${unit}` : '<span class="dx-regimen-cell--empty">—</span>';
+}
+function dxRegimenSuggestedCell(current, suggested, unit, n, capped) {
+  if (suggested == null) return '<span class="dx-regimen-cell--empty">—</span>';
+  const changed = current != null && Math.abs(suggested - current) > 0.001;
+  const val = changed ? `<b>${fmt1(suggested)}</b>` : fmt1(suggested);
+  return `${val}${unit}<span class="dx-regimen-cell__n">n=${n}${capped ? ', capped' : ''}</span>`;
+}
 
-  if (!activeBasal.length && !hasRatio && !prescribed) {
-    el.dxRegimenBody.innerHTML = '<p class="empty-state">Not enough clean data yet this week to review your basal or carb ratio.</p>';
+// Nightscout's own profile-switch documents carry whatever name the pump
+// gave them ("Mo", "Thur", ...) — map that to the matching segment array
+// in Supabase's diabetes_pump_profile (keyed 'default' / 'thu') and to a
+// short human label. Anything unrecognized falls back to 'default'
+// segments (best available comparison) under its own raw name.
+function dxProfileLabel(name) {
+  const n = String(name || '').toLowerCase();
+  if (n === 'default') return 'Your profile';
+  if (n.startsWith('thu')) return 'Exercise / Thur profile';
+  if (n.startsWith('mo')) return 'Default (Mo) profile';
+  return name;
+}
+function dxProfileSegments(pumpProfile, name) {
+  const n = String(name || '').toLowerCase();
+  return (n.startsWith('thu') ? pumpProfile?.thu : pumpProfile?.default) || null;
+}
+
+function renderDxRegimen(regimenByProfile, pumpProfile, hasThuProfile) {
+  const profiles = regimenByProfile?.profiles || [];
+  if (!profiles.length) {
+    el.dxRegimenBody.innerHTML = '<p class="empty-state">Not enough clean data yet this week to suggest a profile by time block.</p>';
     return;
   }
 
-  const prescribedTable = prescribed ? `
-    <div class="table-wrap">
-      <table class="data-table">
-        <thead><tr><th>Time of day</th><th>Basal (u/hr)</th><th>Correction factor</th><th>Carb ratio (g/u)</th></tr></thead>
-        <tbody>
-          ${prescribed.map(p => `<tr><td>${p.timeOfDay}</td><td>${p.basalRate != null ? fmt1(p.basalRate) : '—'}</td><td>${p.correctionFactor != null ? fmt1(p.correctionFactor) : '—'}</td><td>${p.carbRatio != null ? fmt1(p.carbRatio) : '—'}</td></tr>`).join('')}
-        </tbody>
-      </table>
-    </div>
-    <p class="dx-note">Your prescribed pump profile${hasThuProfile ? ' (weekday default — Thursdays run a different profile)' : ''}, for reference against the data-driven suggestions below.</p>
-  ` : '';
+  // Single 'default' bucket means no profile-switch history was found at
+  // all (older sync, or a Nightscout feed that's never switched) — same
+  // pooled behavior as before, so the Thursdays-run-differently caveat
+  // still belongs on that one table.
+  const singlePooled = profiles.length === 1 && profiles[0] === 'default';
 
-  const basalRows = activeBasal.map(w => {
-    const rx = prescribed?.find(p => p.timeOfDay === w.timeOfDay);
-    return `
-    <div class="dx-insight">
-      <div class="dx-insight__head">
-        <span class="badge badge--orange">${w.direction === 'increase' ? 'Consider more basal' : 'Consider less basal'}</span>
-        <span class="dx-insight__n">n=${w.n}</span>
-      </div>
-      <div class="dx-insight__title">${escapeHtml(w.timeOfDay)}: ${fmtSigned(w.suggestedPctChange, 0)}%${w.cappedAtLimit ? ' (capped)' : ''}</div>
-      <div class="dx-insight__summary">Drifted ${fmtSigned(w.avgDrift, 1)} mmol/L over ${w.n} clean ${w.n === 1 ? 'instance' : 'instances'} with no insulin or carbs active.${rx?.basalRate != null ? ` Pump programmed: ${fmt1(rx.basalRate)}u/hr.` : ''}</div>
-    </div>`;
+  const sections = profiles.map(name => {
+    const regimen = regimenByProfile.byProfile[name];
+    const segments = dxProfileSegments(pumpProfile, name);
+    const prescribed = segments ? DiabetesEngine.prescribedRegimenTable({ default: segments }) : null;
+    const note = singlePooled && hasThuProfile ? ', weekday default — Thursdays run a different profile' : '';
+    return dxRegimenProfileSection(profiles.length > 1 ? dxProfileLabel(name) : null, regimen, prescribed, note);
+  });
+
+  el.dxRegimenBody.innerHTML = sections.join('');
+}
+
+function dxRegimenProfileSection(label, regimen, prescribed, prescribedNote) {
+  const basalByWindow = regimen.basalByWindow || [];
+  const cfByWindow = regimen.correctionFactorByWindow || [];
+  const crByWindow = regimen.carbRatioByWindow || [];
+  const wholeWeekRatio = regimen.carbRatio;
+
+  const heading = label ? `<div class="dx-section-label">${escapeHtml(label)}</div>` : '';
+
+  const anyBlockSignal = [...basalByWindow, ...cfByWindow, ...crByWindow].some(w => !w.withheldReason);
+  if (!anyBlockSignal && !prescribed) {
+    return `${heading}<p class="empty-state">Not enough clean data yet under this profile to suggest a change by time block.</p>`;
+  }
+
+  const rows = basalByWindow.map((b, i) => {
+    const cf = cfByWindow[i];
+    const cr = crByWindow[i];
+    const rx = prescribed?.find(p => p.timeOfDay === b.timeOfDay);
+
+    const basalCurrent = rx?.basalRate ?? b.avgBasalRate ?? null;
+    const basalSuggested = b.withheldReason ? null : b.suggestedBasalRate;
+
+    const cfCurrent = rx?.correctionFactor ?? cf?.currentFactor ?? null;
+    const cfSuggested = cf?.withheldReason ? null : cf?.suggestedFactor;
+
+    const crCurrent = rx?.carbRatio ?? cr?.currentRatio ?? null;
+    const crSuggested = cr?.withheldReason ? null : cr?.suggestedRatio;
+
+    return `<tr>
+      <td>${escapeHtml(b.timeOfDay)}</td>
+      <td>${dxRegimenCurrentCell(basalCurrent, 'u/hr')}</td>
+      <td>${dxRegimenSuggestedCell(basalCurrent, basalSuggested, 'u/hr', b.n, b.cappedAtLimit)}</td>
+      <td>${dxRegimenCurrentCell(cfCurrent, '')}</td>
+      <td>${dxRegimenSuggestedCell(cfCurrent, cfSuggested, '', cf?.n, cf?.cappedAtLimit)}</td>
+      <td>${dxRegimenCurrentCell(crCurrent, 'g/u')}</td>
+      <td>${dxRegimenSuggestedCell(crCurrent, crSuggested, 'g/u', cr?.n, cr?.cappedAtLimit)}</td>
+    </tr>`;
   }).join('');
 
-  const ratioRow = hasRatio ? `
+  const table = `
+    <div class="table-wrap">
+      <table class="data-table dx-regimen-table">
+        <thead>
+          <tr>
+            <th rowspan="2">Time block</th>
+            <th colspan="2" class="dx-regimen-thead-group">Basal</th>
+            <th colspan="2" class="dx-regimen-thead-group">Correction factor</th>
+            <th colspan="2" class="dx-regimen-thead-group">Carb ratio</th>
+          </tr>
+          <tr>
+            <th class="dx-regimen-subhead">Current</th>
+            <th class="dx-regimen-subhead">Suggested</th>
+            <th class="dx-regimen-subhead">Current</th>
+            <th class="dx-regimen-subhead">Suggested</th>
+            <th class="dx-regimen-subhead">Current</th>
+            <th class="dx-regimen-subhead">Suggested</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <p class="dx-note">Current is${prescribed ? ` your prescribed pump profile${prescribedNote}` : ' this week’s observed value'}; Suggested is Claude's analysis of this week's data, when there's a clean enough signal to propose a change — bold means a change from Current. A block showing "—" under Suggested means not enough clean data yet.</p>`;
+
+  // Whole-week carb-ratio fallback — meals are sparse enough that most
+  // individual 3h blocks won't clear the sample-size floor even on a
+  // week with a real, consistent bias; the pooled weekly check can still
+  // say something useful when nothing localized to a single block did.
+  const wholeWeekNote = (wholeWeekRatio && !wholeWeekRatio.withheldReason && !crByWindow.some(c => !c.withheldReason)) ? `
     <div class="dx-insight">
       <div class="dx-insight__head">
-        <span class="badge badge--orange">${ratio.direction === 'tighten' ? 'Consider tightening' : 'Consider loosening'}</span>
-        <span class="dx-insight__n">n=${ratio.n}</span>
+        <span class="badge badge--orange">${wholeWeekRatio.direction === 'tighten' ? 'Consider tightening' : 'Consider loosening'}</span>
+        <span class="dx-insight__n">n=${wholeWeekRatio.n}</span>
       </div>
-      <div class="dx-insight__title">Carb ratio: ${fmt1(ratio.currentRatio)} → ${fmt1(ratio.suggestedRatio)} g/u${ratio.cappedAtLimit ? ' (capped)' : ''}</div>
-      <div class="dx-insight__summary">Meals have ${ratio.direction === 'tighten' ? 'run high' : 'gone low'} ${ratio.n} time${ratio.n === 1 ? '' : 's'} this week at the current ratio.</div>
+      <div class="dx-insight__title">Carb ratio overall: ${fmt1(wholeWeekRatio.currentRatio)} → ${fmt1(wholeWeekRatio.suggestedRatio)} g/u${wholeWeekRatio.cappedAtLimit ? ' (capped)' : ''}</div>
+      <div class="dx-insight__summary">Meals have ${wholeWeekRatio.direction === 'tighten' ? 'run high' : 'gone low'} ${wholeWeekRatio.n} time${wholeWeekRatio.n === 1 ? '' : 's'} this week overall — not enough meals in any single 3h block to localize this further.</div>
     </div>` : '';
 
-  el.dxRegimenBody.innerHTML = prescribedTable + basalRows + ratioRow;
+  return heading + table + wholeWeekNote;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -8156,14 +10162,24 @@ function vo2ToFitnessAge(vo2) {
   else return 65;
 }
 
+// polarity decides which extreme (min or max over the 30-day window)
+// gets labelled "Best" vs "Worst" in the sheet below:
+//   'higher' — bigger numbers are healthier (VO2 Max, SpO2)
+//   'lower'  — smaller numbers are healthier (average HR, fitness age)
+//   'neutral' — this metric doesn't have a "more is healthier" direction
+//     at all; it's a stay-in-range/homeostasis reading (respiratory
+//     rate, wrist temp deviation from baseline, blood glucose), so the
+//     extremes are shown as plain "Highest"/"Lowest" instead of
+//     "Best"/"Worst" — calling someone's lowest blood glucose reading
+//     their "best" would mislabel a hypo as a good result.
 const METRIC_CONFIG = {
-  spo2:       { icon:'🫁', title:'Blood Oxygen (SpO2)',  unit:'%',         field:'spo2_avg',         format: v => fmt1(v),    label:'SpO2',        color:'#16A34A', min:90, max:100 },
-  resp:       { icon:'💨', title:'Respiratory Rate',     unit:'brpm',      field:'respiratory_rate', format: v => fmt1(v),    label:'Resp rate',   color:'#3B7FF5', min:10, max:25  },
-  temp:       { icon:'🌡️', title:'Wrist Temperature',    unit:'°C dev',    field:'wrist_temp_dev',   format: v => (v>0?'+':'')+fmt1(v), label:'Wrist temp', color:'#7C3AED' },
-  vo2:        { icon:'❤️‍🔥', title:'VO2 Max',           unit:'mL/kg/min', field:'vo2_max',           format: v => fmt1(v),    label:'VO2 Max',     color:'#7C3AED' },
-  hr:         { icon:'❤️', title:'Average Heart Rate',      unit:'bpm',       field:'heart_rate_avg',    format: v => fmtInt(v),  label:'Avg HR',      color:'#DC2626' },
-  glucose:    { icon:'🩸', title:'Blood Glucose',         unit:'mmol/L',    field:'glucose_avg_mmol', format: v => fmt1(v),    label:'Glucose',     color:'#DC2626', min:3,  max:12  },
-  fitnessAge: { icon:'🧬', title:'Fitness Age (VO2 Max)','unit':'years',   field:'vo2_max',           format: v => String(vo2ToFitnessAge(v) ?? '—'), label:'Fitness age', color:'#7C3AED', min:20, max:65 },
+  spo2:       { icon:'🫁', title:'Blood Oxygen (SpO2)',  unit:'%',         field:'spo2_avg',         format: v => fmt1(v),    label:'SpO2',        color:'#16A34A', min:90, max:100, polarity:'higher' },
+  resp:       { icon:'💨', title:'Respiratory Rate',     unit:'brpm',      field:'respiratory_rate', format: v => fmt1(v),    label:'Resp rate',   color:'#3B7FF5', min:10, max:25,  polarity:'neutral' },
+  temp:       { icon:'🌡️', title:'Wrist Temperature',    unit:'°C dev',    field:'wrist_temp_dev',   format: v => (v>0?'+':'')+fmt1(v), label:'Wrist temp', color:'#7C3AED', polarity:'neutral' },
+  vo2:        { icon:'❤️‍🔥', title:'VO2 Max',           unit:'mL/kg/min', field:'vo2_max',           format: v => fmt1(v),    label:'VO2 Max',     color:'#7C3AED', polarity:'higher' },
+  hr:         { icon:'❤️', title:'Average Heart Rate',      unit:'bpm',       field:'heart_rate_avg',    format: v => fmtInt(v),  label:'Avg HR',      color:'#DC2626', polarity:'lower' },
+  glucose:    { icon:'🩸', title:'Blood Glucose',         unit:'mmol/L',    field:'glucose_avg_mmol', format: v => fmt1(v),    label:'Glucose',     color:'#DC2626', min:3,  max:12,  polarity:'neutral' },
+  fitnessAge: { icon:'🧬', title:'Fitness Age (VO2 Max)','unit':'years',   field:'vo2_max',           format: v => String(vo2ToFitnessAge(v) ?? '—'), label:'Fitness age', color:'#7C3AED', min:20, max:65, polarity:'lower' },
 };
 
 // Wire health tile clicks
@@ -8259,6 +10275,15 @@ async function openMetricSheet(key, cfg) {
   const minVal  = Math.min(...vals);
   const maxVal  = Math.max(...vals);
 
+  // See METRIC_CONFIG's polarity comment — which extreme is "Best" flips
+  // per metric, and metrics with no real best/worst direction (glucose,
+  // resp rate, wrist temp) get neutral "Highest"/"Lowest" labels instead.
+  const lowerIsBest = cfg.polarity === 'lower';
+  const bestVal    = lowerIsBest ? minVal : maxVal;
+  const worstVal   = lowerIsBest ? maxVal : minVal;
+  const bestLabel  = cfg.polarity === 'neutral' ? 'Highest' : 'Best';
+  const worstLabel = cfg.polarity === 'neutral' ? 'Lowest'  : 'Worst';
+
   $('metricSheetStats').innerHTML = `
     <div class="metric-stat">
       <span class="metric-stat__label">Latest</span>
@@ -8271,13 +10296,13 @@ async function openMetricSheet(key, cfg) {
       <span class="metric-stat__unit">${cfg.unit}</span>
     </div>
     <div class="metric-stat">
-      <span class="metric-stat__label">Best</span>
-      <span class="metric-stat__val">${cfg.format(key === 'fitnessAge' ? minVal : minVal)}</span>
+      <span class="metric-stat__label">${bestLabel}</span>
+      <span class="metric-stat__val">${cfg.format(bestVal)}</span>
       <span class="metric-stat__unit">${cfg.unit}</span>
     </div>
     <div class="metric-stat">
-      <span class="metric-stat__label">Worst</span>
-      <span class="metric-stat__val">${cfg.format(key === 'fitnessAge' ? maxVal : maxVal)}</span>
+      <span class="metric-stat__label">${worstLabel}</span>
+      <span class="metric-stat__val">${cfg.format(worstVal)}</span>
       <span class="metric-stat__unit">${cfg.unit}</span>
     </div>`;
 
@@ -8389,18 +10414,13 @@ document.addEventListener('click', async e => {
 $('setManualWeightLogging')?.addEventListener('change', async (e) => {
   const checked = e.target.checked;
   if (!currentUser) return;
-  // Turning it on also switches the account to lb — logging in lb but
-  // displaying in kg everywhere else would be confusing, and lb is the
-  // whole point of this toggle for someone who thinks in lb.
   const updates = { manual_weight_logging: checked };
-  if (checked) updates.weight_unit = 'lb';
   const { error } = await saveNsProfileFields(updates);
   if (error) {
     showToast("Couldn't save: " + error.message, true);
     e.target.checked = !checked; // revert the visible toggle on failure
     return;
   }
-  if (checked && el.setUnit) el.setUnit.value = 'lb';
   // Reflect immediately on the History tab's button too, in case it's
   // already been visited this session (its own loadHistory() call would
   // otherwise be the only thing to pick this up, on the next visit).
@@ -8431,15 +10451,16 @@ $('btnSaveManualWeight')?.addEventListener('click', async () => {
   if (!currentUser) return;
   const btn = $('btnSaveManualWeight');
   const date = $('mwDate')?.value || todayISO();
-  const weight = parseFloat($('mwWeight')?.value);
-  if (!Number.isFinite(weight) || weight <= 0) {
+  const unit = BODY_WEIGHT_UNIT;
+  const inputWeight = parseFloat($('mwWeight')?.value);
+  if (!Number.isFinite(inputWeight) || inputWeight <= 0) {
     flash($('manualWeightStatus'), 'Enter a weight.', true);
     return;
   }
   setBtn(btn, true, 'Log weight', 'Saving…');
   const { error } = await db
     .from('daily_logs')
-    .upsert({ user_id: currentUser.id, log_date: date, weight }, { onConflict: 'user_id,log_date' });
+    .upsert({ user_id: currentUser.id, log_date: date, weight: weightToKg(inputWeight, unit) }, { onConflict: 'user_id,log_date' });
   setBtn(btn, false, 'Log weight');
   if (error) {
     flash($('manualWeightStatus'), 'Error: ' + error.message, true);
@@ -8464,9 +10485,9 @@ async function renderManualWeightRecent() {
     el2.innerHTML = 'No weights logged yet.';
     return;
   }
-  const unit = profile?.weight_unit || 'lb';
+  const unit = BODY_WEIGHT_UNIT;
   el2.innerHTML = 'Recent: ' + data
-    .map(r => `${new Date(r.log_date + 'T00:00:00').toLocaleDateString([], { month: 'short', day: 'numeric' })} — ${fmt1(r.weight)}${unit}`)
+    .map(r => `${new Date(r.log_date + 'T00:00:00').toLocaleDateString([], { month: 'short', day: 'numeric' })} — ${fmt1(weightFromKg(r.weight, unit))}${unit}`)
     .join(' · ');
 }
 
@@ -8562,18 +10583,13 @@ async function computeSmartEatTarget() {
   const sex    = profile.sex        || 'male';
 
   // ── Latest actual weight ──────────────────────────────────
-  const { data: latestW } = await db
-    .from('health_daily')
-    .select('weight_kg, log_date')
-    .eq('user_id', currentUser.id)
-    .not('weight_kg', 'is', null)
-    .order('log_date', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  const currentWeight = latestW?.weight_kg
-    ? Number(latestW.weight_kg)
-    : Number(activePlan.start_weight);
+  // Checks both health_daily.weight_kg (Apple Health sync) and
+  // daily_logs.weight (manual entry) via the shared helper — a
+  // health_daily-only query here would silently ignore every manual
+  // weigh-in for an account with manual_weight_logging on (health-sync.js
+  // deliberately skips writing weight_kg for them), leaving this stuck on
+  // the plan's start_weight from months ago regardless of real progress.
+  const currentWeight = (await fetchLatestWeightKg()) ?? Number(activePlan.start_weight);
 
   // ── BMR — Mifflin-St Jeor ─────────────────────────────────
   const bmr = sex === 'female'
@@ -9176,7 +11192,6 @@ function initOnboarding() {
   // State
   const state = {
     name:         profile?.display_name || '',
-    unit:         profile?.weight_unit  || 'kg',
     usesAppleHealth: profile?.uses_apple_health ?? null,
     goal:         profile?.goal         || null,
     duration:     profile?.session_duration || 45,
@@ -9190,7 +11205,6 @@ function initOnboarding() {
 
   // Pre-fill from profile if returning user
   if (state.name)    { const el2 = $('obName'); if (el2) el2.value = state.name; }
-  if (state.unit)    activatePill($('obUnit'), state.unit);
   if (state.usesAppleHealth !== null) activatePill($('obAppleHealth'), state.usesAppleHealth ? 'yes' : 'no');
   if (state.goal)    activateCard($('obGoal'), state.goal);
   activatePill($('obDuration'), String(state.duration));
@@ -9213,13 +11227,6 @@ function initOnboarding() {
   }
 
   // Wire pill groups
-  $('obUnit')?.querySelectorAll('.pill').forEach(p => {
-    p.addEventListener('click', () => {
-      state.unit = p.dataset.val;
-      activatePill($('obUnit'), state.unit);
-    });
-  });
-
   $('obAppleHealth')?.querySelectorAll('.pill').forEach(p => {
     p.addEventListener('click', () => {
       state.usesAppleHealth = p.dataset.val === 'yes';
@@ -9383,7 +11390,6 @@ function initOnboarding() {
 
     const profileUpdate = {
       display_name:       state.name || null,
-      weight_unit:        state.unit,
       uses_apple_health:  state.usesAppleHealth,
       goal:               state.goal,
       session_duration:   state.duration,
@@ -9406,19 +11412,24 @@ function initOnboarding() {
 
     Object.assign(profile, profileUpdate);
 
-    // Create weight plan if start + target provided
+    // Create weight plan if start + target provided — state.startWeight/
+    // targetWeight were typed in lb (BODY_WEIGHT_UNIT), converted to
+    // canonical kg before storing (same convention as daily_logs.weight
+    // elsewhere).
     if (state.startWeight && state.targetWeight && state.targetDate) {
       const today = todayISO();
+      const startWeightKg  = weightToKg(state.startWeight, BODY_WEIGHT_UNIT);
+      const targetWeightKg = weightToKg(state.targetWeight, BODY_WEIGHT_UNIT);
       await db.from('weight_plans').update({ is_active: false })
         .eq('user_id', currentUser.id).eq('is_active', true);
 
       const { data: plan } = await db.from('weight_plans').insert({
         user_id:       currentUser.id,
-        start_weight:  state.startWeight,
-        target_weight: state.targetWeight,
+        start_weight:  startWeightKg,
+        target_weight: targetWeightKg,
         start_date:    today,
         target_date:   state.targetDate,
-        unit:          state.unit,
+        unit:          'kg',
         is_active:     true,
       }).select().single();
 
@@ -9429,7 +11440,7 @@ function initOnboarding() {
         await db.from('daily_logs').upsert({
           user_id:  currentUser.id,
           log_date: today,
-          weight:   state.startWeight,
+          weight:   startWeightKg,
         }, { onConflict: 'user_id,log_date' });
       }
     }
@@ -9463,6 +11474,41 @@ function defaultMealSlot() {
   return 'snack';
 }
 
+// Daily macro targets for Log Food's "Remaining" card. Calories reuse
+// the same effective-target resolution as computeNutritionScore (manual
+// override wins, else the auto-calculated eat_target_kcal, else a bare
+// tdee-500 fallback) rather than re-running computeSmartEatTarget's full
+// plan-pace algorithm here — that needs an active weight plan and several
+// extra queries just to arrive at the same stored number.
+//
+// Fat and carbs are the two fixed macros: fat is 25% of the calorie
+// target, and carbs are sized off a 1g-per-lb-bodyweight protein
+// reference — the same numbers this produced before. Protein used to be
+// that same weight-based figure directly, but summing all three that way
+// can land a couple kcal over calTarget once each is independently
+// rounded (e.g. 212g protein + 50g fat + 126g carbs = 1802 kcal against
+// an 1800 target). So protein is now the one derived last: whatever's
+// left of calTarget once fat and carbs are taken out, floored rather
+// than rounded so the three targets can never sum to more than
+// calTarget itself — "reduced to match 1800, or as close as possible"
+// without ever asking for more than fits.
+async function computeMacroTargets() {
+  const calTarget = profile?.eat_target_manual_kcal ?? profile?.eat_target_kcal
+    ?? (profile?.tdee ? profile.tdee - 500 : null);
+  if (!calTarget) return null;
+
+  const weightKg = await fetchLatestWeightKg();
+  const referenceProteinKcal = weightKg != null ? (weightKg / LB_TO_KG) * 4 : 0;
+  const fatKcal = calTarget * 0.25;
+  const fatTarget = Math.round(fatKcal / 9);
+  const carbTarget = Math.round(Math.max(0, calTarget - referenceProteinKcal - fatKcal) / 4);
+  const proteinTarget = weightKg != null
+    ? Math.floor(Math.max(0, calTarget - fatKcal - carbTarget * 4) / 4)
+    : null;
+
+  return { calories: calTarget, protein: proteinTarget, fat: fatTarget, carbs: carbTarget };
+}
+
 // Two-person household — same fixed Lewis<->Gemma pairing already
 // hardcoded server-side for the Gemma-specific scheduled notifications
 // (see GEMMA_USER_ID in netlify/functions/_lib/webpush.js) and now also
@@ -9480,6 +11526,7 @@ let lfBarcodeStream = null;
 let lfBarcodeDetector = null;
 let lfBarcodeScanRAF = null;
 let lfZxingControls = null; // ZXing's IScannerControls — the Safari fallback path (see startBarcodeScan)
+let lfZxingScanAttempts = 0; // frames checked so far this scan session — diagnostic only, see startBarcodeScan
 const LF_PHOTO_MAX_ANGLES = 3;
 let lfPhotoAngles = []; // up to 3 photos of the meal as served, from different angles — [{base64, mediaType, dataUrl}]
 let lfPhotoAfterBase64 = null; // optional "leftovers" photo — when set, the estimate is before-minus-after
@@ -9489,6 +11536,10 @@ let lfPendingBarcode = null; // carries a scanned (found-or-not) barcode into sa
 let lfFavToggleActive = false; // ⭐ toggle in the review form — save this entry to favorite_meals too, alongside logging it
 let lfFavoritesData = []; // last-rendered favorite_meals rows, so a chip click can look itself up by id without a refetch
 let lfBaseNutrition = null; // per-base-serving {qty, calories_kcal, protein_g, carbs_g, fat_g} from the selected food — lets editing Serving size live-rescale the macro fields
+let lfEditingFoodLogId = null; // set while editing an already-logged item (tapped from Today's meals) — routes btnLfSave to an UPDATE instead of an INSERT
+let lfEditingOriginal = null; // { logDate, mealSlot, hypoTreatment } the item belonged to when edit opened, so a meal-slot change re-aggregates BOTH the old and new section
+let lfCopyYesterdayItems = []; // yesterday's food_log rows for whichever section "+ Add" was just tapped on — populated by updateLfCopyYesterdayButton(), consumed by the button's own click handler
+let lfTextItems = []; // Describe mode's parsed items, kept editable in place — [{food_name, serving_desc, calories_kcal, protein_g, carbs_g, fat_g}]
 
 async function loadLogFood() {
   if (el.lfMealSlot) el.lfMealSlot.value = defaultMealSlot();
@@ -9511,6 +11562,7 @@ function selectLfMode(mode) {
   if (el.lfScanPanel)   el.lfScanPanel.hidden   = mode !== 'scan';
   if (el.lfSearchPanel) el.lfSearchPanel.hidden = mode !== 'search';
   if (el.lfPhotoPanel)  el.lfPhotoPanel.hidden  = mode !== 'photo';
+  if (el.lfTextPanel)   el.lfTextPanel.hidden   = mode !== 'text';
   if (mode === 'manual') { resetLfForm(); showLfReviewForm(); }
   else if (el.lfReviewForm) el.lfReviewForm.hidden = true;
   if (mode === 'scan') startBarcodeScan();
@@ -9527,6 +11579,11 @@ function resetLfForm() {
   lfSelectedCustomFoodId = null;
   lfPendingBarcode = null;
   lfBaseNutrition = null;
+  lfEditingFoodLogId = null;
+  lfEditingOriginal = null;
+  lfCopyYesterdayItems = [];
+  if (el.btnLfCopyYesterday) el.btnLfCopyYesterday.hidden = true;
+  if (el.btnLfSave) el.btnLfSave.textContent = 'Log it';
   if (el.lfFoodName) el.lfFoodName.value = '';
   if (el.lfBrand) el.lfBrand.value = '';
   if (el.lfLoggedAt) el.lfLoggedAt.value = toDatetimeLocalValue(new Date());
@@ -9558,6 +11615,17 @@ function resetLfForm() {
   if (el.lfPhotoAfterInputCamera) el.lfPhotoAfterInputCamera.value = '';
   if (el.lfPhotoAfterInputLibrary) el.lfPhotoAfterInputLibrary.value = '';
   if (el.btnLfEstimate) el.btnLfEstimate.disabled = true;
+  lfTextItems = [];
+  if (el.lfTextInput) el.lfTextInput.value = '';
+  if (el.lfTextLoggedAt) el.lfTextLoggedAt.value = toDatetimeLocalValue(new Date());
+  if (el.lfTextResults) el.lfTextResults.hidden = true;
+  if (el.lfTextItems) el.lfTextItems.innerHTML = '';
+  if (el.lfTextNote) el.lfTextNote.textContent = '';
+  if (el.lfTextEstimateStatus) el.lfTextEstimateStatus.textContent = '';
+  if (el.lfTextSaveStatus) el.lfTextSaveStatus.textContent = '';
+  if (el.lfTextShare) el.lfTextShare.checked = false;
+  if (el.lfTextShareWrap) el.lfTextShareWrap.hidden = !HOUSEHOLD_PARTNER[currentUser?.id];
+  if (el.lfTextShareName && HOUSEHOLD_PARTNER[currentUser?.id]) el.lfTextShareName.textContent = HOUSEHOLD_PARTNER[currentUser.id].name;
 }
 el.btnLfFavToggle?.addEventListener('click', () => {
   lfFavToggleActive = !lfFavToggleActive;
@@ -9567,6 +11635,56 @@ el.btnLfFavToggle?.addEventListener('click', () => {
 function showLfReviewForm() {
   if (el.lfReviewForm) el.lfReviewForm.hidden = false;
   el.lfFoodName?.focus();
+}
+
+// Opens the review form pre-filled with an already-logged item, tapped
+// from a section in Today's meals — lets a quantity/macro typo or a
+// wrong meal slot be fixed after the fact instead of delete-and-relog.
+// Fields are de-multiplied back to per-serving values (row values are
+// quantity * per-serving) since the form always edits per-serving figures
+// and re-multiplies on save, same as a fresh manual entry.
+function openLfEditItem(row) {
+  resetLfForm();
+  selectLfMode(null);
+  lfEditingFoodLogId = row.id;
+  lfEditingOriginal = {
+    logDate: (row.logged_at || '').slice(0, 10),
+    mealSlot: row.meal_slot,
+    hypoTreatment: !!row.hypo_treatment,
+  };
+  const qty = Number(row.quantity) || 1;
+  const perServingCals = Math.round((Number(row.calories_kcal) || 0) / qty);
+  const perServingProtein = Math.round((Number(row.protein_g) || 0) / qty * 10) / 10;
+  const perServingCarbs = Math.round((Number(row.carbs_g) || 0) / qty * 10) / 10;
+  const perServingFat = Math.round((Number(row.fat_g) || 0) / qty * 10) / 10;
+  if (el.lfFoodName) el.lfFoodName.value = row.food_name || '';
+  if (el.lfBrand) el.lfBrand.value = row.brand || '';
+  if (el.lfServingDesc) el.lfServingDesc.value = row.serving_desc || '';
+  if (el.lfQuantity) el.lfQuantity.value = qty;
+  if (el.lfCals) el.lfCals.value = perServingCals;
+  if (el.lfProtein) el.lfProtein.value = perServingProtein;
+  if (el.lfCarbs) el.lfCarbs.value = perServingCarbs;
+  if (el.lfFat) el.lfFat.value = perServingFat;
+  if (el.lfMealSlot) el.lfMealSlot.value = LF_SECTIONS.some(s => s.key === row.meal_slot) ? row.meal_slot : defaultMealSlot();
+
+  // Same rescale-on-edit as a fresh scan/search/favourite pick (see
+  // populateLfFormFromFood) — lets editing the serving description of an
+  // already-logged item rescale its macros too, not just brand-new entries.
+  const baseQty = parseLeadingNumber(row.serving_desc);
+  lfBaseNutrition = baseQty ? {
+    qty: baseQty,
+    calories_kcal: perServingCals,
+    protein_g: perServingProtein,
+    carbs_g: perServingCarbs,
+    fat_g: perServingFat,
+  } : null;
+  if (el.lfHypoTreatment) el.lfHypoTreatment.checked = !!row.hypo_treatment;
+  if (el.lfLoggedAt) el.lfLoggedAt.value = toDatetimeLocalValue(new Date(row.logged_at));
+  if (el.lfSaveAsCustomWrap) el.lfSaveAsCustomWrap.hidden = true; // editing an existing entry — not a new reusable food
+  if (el.lfSaveAsCustom) el.lfSaveAsCustom.checked = false;
+  if (el.btnLfSave) el.btnLfSave.textContent = 'Save changes';
+  showLfReviewForm();
+  el.lfMealSlot?.closest('.card')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 /* ── Barcode scanning ────────────────────────────────────────
@@ -9614,14 +11732,37 @@ async function startBarcodeScan() {
       scanBarcodeFrame();
     } else {
       const reader = new window.ZXingBrowser.BrowserMultiFormatReader();
-      lfZxingControls = await reader.decodeFromStream(lfBarcodeStream, el.lfScanVideo, (result) => {
+      lfZxingScanAttempts = 0;
+      lfZxingControls = await reader.decodeFromStream(lfBarcodeStream, el.lfScanVideo, (result, error) => {
+        if (result) {
+          const barcode = result.getText();
+          stopBarcodeScan();
+          handleScannedBarcode(barcode);
+          return;
+        }
         // Fires on every frame, found or not — a miss comes through as
-        // `error` (typically NotFoundException), which is the normal,
-        // expected case mid-scan and safe to just ignore.
-        if (!result) return;
-        const barcode = result.getText();
-        stopBarcodeScan();
-        handleScannedBarcode(barcode);
+        // `error`, typically NotFoundException, which is the normal,
+        // expected case on nearly every single frame mid-scan (no
+        // barcode in view yet) and safe to just ignore. Anything else —
+        // a genuinely unexpected decode error, not just "haven't found
+        // one yet" — was previously silently swallowed here too, along
+        // with everything else, giving zero signal to tell "the loop
+        // never started" apart from "it's running fine but the barcode
+        // itself isn't decodable" (blur, glare, distance, damage — a
+        // real-world condition, not a bug). Surfaced now so the next
+        // report has something concrete in it either way.
+        lfZxingScanAttempts++;
+        if (error && error.name !== 'NotFoundException') {
+          console.warn('Barcode scan frame error:', error.name, error.message);
+          if (el.lfScanStatus) el.lfScanStatus.textContent = `Scan error: ${error.message || error.name}`;
+        } else if (lfZxingScanAttempts % 40 === 0) {
+          // A periodic heartbeat, not every frame — proves the decode
+          // loop is genuinely alive and actively trying, distinguishing
+          // "scanning but not finding anything" from a silently dead
+          // loop, which looked identical before this (static "Point the
+          // camera…" text either way, forever).
+          console.log(`Barcode scan: ${lfZxingScanAttempts} frames checked, no match yet.`);
+        }
       });
     }
   } catch (err) {
@@ -9719,6 +11860,16 @@ async function fetchOpenFoodFacts(barcode) {
   }
 }
 
+// Favourites and manually-typed servings don't carry a separate numeric
+// serving_qty column (only scan/search results do) — falls back to the
+// leading number in the serving-description text itself (e.g. "150g" -> 150,
+// "1 cup" -> 1), so the rescale-on-edit below still has a base to work from.
+function parseLeadingNumber(str) {
+  const m = /^([\d.]+)/.exec(String(str || '').trim());
+  const n = m ? Number(m[1]) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 function populateLfFormFromFood(food, opts = {}) {
   lfSelectedCustomFoodId = opts.custom_food_id || null;
   if (el.lfFoodName) el.lfFoodName.value = food.name || '';
@@ -9733,8 +11884,9 @@ function populateLfFormFromFood(food, opts = {}) {
   if (el.lfSaveAsCustomWrap) el.lfSaveAsCustomWrap.hidden = !!opts.hideSaveAsCustom;
   lfPendingBarcode = opts.barcode || null;
 
-  const baseQty = Number(food.serving_qty);
-  lfBaseNutrition = Number.isFinite(baseQty) && baseQty > 0 ? {
+  const explicitQty = Number(food.serving_qty);
+  const baseQty = Number.isFinite(explicitQty) && explicitQty > 0 ? explicitQty : parseLeadingNumber(food.serving_desc);
+  lfBaseNutrition = baseQty ? {
     qty: baseQty,
     calories_kcal: Number(food.calories_kcal) || 0,
     protein_g: Number(food.protein_g) || 0,
@@ -9743,12 +11895,12 @@ function populateLfFormFromFood(food, opts = {}) {
   } : null;
 }
 
-// Editing Serving size after a scan/search selection (e.g. "100g" → "50g")
-// rescales Calories/Protein/Carbs/Fat proportionally, rather than leaving
-// them stuck at the originally-populated per-base-serving figures. Only
-// active when lfBaseNutrition is set (a numeric serving_qty was known) —
-// manual entries and favourites (no stored serving_qty) leave the fields
-// untouched, same as before.
+// Editing Serving size after a scan/search/favourite selection (e.g.
+// "100g" -> "50g") rescales Calories/Protein/Carbs/Fat proportionally,
+// rather than leaving them stuck at the originally-populated figures. Only
+// active when lfBaseNutrition is set — a serving description with no
+// leading number at all (e.g. "estimated meal", "handful") has nothing to
+// scale from and leaves the fields untouched, same as before.
 el.lfServingDesc?.addEventListener('input', () => {
   if (!lfBaseNutrition) return;
   const m = /^([\d.]+)/.exec(el.lfServingDesc.value.trim());
@@ -10087,15 +12239,20 @@ el.btnLfEstimate?.addEventListener('click', async () => {
       return;
     }
     lfSelectedCustomFoodId = null;
-    if (el.lfFoodName && !el.lfFoodName.value) el.lfFoodName.value = el.lfPhotoDesc?.value?.slice(0, 60) || 'Photo estimate';
+    // A read title (from a nutrition-label screenshot) beats the photo
+    // description as the food name — it's the actual name of the thing,
+    // not just whatever the person typed as a caption.
+    if (el.lfFoodName && (!el.lfFoodName.value || data.food_name)) el.lfFoodName.value = data.food_name || el.lfPhotoDesc?.value?.slice(0, 60) || 'Photo estimate';
     if (el.lfQuantity) el.lfQuantity.value = '1';
-    if (el.lfServingDesc) el.lfServingDesc.value = 'estimated meal';
+    if (el.lfServingDesc) el.lfServingDesc.value = data.food_name ? '1 serving' : 'estimated meal';
     if (el.lfCals) el.lfCals.value = data.calories_kcal;
     if (el.lfProtein) el.lfProtein.value = data.protein_g;
     if (el.lfCarbs) el.lfCarbs.value = data.carbs_g;
     if (el.lfFat) el.lfFat.value = data.fat_g;
     if (el.lfEstimateNote) {
-      el.lfEstimateNote.textContent = `Claude's estimate (${data.confidence} confidence): ${data.note || 'no notes'} — review and adjust before saving.`;
+      el.lfEstimateNote.textContent = data.food_name
+        ? `Read from label (${data.confidence} confidence): ${data.note || 'no notes'} — review and adjust before saving.`
+        : `Claude's estimate (${data.confidence} confidence): ${data.note || 'no notes'} — review and adjust before saving.`;
     }
     if (el.lfSaveAsCustomWrap) el.lfSaveAsCustomWrap.hidden = false;
     if (el.lfSaveAsCustom) el.lfSaveAsCustom.checked = false; // a one-off estimated meal usually isn't worth saving as a reusable food
@@ -10104,6 +12261,237 @@ el.btnLfEstimate?.addEventListener('click', async () => {
     if (el.lfEstimateStatus) el.lfEstimateStatus.textContent = "Couldn't reach the estimator: " + err.message;
   } finally {
     setBtn(el.btnLfEstimate, false, 'Estimate calories & macros');
+  }
+});
+
+/* ── Describe mode ───────────────────────────────────────── */
+// One parsed item behaves exactly like a photo/scan/search result — it
+// drops into the shared review form, so favourites, "save to food list",
+// hypo and share all keep working. Several items can't: the review form
+// edits one food at a time, so they get their own list with the same
+// numbers editable in place, saved as one food_log row each.
+el.btnLfTextEstimate?.addEventListener('click', async () => {
+  const text = el.lfTextInput?.value.trim();
+  if (!text) {
+    if (el.lfTextEstimateStatus) el.lfTextEstimateStatus.textContent = 'Describe what you ate first.';
+    return;
+  }
+  setBtn(el.btnLfTextEstimate, true, 'Estimate calories & macros', 'Estimating…');
+  if (el.lfTextEstimateStatus) el.lfTextEstimateStatus.textContent = '';
+  try {
+    const session = (await db.auth.getSession()).data.session;
+    const res = await fetch('/.netlify/functions/food-text-estimate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
+      body: JSON.stringify({ text }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      if (el.lfTextEstimateStatus) el.lfTextEstimateStatus.textContent = data.error || 'Estimate failed.';
+      return;
+    }
+    const noteText = `Claude's estimate (${data.confidence} confidence): ${data.note || 'no notes'} — review and adjust before saving.`;
+
+    if (data.items.length === 1) {
+      const item = data.items[0];
+      lfSelectedCustomFoodId = null;
+      lfTextItems = [];
+      if (el.lfTextResults) el.lfTextResults.hidden = true;
+      if (el.lfFoodName) el.lfFoodName.value = item.food_name;
+      if (el.lfQuantity) el.lfQuantity.value = '1';
+      if (el.lfServingDesc) el.lfServingDesc.value = item.serving_desc || '';
+      if (el.lfCals) el.lfCals.value = item.calories_kcal;
+      if (el.lfProtein) el.lfProtein.value = item.protein_g;
+      if (el.lfCarbs) el.lfCarbs.value = item.carbs_g;
+      if (el.lfFat) el.lfFat.value = item.fat_g;
+      if (el.lfLoggedAt && el.lfTextLoggedAt?.value) el.lfLoggedAt.value = el.lfTextLoggedAt.value;
+      if (el.lfEstimateNote) el.lfEstimateNote.textContent = noteText;
+      if (el.lfSaveAsCustomWrap) el.lfSaveAsCustomWrap.hidden = false;
+      if (el.lfSaveAsCustom) el.lfSaveAsCustom.checked = false; // a one-off estimate usually isn't worth saving as a reusable food
+      showLfReviewForm();
+      return;
+    }
+
+    lfTextItems = data.items;
+    if (el.lfReviewForm) el.lfReviewForm.hidden = true;
+    if (el.lfTextNote) el.lfTextNote.textContent = noteText;
+    if (el.lfTextSaveStatus) el.lfTextSaveStatus.textContent = '';
+    renderLfTextItems();
+    if (el.lfTextResults) el.lfTextResults.hidden = false;
+  } catch (err) {
+    if (el.lfTextEstimateStatus) el.lfTextEstimateStatus.textContent = "Couldn't reach the estimator: " + err.message;
+  } finally {
+    setBtn(el.btnLfTextEstimate, false, 'Estimate calories & macros');
+  }
+});
+
+const LF_TEXT_MACRO_FIELDS = [
+  { key: 'calories_kcal', label: 'kcal', step: '1' },
+  { key: 'carbs_g', label: 'Carbs', step: '0.1' },
+  { key: 'fat_g', label: 'Fat', step: '0.1' },
+  { key: 'protein_g', label: 'Protein', step: '0.1' },
+];
+
+function renderLfTextItems() {
+  if (!el.lfTextItems) return;
+  if (!lfTextItems.length) {
+    el.lfTextItems.innerHTML = '<p class="empty-state">No items left.</p>';
+    if (el.lfTextTotal) el.lfTextTotal.textContent = '';
+    return;
+  }
+  el.lfTextItems.innerHTML = lfTextItems.map((item, idx) => `
+    <div class="lf-text-item" data-idx="${idx}">
+      <div class="lf-text-item__head">
+        <input type="text" class="lf-text-item__name" data-field="food_name" value="${escapeHtml(item.food_name)}">
+        <button type="button" class="lf-text-item__remove" data-remove="${idx}" aria-label="Remove ${escapeHtml(item.food_name)}">✕</button>
+      </div>
+      ${item.serving_desc ? `<div class="lf-text-item__serving">${escapeHtml(item.serving_desc)}</div>` : ''}
+      <div class="lf-text-item__macros">
+        ${LF_TEXT_MACRO_FIELDS.map(f => `
+          <label>${f.label}
+            <input type="number" min="0" step="${f.step}" inputmode="decimal" data-field="${f.key}" value="${item[f.key]}">
+          </label>`).join('')}
+      </div>
+    </div>`).join('');
+  renderLfTextTotal();
+}
+
+function renderLfTextTotal() {
+  if (!el.lfTextTotal) return;
+  const t = lfTextItems.reduce((acc, it) => ({
+    cals: acc.cals + (Number(it.calories_kcal) || 0),
+    carbs: acc.carbs + (Number(it.carbs_g) || 0),
+    fat: acc.fat + (Number(it.fat_g) || 0),
+    protein: acc.protein + (Number(it.protein_g) || 0),
+  }), { cals: 0, carbs: 0, fat: 0, protein: 0 });
+  const r1 = n => Math.round(n * 10) / 10;
+  el.lfTextTotal.innerHTML = `<span>${lfTextItems.length} item${lfTextItems.length === 1 ? '' : 's'} · ${Math.round(t.cals)} kcal</span>`
+    + `<span class="lf-text-total__macros">${r1(t.carbs)}g C · ${r1(t.fat)}g F · ${r1(t.protein)}g P</span>`;
+}
+
+el.lfTextItems?.addEventListener('input', e => {
+  const input = e.target.closest('[data-field]');
+  if (!input) return;
+  const idx = Number(input.closest('.lf-text-item')?.dataset.idx);
+  const item = lfTextItems[idx];
+  if (!item) return;
+  const field = input.dataset.field;
+  item[field] = field === 'food_name' ? input.value : (Number(input.value) || 0);
+  if (field !== 'food_name') renderLfTextTotal();
+});
+
+el.lfTextItems?.addEventListener('click', e => {
+  const btn = e.target.closest('[data-remove]');
+  if (!btn) return;
+  lfTextItems.splice(Number(btn.dataset.remove), 1);
+  renderLfTextItems();
+});
+
+el.btnLfTextCancel?.addEventListener('click', () => { resetLfForm(); selectLfMode(null); });
+
+el.btnLfTextSave?.addEventListener('click', async () => {
+  if (!currentUser || !lfTextItems.length) return;
+  const usable = lfTextItems.filter(it => it.food_name.trim() && (Number(it.calories_kcal) || 0) > 0);
+  if (!usable.length) {
+    if (el.lfTextSaveStatus) el.lfTextSaveStatus.textContent = 'Each item needs a name and calories.';
+    return;
+  }
+  const mealSlot = el.lfMealSlot?.value || defaultMealSlot();
+  const loggedAtInput = el.lfTextLoggedAt?.value ? new Date(el.lfTextLoggedAt.value) : null;
+  const loggedAt = loggedAtInput && !Number.isNaN(loggedAtInput.getTime()) ? loggedAtInput : new Date();
+  const logDate = loggedAt.toISOString().slice(0, 10);
+  const wantsShare = !!el.lfTextShare?.checked && !!HOUSEHOLD_PARTNER[currentUser.id];
+
+  setBtn(el.btnLfTextSave, true, 'Log all', 'Saving…');
+  try {
+    const rows = usable.map(it => ({
+      user_id: currentUser.id,
+      log_date: logDate,
+      logged_at: loggedAt.toISOString(),
+      meal_slot: mealSlot,
+      source: 'text',
+      food_name: it.food_name.trim(),
+      serving_desc: it.serving_desc || null,
+      quantity: 1,
+      calories_kcal: Math.round(Number(it.calories_kcal) || 0),
+      protein_g: Math.round((Number(it.protein_g) || 0) * 10) / 10,
+      carbs_g: Math.round((Number(it.carbs_g) || 0) * 10) / 10,
+      fat_g: Math.round((Number(it.fat_g) || 0) * 10) / 10,
+      estimate_note: el.lfTextNote?.textContent || null,
+      hypo_treatment: false,
+    }));
+    const { data: saved, error } = await db.from('food_log').insert(rows).select('id');
+    if (error) {
+      if (el.lfTextSaveStatus) el.lfTextSaveStatus.textContent = "Couldn't save: " + error.message;
+      return;
+    }
+
+    // Snacks are dosed per item, so each row needs its own bridge call.
+    // Every other slot aggregates the whole section from food_log, so one
+    // call after all the rows are in re-sums the lot — running it per row
+    // would just repeat the same full re-sum N times.
+    let dxBridgeError = null;
+    if (profile?.diabetes_enabled !== false) {
+      const bridgeItem = i => ({
+        food_name: rows[i].food_name,
+        carbs_g: rows[i].carbs_g,
+        fat_g: rows[i].fat_g,
+        protein_g: rows[i].protein_g,
+        logged_at: rows[i].logged_at,
+      });
+      if (mealSlot === 'snack') {
+        for (let i = 0; i < rows.length; i++) {
+          const { error: e } = await bridgeLfMealChange(logDate, mealSlot, false, saved[i].id, bridgeItem(i));
+          if (e) dxBridgeError = e;
+        }
+      } else {
+        const last = rows.length - 1;
+        const { error: e } = await bridgeLfMealChange(logDate, mealSlot, false, saved[last].id, bridgeItem(last));
+        if (e) dxBridgeError = e;
+      }
+    }
+
+    let shareError = null;
+    if (wantsShare) {
+      try {
+        const session = (await db.auth.getSession()).data.session;
+        for (const row of rows) {
+          const shareRes = await fetch('/.netlify/functions/share-food-log', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token}` },
+            body: JSON.stringify({
+              log_date: row.log_date, logged_at: row.logged_at, meal_slot: row.meal_slot,
+              food_name: row.food_name, brand: null, serving_desc: row.serving_desc,
+              quantity: 1,
+              calories_kcal: row.calories_kcal, protein_g: row.protein_g, carbs_g: row.carbs_g, fat_g: row.fat_g,
+              barcode: null,
+            }),
+          });
+          if (!shareRes.ok) {
+            const errData = await shareRes.json().catch(() => ({}));
+            shareError = errData.error || `HTTP ${shareRes.status}`;
+          }
+        }
+      } catch (err) {
+        shareError = err.message;
+      }
+    }
+
+    const label = `${rows.length} item${rows.length === 1 ? '' : 's'}`;
+    resetLfForm();
+    selectLfMode(null);
+    await Promise.all([renderLfTodayTotals(), renderLfTodayList(), renderLfFavorites()]);
+    if (shareError) {
+      showToast(`Logged ${label}, but couldn't share: ${shareError}`, true);
+    } else if (dxBridgeError) {
+      showToast(`Logged ${label}, but it won't show in the dose calculator: ${dxBridgeError}`, true);
+    } else if (wantsShare) {
+      showToast(`Logged ${label} — shared with ${HOUSEHOLD_PARTNER[currentUser.id].name}.`);
+    } else {
+      showToast(`Logged ${label}.`);
+    }
+  } finally {
+    setBtn(el.btnLfTextSave, false, 'Log all');
   }
 });
 
@@ -10127,6 +12515,73 @@ el.btnLfSave?.addEventListener('click', async () => {
   const servingDesc = el.lfServingDesc?.value.trim() || null;
   const hypoTreatment = !!el.lfHypoTreatment?.checked;
   const wantsShare = !!el.lfShare?.checked && !!HOUSEHOLD_PARTNER[currentUser.id];
+
+  // Editing an already-logged item (tapped from Today's meals) updates
+  // that row in place instead of inserting a new one — a separate, much
+  // simpler path than the fresh-entry flow below since none of the
+  // custom-food/favourite/share side effects apply to fixing a typo.
+  if (lfEditingFoodLogId) {
+    setBtn(el.btnLfSave, true, 'Save changes', 'Saving…');
+    try {
+      const loggedAtInput = el.lfLoggedAt?.value ? new Date(el.lfLoggedAt.value) : null;
+      const loggedAt = loggedAtInput && !Number.isNaN(loggedAtInput.getTime()) ? loggedAtInput : new Date();
+      const logDate = loggedAt.toISOString().slice(0, 10);
+      const { error } = await db.from('food_log').update({
+        log_date: logDate,
+        logged_at: loggedAt.toISOString(),
+        meal_slot: mealSlot,
+        food_name: name, brand, serving_desc: servingDesc,
+        quantity,
+        calories_kcal: Math.round(baseCals * quantity),
+        protein_g: Math.round(baseProtein * quantity * 10) / 10,
+        carbs_g: Math.round(baseCarbs * quantity * 10) / 10,
+        fat_g: Math.round(baseFat * quantity * 10) / 10,
+        hypo_treatment: hypoTreatment,
+      }).eq('id', lfEditingFoodLogId);
+      if (error) {
+        if (el.lfSaveStatus) el.lfSaveStatus.textContent = "Couldn't save: " + error.message;
+        return;
+      }
+
+      // Re-sync the section this item lands in — and, if the date, meal
+      // slot or hypo flag changed, the section it USED to belong to as
+      // well. For an aggregated section that's a full re-sum from
+      // scratch; for Snacks it's this one item's own dose row — the old
+      // section gets `item: null` since by now food_log already reflects
+      // the NEW section, not the one being cleaned up (see
+      // upsertDiabetesMealItem's comment).
+      let dxBridgeError = null;
+      if (profile?.diabetes_enabled !== false) {
+        const orig = lfEditingOriginal;
+        const moved = orig && (orig.logDate !== logDate || orig.mealSlot !== mealSlot || orig.hypoTreatment !== hypoTreatment);
+        if (moved) {
+          const { error: oldErr } = await bridgeLfMealChange(orig.logDate, orig.mealSlot, orig.hypoTreatment, lfEditingFoodLogId, null);
+          if (oldErr) dxBridgeError = oldErr;
+        }
+        const itemForBridge = {
+          food_name: name,
+          carbs_g: Math.round(baseCarbs * quantity * 10) / 10,
+          fat_g: Math.round(baseFat * quantity * 10) / 10,
+          protein_g: Math.round(baseProtein * quantity * 10) / 10,
+          logged_at: loggedAt.toISOString(),
+        };
+        const { error: bridgeErr } = await bridgeLfMealChange(logDate, mealSlot, hypoTreatment, lfEditingFoodLogId, itemForBridge);
+        if (bridgeErr) dxBridgeError = bridgeErr;
+      }
+
+      resetLfForm();
+      selectLfMode(null);
+      await Promise.all([renderLfTodayTotals(), renderLfTodayList(), renderLfFavorites()]);
+      if (dxBridgeError) {
+        showToast(`Saved ${name}, but it won't show in the dose calculator: ${dxBridgeError}`, true);
+      } else {
+        showToast(`Saved ${name}.`);
+      }
+    } finally {
+      setBtn(el.btnLfSave, false, lfEditingFoodLogId ? 'Save changes' : 'Log it');
+    }
+    return;
+  }
 
   setBtn(el.btnLfSave, true, 'Log it', 'Saving…');
   try {
@@ -10153,7 +12608,7 @@ el.btnLfSave?.addEventListener('click', async () => {
       log_date: logDate,
       logged_at: loggedAt.toISOString(),
       meal_slot: mealSlot,
-      source: lfSelectedCustomFoodId ? (lfSelectedMode === 'search' ? 'search' : 'scan') : (lfPhotoAngles.length > 0 ? 'photo' : (lfPendingBarcode ? 'scan' : 'manual')),
+      source: lfSelectedCustomFoodId ? (lfSelectedMode === 'search' ? 'search' : 'scan') : (lfPhotoAngles.length > 0 ? 'photo' : (lfPendingBarcode ? 'scan' : (lfSelectedMode === 'text' ? 'text' : 'manual'))),
       food_name: name, brand, serving_desc: servingDesc,
       quantity,
       calories_kcal: Math.round(baseCals * quantity),
@@ -10170,38 +12625,28 @@ el.btnLfSave?.addEventListener('click', async () => {
       return;
     }
 
-    // Bridge into the diabetes tab's own meal log too, when relevant —
-    // so meal-dose personalization keeps learning from real logged
-    // meals regardless of which UI logged them. Same recordMacroMeal
-    // shape the Diabetes tab's own meal-dose calculator already uses.
-    // food_log_id links back to the row just saved above so a later time
-    // edit (see the "Logged today" list) can find and update this row's
-    // eaten_at too, instead of the two silently drifting apart.
+    // Bridge into the diabetes tab's own meal log too — Snacks get their
+    // own per-item dose row, everything else upserts the whole SECTION
+    // (day + meal slot, or Hypo Treatment), re-summed from every item
+    // currently in it. See bridgeLfMealChange/upsertDiabetesMealSection
+    // for why and how it protects a dose already linked to a real bolus.
+    //
     // dxBridgeError, not thrown/returned — the food_log row above already
     // saved successfully, so a bridge failure here shouldn't look like the
-    // whole log failed. But it was previously not checked at all: a failed
-    // insert (network blip, etc.) silently left this meal missing from the
-    // dose calculator's "Today's meals" picker with no error anywhere —
-    // seen in practice. Surfaced as a toast instead, alongside the normal
-    // "Logged X" success message below.
+    // whole log failed. Surfaced as a toast instead, alongside the normal
+    // "Logged X" success message below (this used to be silently
+    // swallowed entirely — seen in practice — before that was fixed).
     let dxBridgeError = null;
-    if (profile?.diabetes_enabled !== false && baseCarbs * quantity > 0) {
-      const { error: bridgeErr } = await db.from('diabetes_meals').insert({
-        user_id: currentUser.id,
-        food_log_id: savedFoodLog?.id || null,
-        eaten_at: loggedAt.toISOString(),
-        meal_name: name,
+    if (profile?.diabetes_enabled !== false) {
+      const itemForBridge = {
+        food_name: name,
         carbs_g: Math.round(baseCarbs * quantity * 10) / 10,
         fat_g: Math.round(baseFat * quantity * 10) / 10,
         protein_g: Math.round(baseProtein * quantity * 10) / 10,
-        source: 'manual',
-        hypo_treatment: hypoTreatment,
-        match_status: hypoTreatment ? 'hypo-manual' : null,
-      });
-      if (bridgeErr) {
-        console.error('diabetes_meals bridge insert failed:', bridgeErr.message);
-        dxBridgeError = bridgeErr.message;
-      }
+        logged_at: loggedAt.toISOString(),
+      };
+      const { error: bridgeErr } = await bridgeLfMealChange(logDate, mealSlot, hypoTreatment, savedFoodLog.id, itemForBridge);
+      if (bridgeErr) dxBridgeError = bridgeErr;
     }
 
     // Save as a favourite too, when the ⭐ toggle is on — base per-serving
@@ -10289,34 +12734,322 @@ async function renderLfTodayTotals() {
   if (el.mtProtein) el.mtProtein.textContent = `${Math.round(totals.protein)}g`;
   if (el.mtCarbs) el.mtCarbs.textContent = `${Math.round(totals.carbs)}g`;
   if (el.mtFat) el.mtFat.textContent = `${Math.round(totals.fat)}g`;
+  await renderLfRemaining(totals);
+  return totals;
+}
+
+// Ideal remaining (target - eaten) for each macro is independent of the
+// others, so on a day where carbs/fat are already near target but protein
+// is behind, "51g protein" and "1g carbs" can individually be true while
+// jointly impossible — 51g protein alone costs more calories than remain.
+// This reconciles the three against the actual remaining calorie budget
+// so what's shown can always be eaten together. Protein is treated as the
+// non-negotiable figure (it's a fixed 1g/lb-bodyweight goal) and gets
+// first claim on whatever calories are left; carbs/fat — the flexible
+// "fill" macros — share whatever's left over after that, scaled down
+// together (preserving their relative ratio) if even their reduced
+// targets don't both fit. Nothing here is ever allowed to ask for more
+// calories than are actually left today.
+function computeAchievableRemaining(targets, totals) {
+  const calRemaining = targets.calories - totals.cals;
+  const idealProtein = targets.protein != null ? targets.protein - totals.protein : null;
+  const idealFat = targets.fat - totals.fat;
+  const idealCarbs = targets.carbs - totals.carbs;
+
+  const proteinOver = idealProtein != null && idealProtein < 0;
+  const fatOver = idealFat < 0;
+  const carbsOver = idealCarbs < 0;
+
+  const proteinNeed = idealProtein != null ? Math.max(0, idealProtein) : 0;
+  const fatNeed = Math.max(0, idealFat);
+  const carbsNeed = Math.max(0, idealCarbs);
+
+  const budget = Math.max(0, calRemaining);
+  const proteinKcalUsed = Math.min(proteinNeed * 4, budget);
+  const protein = idealProtein != null ? proteinKcalUsed / 4 : null;
+  const leftoverAfterProtein = budget - proteinKcalUsed;
+
+  const fatIdealKcal = fatNeed * 9;
+  const carbsIdealKcal = carbsNeed * 4;
+  const totalIdealKcal = fatIdealKcal + carbsIdealKcal;
+  let fat, carbs;
+  if (totalIdealKcal === 0 || totalIdealKcal <= leftoverAfterProtein) {
+    fat = fatNeed; carbs = carbsNeed;
+  } else {
+    const scale = leftoverAfterProtein / totalIdealKcal;
+    fat = fatNeed * scale;
+    carbs = carbsNeed * scale;
+  }
+
+  // computeMacroTargets rounds protein/fat/carbs to whole grams independently,
+  // so their kcal sum is routinely a few kcal off calTarget even on a
+  // perfectly on-plan day — that alone shouldn't trip the "trimmed" note.
+  // 1g is below the rounding the UI displays at anyway, so a diff smaller
+  // than that is invisible regardless.
+  const EPS = 1;
+  const adjusted =
+    (protein != null && protein < proteinNeed - EPS) ||
+    fat < fatNeed - EPS ||
+    carbs < carbsNeed - EPS;
+
+  return { calRemaining, protein, fat, carbs, proteinOver, fatOver, carbsOver, proteinNeed, fatNeed, carbsNeed, adjusted };
+}
+
+// Target minus today's totals (see computeMacroTargets), reconciled to be
+// jointly achievable within today's remaining calories (see
+// computeAchievableRemaining). Takes the same totals renderLfTodayTotals
+// just computed rather than re-fetching food_log itself. Negative (over
+// target) renders in the same warning colour used elsewhere rather than a
+// confusing negative number.
+async function renderLfRemaining(totals) {
+  if (!el.lfRemainingCard) return;
+  const targets = await computeMacroTargets();
+  if (!targets) { el.lfRemainingCard.hidden = true; return; }
+  el.lfRemainingCard.hidden = false;
+
+  const r = computeAchievableRemaining(targets, totals);
+
+  const setRemaining = (valEl, remaining, over) => {
+    if (!valEl) return;
+    valEl.textContent = Math.round(Math.abs(remaining)) + (valEl === el.rtCals ? '' : 'g');
+    valEl.classList.toggle('macro-total__val--over', over);
+  };
+  setRemaining(el.rtCals, r.calRemaining, r.calRemaining < 0);
+  if (r.protein != null) setRemaining(el.rtProtein, r.protein, r.proteinOver);
+  else if (el.rtProtein) el.rtProtein.textContent = '—';
+  setRemaining(el.rtCarbs, r.carbs, r.carbsOver);
+  setRemaining(el.rtFat, r.fat, r.fatOver);
+
+  if (el.rtAdjustedNote) {
+    if (r.adjusted) {
+      const bits = [];
+      if (r.protein != null && r.protein < r.proteinNeed - 1) bits.push(`${Math.round(r.proteinNeed)}g protein`);
+      if (r.carbs < r.carbsNeed - 1) bits.push(`${Math.round(r.carbsNeed)}g carbs`);
+      if (r.fat < r.fatNeed - 1) bits.push(`${Math.round(r.fatNeed)}g fat`);
+      el.rtAdjustedNote.textContent = `Full targets (${bits.join(', ')}) won't fit in today's remaining calories — trimmed to the most protein-priority split that still does.`;
+      el.rtAdjustedNote.hidden = false;
+    } else {
+      el.rtAdjustedNote.hidden = true;
+    }
+  }
 }
 
 const LF_SOURCE_ICON = { scan: '📷', search: '🔍', photo: '📸', manual: '✏️', shared: '🍽️' };
+
+// MFP-style meal sections — fixed order, always all five shown (even
+// empty) so "+ Add to X" is always reachable rather than only appearing
+// once something's already been logged there. Hypo Treatment groups by
+// the existing hypo_treatment boolean, not meal_slot (see the schema
+// note on diabetes_meals.meal_slot) — a hypo item still carries a normal
+// meal_slot value underneath, it just displays under its own section.
+const LF_SECTIONS = [
+  { key: 'breakfast', label: 'Breakfast' },
+  { key: 'lunch',     label: 'Lunch' },
+  { key: 'dinner',    label: 'Dinner' },
+  { key: 'snack',     label: 'Snacks' },
+  { key: 'hypo',      label: 'Hypo Treatment' },
+];
+
+// hypoEnabled gates whether a hypo-flagged item actually groups into its
+// own section — when diabetes tracking is off there's no Hypo Treatment
+// section rendered at all (see renderLfTodayList), so routing there
+// would silently drop the item from the list entirely.
+function lfSectionOf(r, hypoEnabled) {
+  if (r.hypo_treatment && hypoEnabled) return 'hypo';
+  return LF_SECTIONS.some(s => s.key === r.meal_slot) ? r.meal_slot : 'snack';
+}
+
+// Yesterday's items already routed into a given section (same grouping
+// rule as the day's own list — see lfSectionOf), for the "Copy
+// yesterday's X" button. UTC day window, same convention as todayISO()
+// everywhere else — 'yesterday' is calendar-yesterday relative to now,
+// not tied to whichever section is being added to.
+async function fetchYesterdaySectionItems(sectionKey) {
+  if (!currentUser) return [];
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const { data, error } = await db.from('food_log')
+    .select('food_name, brand, serving_desc, quantity, calories_kcal, protein_g, carbs_g, fat_g, source, barcode, custom_food_id, meal_slot, hypo_treatment')
+    .eq('user_id', currentUser.id)
+    .eq('log_date', yesterday);
+  if (error) { console.error('fetchYesterdaySectionItems error:', error.message); return []; }
+  const hypoEnabled = profile?.diabetes_enabled !== false;
+  return (data || []).filter(r => lfSectionOf(r, hypoEnabled) === sectionKey);
+}
+
+// Populates and shows/hides the "Copy yesterday's X" button whenever the
+// add-item flow opens for a section — hidden entirely when yesterday has
+// nothing logged there, so it never offers to copy zero items.
+async function updateLfCopyYesterdayButton(sectionKey) {
+  if (!el.btnLfCopyYesterday) return;
+  const items = await fetchYesterdaySectionItems(sectionKey);
+  lfCopyYesterdayItems = items;
+  if (!items.length) { el.btnLfCopyYesterday.hidden = true; return; }
+  const label = LF_SECTIONS.find(s => s.key === sectionKey)?.label || 'meal';
+  el.btnLfCopyYesterday.hidden = false;
+  el.btnLfCopyYesterday.textContent = `📋 Copy yesterday's ${label} (${items.length} item${items.length === 1 ? '' : 's'})`;
+  el.btnLfCopyYesterday.title = items.map(i => i.food_name).join(', ');
+}
+
+el.btnLfCopyYesterday?.addEventListener('click', async () => {
+  if (!currentUser || !lfCopyYesterdayItems.length) return;
+  const originalLabel = el.btnLfCopyYesterday.textContent;
+  el.btnLfCopyYesterday.disabled = true;
+  el.btnLfCopyYesterday.textContent = 'Copying…';
+  try {
+    const logDate = todayISO();
+    const loggedAt = new Date().toISOString();
+    // Inserted one row at a time rather than a single bulk insert — a
+    // bulk `.insert(rows).select('id')` doesn't guarantee its returned
+    // array comes back in the same order the rows were given, so
+    // matching result[i] back to lfCopyYesterdayItems[i] by position
+    // could silently attach the wrong food_log_id to a snack's dosing
+    // bridge below. One insert per row costs an extra round trip each,
+    // but this only ever runs on a small hand-picked batch, and it's the
+    // only way to know for certain which id belongs to which item.
+    const insertedRows = [];
+    for (const r of lfCopyYesterdayItems) {
+      const { data: inserted, error: rowErr } = await db.from('food_log').insert({
+        user_id: currentUser.id, log_date: logDate, logged_at: loggedAt,
+        meal_slot: r.meal_slot, food_name: r.food_name, brand: r.brand, serving_desc: r.serving_desc,
+        quantity: r.quantity, calories_kcal: r.calories_kcal, protein_g: r.protein_g,
+        carbs_g: r.carbs_g, fat_g: r.fat_g, source: r.source, barcode: r.barcode,
+        custom_food_id: r.custom_food_id, hypo_treatment: r.hypo_treatment,
+      }).select('id').single();
+      if (rowErr) {
+        showToast("Couldn't copy: " + rowErr.message, true);
+        el.btnLfCopyYesterday.textContent = originalLabel;
+        return;
+      }
+      insertedRows.push(inserted);
+    }
+    if (profile?.diabetes_enabled !== false) {
+      // Every copied row shares the same section (fetchYesterdaySectionItems
+      // already filtered to one). Snacks dose per-item, so each copied row
+      // needs its own bridge call; everything else re-aggregates once.
+      const first = lfCopyYesterdayItems[0];
+      if (!first.hypo_treatment && first.meal_slot === 'snack') {
+        for (let i = 0; i < lfCopyYesterdayItems.length; i++) {
+          const r = lfCopyYesterdayItems[i];
+          const insertedId = insertedRows[i]?.id;
+          if (!insertedId) continue;
+          const { error: bridgeErr } = await upsertDiabetesMealItem(insertedId, {
+            food_name: r.food_name, carbs_g: r.carbs_g, fat_g: r.fat_g, protein_g: r.protein_g, logged_at: loggedAt,
+          });
+          if (bridgeErr) showToast(`Copied, but it won't show in the dose calculator: ${bridgeErr}`, true);
+        }
+      } else {
+        const { error: bridgeErr } = await upsertDiabetesMealSection(logDate, first.meal_slot, !!first.hypo_treatment);
+        if (bridgeErr) showToast(`Copied, but it won't show in the dose calculator: ${bridgeErr}`, true);
+      }
+    }
+    resetLfForm();
+    selectLfMode(null);
+    await Promise.all([renderLfTodayTotals(), renderLfTodayList(), renderLfFavorites()]);
+    showToast(`Copied ${insertedRows.length} item${insertedRows.length === 1 ? '' : 's'} from yesterday.`);
+  } finally {
+    el.btnLfCopyYesterday.disabled = false;
+  }
+});
+
+// Sub-line under the food name, MFP-style: brand + serving description,
+// e.g. "Asda · 2 wrap" — omits either half when the item doesn't have it
+// (a manual/photo-estimate entry usually has neither).
+function lfItemDesc(r) {
+  const parts = [];
+  if (r.brand) parts.push(escapeHtml(r.brand));
+  if (r.serving_desc) {
+    const qty = Number(r.quantity) || 1;
+    parts.push(`${qty !== 1 ? qty + ' × ' : ''}${escapeHtml(r.serving_desc)}`);
+  }
+  return parts.join(' · ');
+}
+
+function lfRowHtml(r) {
+  const loggedAt = new Date(r.logged_at);
+  const timeStr = `${String(loggedAt.getHours()).padStart(2, '0')}:${String(loggedAt.getMinutes()).padStart(2, '0')}`;
+  const desc = lfItemDesc(r);
+  return `
+    <div class="lf-item" data-action="food-edit-item" data-id="${r.id}">
+      <div class="lf-item__main">
+        <span class="lf-item__name">${LF_SOURCE_ICON[r.source] || ''} ${escapeHtml(r.food_name)}</span>
+        <span class="lf-item__kcal">${Math.round(r.calories_kcal)}</span>
+      </div>
+      <div class="lf-item__sub">
+        <span class="lf-item__desc">${desc}</span>
+        <span class="lf-today-actions">
+          <button type="button" class="btn btn--ghost btn--small" data-action="food-edit-time" data-id="${r.id}" data-time="${timeStr}">🕐 ${timeStr}</button>
+          <button class="btn btn--ghost btn--small" data-action="food-delete" data-id="${r.id}">Delete</button>
+        </span>
+      </div>
+    </div>`;
+}
+
 async function renderLfTodayList() {
   if (!el.lfTodayList) return;
   const rows = await fetchTodayFoodLog();
-  if (!rows.length) { el.lfTodayList.innerHTML = '<p class="empty-state">Nothing logged yet.</p>'; return; }
-  el.lfTodayList.innerHTML = rows.map(r => {
-    const loggedAt = new Date(r.logged_at);
-    const timeStr = `${String(loggedAt.getHours()).padStart(2, '0')}:${String(loggedAt.getMinutes()).padStart(2, '0')}`;
+  const hypoEnabled = profile?.diabetes_enabled !== false;
+  const bySection = { breakfast: [], lunch: [], dinner: [], snack: [], hypo: [] };
+  rows.forEach(r => bySection[lfSectionOf(r, hypoEnabled)].push(r));
+
+  // Hypo Treatment only makes sense with diabetes tracking on — matches
+  // the existing hypo checkbox's own visibility rule in resetLfForm().
+  const sections = hypoEnabled ? LF_SECTIONS : LF_SECTIONS.filter(s => s.key !== 'hypo');
+
+  el.lfTodayList.innerHTML = sections.map(({ key, label }) => {
+    const items = bySection[key];
+    const kcal = Math.round(items.reduce((sum, r) => sum + (Number(r.calories_kcal) || 0), 0));
+    const carbs = items.reduce((sum, r) => sum + (Number(r.carbs_g) || 0), 0);
+    const fat = items.reduce((sum, r) => sum + (Number(r.fat_g) || 0), 0);
+    const protein = items.reduce((sum, r) => sum + (Number(r.protein_g) || 0), 0);
     return `
-    <div class="dx-workout-history__row">
-      <div class="dx-workout-history__when">
-        <span>${LF_SOURCE_ICON[r.source] || ''} ${escapeHtml(r.food_name)}${r.brand ? ` <span class="lf-search-result__brand">${escapeHtml(r.brand)}</span>` : ''} · ${r.meal_slot}${r.hypo_treatment ? ' <span class="badge badge--blue" style="font-size:9px">hypo</span>' : ''}</span>
-        <span class="dx-workout-history__dur">${Math.round(r.calories_kcal)} kcal</span>
+    <div class="lf-section">
+      <div class="lf-section__head">
+        <div class="lf-section__headrow">
+          <span class="lf-section__name">${label}</span>
+          ${items.length ? `<span class="lf-section__total">${kcal} kcal</span>` : ''}
+        </div>
+        ${items.length ? `<div class="lf-section__macros">Carbs ${fmt1(carbs)}g · Fat ${fmt1(fat)}g · Protein ${fmt1(protein)}g</div>` : ''}
       </div>
-      <div class="lf-today-actions">
-        <button type="button" class="btn btn--ghost btn--small" data-action="food-edit-time" data-id="${r.id}" data-time="${timeStr}">🕐 ${timeStr}</button>
-        <button class="btn btn--ghost btn--small" data-action="food-delete" data-id="${r.id}">Delete</button>
-      </div>
+      ${items.map(lfRowHtml).join('')}
+      <button type="button" class="lf-section__add" data-slot="${key}">ADD FOOD</button>
     </div>`;
   }).join('');
 }
 el.lfTodayList?.addEventListener('click', async e => {
+  // Presets the Meal dropdown (and, for Hypo Treatment, the hypo
+  // checkbox) to this section before jumping to the existing add-item
+  // flow — same mode-pill/review-form UI every other entry point already
+  // uses, just arriving with the right section pre-selected instead of
+  // whatever defaultMealSlot()'s hour-based guess would've picked.
+  const addBtn = e.target.closest('.lf-section__add');
+  if (addBtn) {
+    const slot = addBtn.dataset.slot;
+    resetLfForm();
+    if (slot === 'hypo') {
+      if (el.lfMealSlot) el.lfMealSlot.value = defaultMealSlot();
+      if (el.lfHypoTreatment) el.lfHypoTreatment.checked = true;
+    } else if (el.lfMealSlot) {
+      el.lfMealSlot.value = slot;
+    }
+    selectLfMode(null);
+    el.lfMealSlot?.closest('.card')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    updateLfCopyYesterdayButton(slot);
+    return;
+  }
+
   const delBtn = e.target.closest('[data-action="food-delete"]');
   if (delBtn) {
+    // Fetched before deleting — need this row's section identity
+    // afterward to re-aggregate what's left in it (upsertDiabetesMealSection
+    // re-sums from scratch, it doesn't know what just got removed).
+    const { data: doomedRow } = await db.from('food_log')
+      .select('log_date, meal_slot, hypo_treatment')
+      .eq('id', delBtn.dataset.id).single();
     const { error } = await db.from('food_log').delete().eq('id', delBtn.dataset.id);
     if (error) { showToast("Couldn't delete: " + error.message, true); return; }
+    if (doomedRow && profile?.diabetes_enabled !== false) {
+      await bridgeLfMealChange(doomedRow.log_date, doomedRow.meal_slot, !!doomedRow.hypo_treatment, delBtn.dataset.id, null);
+    }
     await Promise.all([renderLfTodayTotals(), renderLfTodayList()]);
     return;
   }
@@ -10342,17 +13075,30 @@ el.lfTodayList?.addEventListener('click', async e => {
     saveBtn.textContent = 'Saving…';
     await saveLfLoggedTime(saveBtn.dataset.id, timeVal);
     await Promise.all([renderLfTodayTotals(), renderLfTodayList()]);
+    return;
+  }
+
+  // Tapping anywhere else on an item row opens it in the review form for
+  // a full edit (name/quantity/macros/meal slot), not just the time chip
+  // above. Re-fetches rather than trusting stale DOM state, since the
+  // list may have re-rendered since this row was drawn.
+  const itemRow = e.target.closest('[data-action="food-edit-item"]');
+  if (itemRow) {
+    const rows = await fetchTodayFoodLog();
+    const row = rows.find(r => String(r.id) === String(itemRow.dataset.id));
+    if (row) openLfEditItem(row);
   }
 });
 
-// Updates a food_log entry's time in place, then keeps the diabetes
-// chart's meal marker in sync — the reliable food_log_id link (every row
-// saved since that column shipped) is tried first, falling back to a
-// best-effort meal-name + carbs + nearby-time match for rows logged
-// before the link existed, so an old entry's chart marker can still move
-// when its time is corrected.
+// Updates a food_log entry's time in place, then re-aggregates its
+// section (upsertDiabetesMealSection) so the diabetes_meals row's
+// eaten_at reflects whichever item in the section is now earliest —
+// the old food_log_id 1:1 link this used to sync through doesn't fit
+// the aggregate one-row-per-section model (that FK can only ever point
+// at one of the section's possibly-several items).
 async function saveLfLoggedTime(foodLogId, timeVal) {
-  const { data: foodRow, error: fetchErr } = await db.from('food_log').select('logged_at, food_name, carbs_g').eq('id', foodLogId).single();
+  const { data: foodRow, error: fetchErr } = await db.from('food_log')
+    .select('logged_at, log_date, meal_slot, hypo_treatment, food_name, carbs_g, fat_g, protein_g').eq('id', foodLogId).single();
   if (fetchErr || !foodRow) { showToast("Couldn't load that entry", true); return; }
 
   const oldLoggedAt = new Date(foodRow.logged_at);
@@ -10364,21 +13110,22 @@ async function saveLfLoggedTime(foodLogId, timeVal) {
   const { error: updErr } = await db.from('food_log').update({ logged_at: newIso, log_date: newLogDate }).eq('id', foodLogId);
   if (updErr) { showToast("Couldn't update time: " + updErr.message, true); return; }
 
-  const { data: linked } = await db.from('diabetes_meals').select('id').eq('food_log_id', foodLogId).limit(1);
-  if (linked?.length) {
-    await db.from('diabetes_meals').update({ eaten_at: newIso }).eq('id', linked[0].id);
-  } else if (currentUser) {
-    const dayMs = 24 * 3600000;
-    const { data: candidates } = await db.from('diabetes_meals')
-      .select('id')
-      .eq('user_id', currentUser.id)
-      .is('food_log_id', null)
-      .eq('meal_name', foodRow.food_name)
-      .eq('carbs_g', foodRow.carbs_g)
-      .gte('eaten_at', new Date(oldLoggedAt.getTime() - dayMs).toISOString())
-      .lte('eaten_at', new Date(oldLoggedAt.getTime() + dayMs).toISOString());
-    if (candidates?.length === 1) {
-      await db.from('diabetes_meals').update({ eaten_at: newIso, food_log_id: foodLogId }).eq('id', candidates[0].id);
+  if (profile?.diabetes_enabled !== false) {
+    const isHypo = !!foodRow.hypo_treatment;
+    const itemForBridge = {
+      food_name: foodRow.food_name,
+      carbs_g: foodRow.carbs_g, fat_g: foodRow.fat_g, protein_g: foodRow.protein_g,
+      logged_at: newIso,
+    };
+    if (newLogDate !== foodRow.log_date) {
+      // Crosses a UTC day boundary (rare): clean up on the day it's
+      // leaving (upsertDiabetesMealSection re-aggregates what's left;
+      // upsertDiabetesMealItem removes its own now-orphaned row) and
+      // bridge fresh on the day it's arriving at.
+      await bridgeLfMealChange(foodRow.log_date, foodRow.meal_slot, isHypo, foodLogId, null);
+      await bridgeLfMealChange(newLogDate, foodRow.meal_slot, isHypo, foodLogId, itemForBridge);
+    } else {
+      await bridgeLfMealChange(foodRow.log_date, foodRow.meal_slot, isHypo, foodLogId, itemForBridge);
     }
   }
   showToast('Time updated.');
@@ -10397,32 +13144,26 @@ async function fetchFavoriteMeals() {
 }
 
 async function renderLfFavorites() {
-  if (!el.lfFavoritesCard || !el.lfFavoritesRow) return;
+  if (!el.lfFavoritesCard || !el.lfFavoritesSelect) return;
   lfFavoritesData = await fetchFavoriteMeals();
   el.lfFavoritesCard.hidden = !lfFavoritesData.length;
   if (!lfFavoritesData.length) return;
-  el.lfFavoritesRow.innerHTML = lfFavoritesData.map(f => `
-    <button type="button" class="lf-favorite-chip" data-id="${f.id}">
-      <span>⭐ ${escapeHtml(f.name)}</span>
-      <span class="lf-favorite-chip__cals">${Math.round(f.calories_kcal)} kcal</span>
-      <span class="lf-favorite-chip__del" data-action="fav-delete" data-id="${f.id}" title="Remove favourite">✕</span>
-    </button>`).join('');
+  el.lfFavoritesSelect.innerHTML = lfFavoritesData.map(f =>
+    `<option value="${f.id}">⭐ ${escapeHtml(f.name)} — ${Math.round(f.calories_kcal)} kcal</option>`).join('');
 }
-el.lfFavoritesRow?.addEventListener('click', async e => {
-  const del = e.target.closest('[data-action="fav-delete"]');
-  if (del) {
-    const { error } = await db.from('favorite_meals').delete().eq('id', del.dataset.id);
-    if (error) { showToast("Couldn't remove favourite: " + error.message, true); return; }
-    await renderLfFavorites();
-    return;
-  }
-  const chip = e.target.closest('.lf-favorite-chip');
-  if (!chip) return;
-  const fav = lfFavoritesData.find(f => f.id === chip.dataset.id);
+el.lfFavoritesAdd?.addEventListener('click', () => {
+  const fav = lfFavoritesData.find(f => f.id === el.lfFavoritesSelect.value);
   if (!fav) return;
   selectLfMode(null);
   populateLfFormFromFood(fav, { barcode: fav.barcode || null });
   showLfReviewForm();
+});
+el.lfFavoritesDelete?.addEventListener('click', async () => {
+  const id = el.lfFavoritesSelect.value;
+  if (!id) return;
+  const { error } = await db.from('favorite_meals').delete().eq('id', id);
+  if (error) { showToast("Couldn't remove favourite: " + error.message, true); return; }
+  await renderLfFavorites();
 });
 
 /* ═══════════════════════════════════════════════════════════
@@ -10435,9 +13176,9 @@ function applyTheme(theme, persist = true) {
   // obsidian here refers to a genuinely retired old theme name from
   // before the 3-theme consolidation — unrelated to Nebula, a distinct
   // new 4th theme added later with its own real data-theme value.
-  const OLD_MAP = { light: 'aurora', dark: 'slate', midnight: 'obsidian', forest: 'slate', rose: 'aurora', '': 'slate' };
-  const validThemes = ['slate','obsidian','aurora','nebula'];
-  const t = validThemes.includes(theme) ? theme : (OLD_MAP[theme] || 'slate');
+  const OLD_MAP = { light: 'aurora', dark: 'slate', midnight: 'obsidian', forest: 'slate', rose: 'aurora', '': 'nebula' };
+  const validThemes = ['slate','obsidian','aurora','nebula','nebula-light'];
+  const t = validThemes.includes(theme) ? theme : (OLD_MAP[theme] || 'nebula');
 
   document.documentElement.setAttribute('data-theme', t);
   localStorage.setItem(THEME_KEY, t);
@@ -10451,12 +13192,13 @@ function applyTheme(theme, persist = true) {
   const metaTheme = document.querySelector('meta[name="theme-color"]');
   if (metaTheme) {
     const themeColors = {
-      slate:    '#F5F5F5', // Hybrid
-      obsidian: '#121212', // Dark
-      aurora:   '#FFFFFF', // Light
-      nebula:   '#09090F', // Nebula
+      slate:        '#F5F5F5', // Hybrid
+      obsidian:     '#121212', // Dark
+      aurora:       '#FFFFFF', // Light
+      nebula:       '#09090F', // Nebula
+      'nebula-light': '#F6F3FC', // Nebula Light
     };
-    metaTheme.content = themeColors[t] || '#F5F5F5';
+    metaTheme.content = themeColors[t] || '#09090F';
   }
 
   // Persist to Supabase if logged in — fire and forget, never block login
@@ -10476,7 +13218,7 @@ function applyTheme(theme, persist = true) {
 // Apply theme immediately (before network — uses localStorage)
 // Migrate old theme names → new equivalents
 const OLD_THEME_MAP = { light: 'aurora', dark: 'slate', midnight: 'obsidian', forest: 'slate', rose: 'aurora' };
-const rawSavedTheme = localStorage.getItem(THEME_KEY) || 'slate';
+const rawSavedTheme = localStorage.getItem(THEME_KEY) || 'nebula';
 const savedTheme = OLD_THEME_MAP[rawSavedTheme] || rawSavedTheme;
 if (OLD_THEME_MAP[rawSavedTheme]) localStorage.setItem(THEME_KEY, savedTheme); // update stored value
 applyTheme(savedTheme, false);
@@ -10738,7 +13480,7 @@ async function fetchWithRetries(url, { attempts = 3, attemptTimeoutMs = 7000, ba
         autoRefreshToken:   true,
         persistSession:     true,
         detectSessionInUrl: false,
-        lock:               noOpAuthLock,
+        lock:               tabLocalAuthLock,
       }
     });
   } catch (err) {
@@ -10781,7 +13523,24 @@ async function fetchWithRetries(url, { attempts = 3, attemptTimeoutMs = 7000, ba
   // Wire all db-dependent listeners now that db is initialised
   initApp();
 
-  // Supabase handles session persistence and auto-refresh automatically
-  // via autoRefreshToken: true — no manual visibility handler needed
+  // autoRefreshToken handles the common case (a timer silently renewing
+  // the token before it expires) with no help needed here. What it can't
+  // cover: iOS suspending this PWA instance's JS entirely, another
+  // launch of the same app rotating the refresh token in the meantime
+  // (see tabLocalAuthLock above for why that rotation matters), and then
+  // this instance resuming with an in-memory session that's now stale.
+  // getSession() re-reads the session from localStorage on every call
+  // (not just the cached in-memory copy — see auth-js's __loadSession)
+  // and refreshes it if needed, so calling it the moment the app is
+  // foregrounded again recovers silently from that case whenever a
+  // still-valid session exists on disk. Any resulting change flows
+  // through the normal onAuthStateChange handler in initApp() already —
+  // nothing else to wire up. Gated on authCompleted so this can't fire
+  // mid-way through the very first login.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && db && authCompleted) {
+      db.auth.getSession().catch(err => console.warn('Resume session re-sync failed (non-fatal):', err?.message || err));
+    }
+  });
 
 })();

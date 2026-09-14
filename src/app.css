@@ -171,9 +171,74 @@
   --nebula-2:   #7B3B6E;  /* dusky magenta midpoint */
   --nebula-3:   #09090F;  /* fades into --bg at the base */
 
+  /* Glass-card system + ambient background glow — see "NEBULA POLISH"
+     further down, shared by this theme and its light sibling below via
+     these tokens rather than duplicated rules. */
+  --glass-bg:     rgba(30,29,44,.55);
+  --glass-border: rgba(255,255,255,.09);
+  --glass-blur:   16px;
+  --liquid-empty: rgba(255,255,255,.06);
+  --ambient-1:    rgba(159,135,245,.16);
+  --ambient-2:    rgba(244,114,182,.12);
+  --hero-text:    #FFFFFF;
+  --hero-text-2:  rgba(255,255,255,.68);
+
   --shadow-sm:  0 1px 3px rgba(0,0,0,.5),  0 1px 2px rgba(0,0,0,.4);
   --shadow-md:  0 4px 16px rgba(0,0,0,.6), 0 1px 4px rgba(0,0,0,.5);
   --shadow-lg:  0 8px 40px rgba(0,0,0,.7), 0 2px 8px rgba(0,0,0,.6);
+}
+
+/* ══════════════════════════════════════════════════════════
+   THEME E — NEBULA LIGHT
+   Same violet/fuchsia identity as Nebula (glass cards, gradient
+   dashboard hero, liquid-fill gauges — all shared via the tokens
+   below, see "NEBULA POLISH" further down), rebuilt on a soft
+   lavender-white ground instead of deep space.
+   data-theme="nebula-light"
+══════════════════════════════════════════════════════════ */
+:root[data-theme="nebula-light"] {
+  --bg:         #F6F3FC;
+  --surface:    #FFFFFF;
+  --surface-2:  #EFE9FB;
+  --border:     #E4DAF7;
+  --border-2:   #EEE7FA;
+
+  --ink:        #251E42;
+  --ink-2:      #4B4074;
+  --ink-3:      #8479A8;
+  --ink-4:      #C7BEE0;
+
+  --blue:       #7C5CE0;  /* deep violet — primary accent */
+  --blue-light: rgba(124,92,224,.12);
+  --blue-dark:  #6647C9;
+  --accent-b:   #D6499A;  /* deep fuchsia — secondary */
+  --accent-b-light: rgba(214,73,154,.12);
+
+  --green:      #1E9E6B;
+  --green-light:rgba(30,158,107,.10);
+  --orange:     #E08A2C;
+  --orange-light:rgba(224,138,44,.12);
+  --red:        #D5455E;
+  --red-light:  rgba(213,69,94,.10);
+  --purple:     #A855C4;
+  --purple-light:rgba(168,85,196,.10);
+
+  --nebula-1:   #EFE6FF;  /* dash-hero gradient stops — soft lavender */
+  --nebula-2:   #F7DCEE;  /* soft pink midpoint */
+  --nebula-3:   #FFFFFF;  /* fades into --bg at the base */
+
+  --glass-bg:     rgba(255,255,255,.62);
+  --glass-border: rgba(124,92,224,.16);
+  --glass-blur:   16px;
+  --liquid-empty: rgba(80,40,150,.05);
+  --ambient-1:    rgba(159,135,245,.14);
+  --ambient-2:    rgba(214,73,154,.10);
+  --hero-text:    #251E42;
+  --hero-text-2:  rgba(37,30,66,.62);
+
+  --shadow-sm:  0 1px 3px rgba(80,40,150,.07),  0 1px 2px rgba(80,40,150,.05);
+  --shadow-md:  0 4px 20px rgba(80,40,150,.10), 0 1px 4px rgba(80,40,150,.06);
+  --shadow-lg:  0 10px 40px rgba(80,40,150,.12),0 2px 10px rgba(80,40,150,.07);
 }
 
 /* ── RESET ───────────────────────────────────────────────── */
@@ -183,6 +248,11 @@ html {
   height: 100%;
   background: var(--bg);
   overflow-x: hidden; /* hard cap — nothing can ever push the page sideways, no matter what misbehaves inside it */
+  /* Disables the double-tap-to-zoom gesture (keeps single-tap/scroll intact)
+     — belt-and-braces alongside the viewport meta's user-scalable=no, since
+     iOS doesn't consistently honor that meta tag across versions but does
+     honor this. Pinch-zoom is still blocked by the viewport meta itself. */
+  touch-action: manipulation;
 }
 body {
   font-family: var(--ui);
@@ -192,6 +262,7 @@ body {
   min-height: 100dvh;
   overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
+  touch-action: manipulation;
 }
 
 /* ── SCREEN SWITCHING ────────────────────────────────────── */
@@ -269,6 +340,15 @@ body {
 
 .auth-form { display: flex; flex-direction: column; gap: 14px; }
 .auth-form[hidden] { display: none; }
+
+.auth-toggle {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--ink-muted, var(--ink));
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+}
 
 .auth-msg {
   font-size: 13px;
@@ -529,7 +609,10 @@ input[type="text"], input[type="email"], input[type="password"],
 input[type="number"], input[type="date"], input[type="url"],
 select, textarea {
   font-family: var(--ui);
-  font-size: 15px;
+  /* 16px floor, not 15 — iOS Safari auto-zooms the whole page in on focus
+     for any input/select under 16px, regardless of the viewport meta's
+     user-scalable=no. Every override below keeps the same floor. */
+  font-size: 16px;
   color: var(--ink);
   background: var(--surface);
   border: 1.5px solid var(--border);
@@ -799,6 +882,12 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
   font-size: 9.5px; font-weight: 700; text-transform: uppercase;
   letter-spacing: .05em; color: var(--ink-3); margin-top: 3px;
 }
+/* Remaining card gone negative — over target for that figure. */
+.macro-total__val--over { color: var(--danger, #c0392b); }
+/* Shown when computeAchievableRemaining() had to trim a macro below its
+   ideal remaining amount to keep the whole "Remaining" row eating-able
+   within today's leftover calories. */
+.lf-remaining-note { font-size: 11px; font-weight: 600; color: var(--orange); margin: 8px 0 0; line-height: 1.4; }
 
 /* Log-food custom-food search results */
 .lf-search-result {
@@ -814,43 +903,18 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
 .lf-search-result__brand { font-size: 11px; font-weight: 500; color: var(--ink-3); }
 .lf-search-result__cals { font-size: 12px; font-weight: 700; color: var(--ink-3); white-space: nowrap; margin-left: 8px; }
 
-/* Log-food favourites — horizontal quick-add chip row, tap one to
-   pre-fill the review form (see btnLfFavToggle for how a food gets
-   favourited in the first place). */
+/* Log-food favourites — a select of saved foods plus Add/remove buttons
+   (see btnLfFavToggle for how a food gets favourited in the first place). */
 .lf-favorites-row {
   display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  padding-bottom: 2px;
-  -webkit-overflow-scrolling: touch;
-}
-.lf-favorite-chip {
-  flex: 0 0 auto;
-  display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 9px 12px;
-  border-radius: 999px;
-  border: 1.5px solid var(--border);
-  background: var(--surface-2);
-  font-family: var(--ui);
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--ink-2);
-  white-space: nowrap;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
+  gap: 8px;
 }
-.lf-favorite-chip:active { background: var(--border); }
-.lf-favorite-chip__cals { font-size: 11px; font-weight: 500; color: var(--ink-4); }
-.lf-favorite-chip__del {
-  font-size: 13px;
-  line-height: 1;
-  color: var(--ink-4);
-  padding: 2px;
-  margin: -2px;
+.lf-favorites-row select {
+  flex: 1 1 auto;
+  min-width: 0;
 }
-.lf-favorite-chip__del:hover { color: var(--red); }
+.lf-favorites-row .btn { flex: 0 0 auto; }
 
 /* Star-toggle "save as favourite" button in the Log food review form —
    filled amber once active, same amber both themes since it's a
@@ -955,7 +1019,7 @@ canvas { width: 100%; display: block; }
 }
 .meal-field { display: flex; flex-direction: column; gap: 6px; }
 .meal-field label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-3); }
-.meal-field input { text-align: right; padding: 8px 10px; font-size: 15px; font-weight: 600; }
+.meal-field input { text-align: right; padding: 8px 10px; font-size: 16px; font-weight: 600; }
 
 .cal-summary {
   display: flex; gap: 20px; align-items: baseline; margin-bottom: 8px;
@@ -970,7 +1034,7 @@ canvas { width: 100%; display: block; }
 /* ═══════════════════════════════════════════════════════════
    WORKOUT
 ═══════════════════════════════════════════════════════════ */
-.split-select { width: 130px; font-size: 14px; padding: 8px 36px 8px 12px; }
+.split-select { width: 130px; font-size: 16px; padding: 8px 36px 8px 12px; }
 
 .exercise-block {
   background: var(--surface);
@@ -1112,6 +1176,21 @@ canvas { width: 100%; display: block; }
   border-bottom: 1.5px solid var(--border);
 }
 .data-table th:not(:first-child), .data-table td:not(:first-child) { text-align: right; }
+.dx-regimen-table { min-width: 640px; }
+.dx-regimen-thead-group { text-align: center !important; }
+.dx-regimen-subhead {
+  font-size: 10px; font-weight: 500;
+  text-transform: none; letter-spacing: normal;
+  color: var(--ink-4); text-align: right;
+  padding-top: 6px; border-bottom: 1.5px solid var(--border);
+}
+/* Left border ahead of each new metric group (Correction factor, Carb
+   ratio) so the Current/Suggested pairs read as belonging together
+   rather than one flat run of 6 numeric columns. */
+.dx-regimen-table th:nth-child(4), .dx-regimen-table td:nth-child(4),
+.dx-regimen-table th:nth-child(6), .dx-regimen-table td:nth-child(6) {
+  border-left: 1.5px solid var(--border);
+}
 .data-table td {
   padding: 11px 16px;
   border-bottom: 1px solid var(--border-2);
@@ -1226,6 +1305,26 @@ input[type="checkbox"].import-check {
   font-size: 16px; line-height: 1; cursor: pointer; padding: 2px;
 }
 
+/* In-progress workout backstop — shown on the picker screen whenever a
+   workout has been started but not saved yet, so navigating away and back
+   (or an accidental "← Routines" tap) never looks like it silently
+   vanished. */
+.active-workout-banner[hidden] { display: none; }
+.active-workout-banner {
+  display: flex; gap: 12px; align-items: flex-start;
+  background: var(--blue-light);
+  border: 1px solid var(--blue);
+  border-radius: var(--r-lg);
+  padding: 14px 16px;
+  margin-bottom: 14px;
+}
+.active-workout-banner__icon { font-size: 22px; line-height: 1; flex-shrink: 0; }
+.active-workout-banner__body { flex: 1; min-width: 0; }
+.active-workout-banner__title { font-size: 14.5px; font-weight: 700; color: var(--ink); margin-bottom: 3px; }
+.active-workout-banner__desc { font-size: 12.5px; color: var(--ink-2); margin-bottom: 10px; }
+.active-workout-banner__actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.active-workout-banner__actions .btn--small { padding: 7px 14px; font-size: 12.5px; }
+
 .routine-list { display: flex; flex-direction: column; gap: 12px; }
 
 .routine-card {
@@ -1301,6 +1400,7 @@ input[type="checkbox"].import-check {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 12px;
 }
 .active-workout-header .routine-name {
@@ -1309,7 +1409,10 @@ input[type="checkbox"].import-check {
 .active-workout-header .routine-meta {
   font-size: 12px; color: var(--ink-3);
 }
-.active-header__right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+/* flex-wrap so Link/Supersets/split-tag drop to their own row instead of
+   overflowing past the card edge on a narrow phone (e.g. a long routine
+   name pushing this group too tight to fit on one line at 375px). */
+.active-header__right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; flex-wrap: wrap; }
 .superset-toggle {
   display: inline-flex; align-items: center; gap: 4px;
   font-size: 12px; font-weight: 700; padding: 6px 12px;
@@ -1376,6 +1479,7 @@ input[type="checkbox"].import-check {
 }
 .superset-card__exactions { display: flex; gap: 4px; align-items: center; flex-shrink: 0; }
 .superset-card__exactions .exercise-card__info-btn,
+.superset-card__exactions .exercise-card__history-btn,
 .superset-card__exactions .exercise-card__equip-btn,
 .superset-card__exactions .exercise-card__remove-btn {
   width: 24px; height: 24px; font-size: 11px;
@@ -1417,7 +1521,7 @@ input[type="checkbox"].import-check {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .round-ex__inputs { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
-.round-ex__input.set-input { width: 52px; text-align: center; padding: 6px 4px; font-size: 14px; }
+.round-ex__input.set-input { width: 56px; text-align: center; padding: 6px 4px; font-size: 16px; }
 .round-ex__unit { font-size: 10px; color: var(--ink-4); width: 22px; }
 
 .round__tick-row { display: flex; justify-content: flex-end; }
@@ -1454,7 +1558,13 @@ input[type="checkbox"].import-check {
   display: block; font-size: 10px; font-weight: 800;
   letter-spacing: .08em; color: var(--blue); margin-bottom: 2px;
 }
-.exercise-card__info-btn {
+.exercise-card__rest-badge {
+  display: inline-block; font-size: 10px; font-weight: 600;
+  color: var(--ink-3); background: var(--surface-2);
+  border-radius: 20px; padding: 2px 8px; vertical-align: middle;
+}
+.exercise-card__info-btn,
+.exercise-card__history-btn {
   background: none; border: 1.5px solid var(--border);
   border-radius: 50%; width: 28px; height: 28px;
   display: flex; align-items: center; justify-content: center;
@@ -1463,7 +1573,9 @@ input[type="checkbox"].import-check {
   transition: background .15s, border-color .15s, color .15s;
 }
 .exercise-card__info-btn:hover,
-.exercise-card__info-btn.is-open {
+.exercise-card__info-btn.is-open,
+.exercise-card__history-btn:hover,
+.exercise-card__history-btn.is-open {
   background: var(--blue-light); border-color: var(--blue); color: var(--blue);
 }
 .exercise-card__notes {
@@ -1559,6 +1671,13 @@ input[type="checkbox"].import-check {
   gap: 16px;
   flex-wrap: wrap;
 }
+/* "🕘 Previous sets" drawer — reuses the info drawer's shell/animation but
+   needs a stacked (not side-by-side) layout for its list of past sessions. */
+.exercise-info-drawer__inner.exercise-history-list {
+  flex-direction: column;
+  flex-wrap: nowrap;
+  gap: 12px;
+}
 .exercise-info-drawer__gif {
   width: 140px; height: 140px;
   border-radius: var(--r-md);
@@ -1605,10 +1724,26 @@ input[type="checkbox"].import-check {
   .exercise-info-drawer__gif { width: 100%; height: 180px; }
 }
 
-/* Sets table in active workout */
+/* Sets table in active workout — table-layout:fixed with explicit
+   per-column widths, rather than the browser auto-sizing columns from
+   content. A barbell exercise's plate-hint text (e.g. "= 1×25 + 1×5 +
+   1×2.5 + 1×1.25kg per side") is long enough that, under auto layout,
+   it forced the whole table wider than the screen the moment a weight
+   was typed in — squeezing the reps column down to unreadable and
+   pushing the Done button button off the visible width entirely. Fixed
+   layout keeps every column's width constant regardless of what's
+   inside it; the hint just wraps onto a second line instead (see
+   .plate-hint below) instead of fighting the table for horizontal room.
+*/
 .active-sets-table {
   width: 100%; border-collapse: collapse; font-size: 14px;
+  table-layout: fixed;
 }
+.active-sets-table th:nth-child(1) { width: 13%; }
+.active-sets-table th:nth-child(2) { width: 22%; }
+.active-sets-table th:nth-child(3) { width: 33%; }
+.active-sets-table th:nth-child(4) { width: 10%; }
+.active-sets-table th:nth-child(5) { width: 22%; }
 .active-sets-table th {
   font-size: 10px; font-weight: 700; text-transform: uppercase;
   letter-spacing: .06em; color: var(--ink-3);
@@ -1630,11 +1765,22 @@ input[type="checkbox"].import-check {
 .set-num-cell { font-size: 12px; color: var(--ink-4); font-weight: 600; min-width: 36px; }
 
 .set-input {
-  width: 68px; text-align: right;
-  padding: 6px 8px; font-size: 15px; font-weight: 600;
+  width: 68px; max-width: 100%; text-align: right;
+  padding: 6px 8px; font-size: 16px; font-weight: 600;
   border-radius: var(--r-sm);
 }
 .set-input.is-done { background: var(--surface-2); color: var(--ink-3); }
+
+/* Live plate-loading breakdown under a barbell exercise's weight input
+   (e.g. "= 2×20 + 1×5kg per side") — see formatPlateHint(). Wraps
+   rather than forcing its column wider: with table-layout:fixed above,
+   a long breakdown (more plates = a longer string) just grows the row
+   height instead of pushing the Done button off-screen. */
+.plate-hint {
+  font-size: 10px; color: var(--ink-4); font-weight: 500;
+  margin-top: 3px; white-space: normal; word-break: break-word;
+}
+.round-ex .plate-hint { text-align: left; }
 
 .set-action-btn {
   font-size: 12px; font-weight: 700; padding: 6px 12px;
@@ -1793,6 +1939,10 @@ input[type="checkbox"].import-check {
 .swatch--nebula   {
   background: linear-gradient(165deg, #2D1B4E 0%, #7B3B6E 55%, #09090F 100%);
 }
+.swatch--nebula-light {
+  background: linear-gradient(165deg, #EFE6FF 0%, #F7DCEE 55%, #FFFFFF 100%);
+  border-color: rgba(124,92,224,.18);
+}
 
 /* ── APPLE HEALTH KEY UI ────────────────────────────────── */
 .health-key-status {
@@ -1872,6 +2022,7 @@ input[type="checkbox"].import-check {
 }
 
 /* ── CHART SKELETON ──────────────────────────────────────── */
+.chart-skeleton[hidden] { display: none; }
 .chart-skeleton {
   height: 140px;
   display: flex;
@@ -1956,48 +2107,60 @@ input[type="checkbox"].import-check {
 .score-gauge__icon { font-size: 12px; }
 
 /* ── NEBULA DASHBOARD HERO + LIQUID GAUGES ───────────────────
-   Everything below is gated on [data-theme="nebula"] and inert for
-   the other three themes (.dash-hero__head stays display:none,
-   .score-gauge__liquid stays display:none, the SVG ring keeps
-   rendering exactly as before) — no shared layout changes for
-   anyone who hasn't picked Nebula. */
+   Everything below is gated on [data-theme="nebula"] and its light
+   sibling [data-theme="nebula-light"], and inert for the other three
+   themes (.dash-hero__head stays display:none, .score-gauge__liquid
+   stays display:none, the SVG ring keeps rendering exactly as before)
+   — no shared layout changes for anyone who hasn't picked one of the
+   two. Colors come from each theme's own tokens (--nebula-1/2/3,
+   --hero-text, --liquid-empty, --fill-color) rather than being
+   duplicated per theme, so this one ruleset serves both. */
 .dash-hero__head { display: none; }
-[data-theme="nebula"] .card--scores {
+[data-theme="nebula"] .card--scores,
+[data-theme="nebula-light"] .card--scores {
   background: linear-gradient(165deg, var(--nebula-1) 0%, var(--nebula-2) 55%, var(--nebula-3) 100%);
   border: none;
   box-shadow: var(--shadow-lg);
   padding-top: 20px;
 }
-[data-theme="nebula"] .card--scores .card-eyebrow { display: none; }
-[data-theme="nebula"] .dash-hero__head {
+[data-theme="nebula"] .card--scores .card-eyebrow,
+[data-theme="nebula-light"] .card--scores .card-eyebrow { display: none; }
+[data-theme="nebula"] .dash-hero__head,
+[data-theme="nebula-light"] .dash-hero__head {
   display: block;
   margin-bottom: 18px;
 }
-[data-theme="nebula"] .dash-hero__title {
+[data-theme="nebula"] .dash-hero__title,
+[data-theme="nebula-light"] .dash-hero__title {
   font-size: 30px;
   font-weight: 800;
   letter-spacing: -.02em;
-  color: #fff;
+  color: var(--hero-text);
 }
-[data-theme="nebula"] .dash-hero__date {
+[data-theme="nebula"] .dash-hero__date,
+[data-theme="nebula-light"] .dash-hero__date {
   font-size: 14px;
-  color: rgba(255,255,255,.65);
+  color: var(--hero-text-2);
   margin-top: 2px;
 }
-[data-theme="nebula"] .score-gauge__label { color: rgba(255,255,255,.75); }
-[data-theme="nebula"] .score-gauge__ring svg { opacity: 0; }
+[data-theme="nebula"] .score-gauge__label,
+[data-theme="nebula-light"] .score-gauge__label { color: var(--hero-text-2); }
+[data-theme="nebula"] .score-gauge__ring svg,
+[data-theme="nebula-light"] .score-gauge__ring svg { opacity: 0; }
 
 .score-gauge__liquid { display: none; }
-[data-theme="nebula"] .score-gauge__liquid {
+[data-theme="nebula"] .score-gauge__liquid,
+[data-theme="nebula-light"] .score-gauge__liquid {
   display: block;
   position: absolute;
   inset: 0;
   border-radius: 50%;
   overflow: hidden;
-  background: rgba(255,255,255,.06);
-  box-shadow: inset 0 2px 8px rgba(0,0,0,.45), inset 0 -1px 3px rgba(255,255,255,.06);
+  background: var(--liquid-empty);
+  box-shadow: inset 0 2px 8px rgba(0,0,0,.35), inset 0 -1px 3px rgba(255,255,255,.06);
 }
-[data-theme="nebula"] .score-gauge__liquid::before {
+[data-theme="nebula"] .score-gauge__liquid::before,
+[data-theme="nebula-light"] .score-gauge__liquid::before {
   content: '';
   position: absolute;
   left: -10%; right: -10%; bottom: 0;
@@ -2005,20 +2168,71 @@ input[type="checkbox"].import-check {
   background: linear-gradient(180deg, color-mix(in srgb, var(--fill-color) 75%, white) 0%, var(--fill-color) 100%);
   transition: height .6s cubic-bezier(.2,.8,.2,1);
 }
-[data-theme="nebula"] .score-gauge__liquid::after {
+[data-theme="nebula"] .score-gauge__liquid::after,
+[data-theme="nebula-light"] .score-gauge__liquid::after {
   /* glassy highlight, like a droplet's specular glare */
   content: '';
   position: absolute;
   top: 10%; left: 20%;
   width: 26%; height: 20%;
   border-radius: 50%;
-  background: rgba(255,255,255,.22);
+  background: rgba(255,255,255,.35);
   filter: blur(1.5px);
 }
-[data-theme="nebula"] #scoreGauge_recovery  .score-gauge__liquid { --fill-color: var(--purple); }
-[data-theme="nebula"] #scoreGauge_sleep     .score-gauge__liquid { --fill-color: var(--blue); }
-[data-theme="nebula"] #scoreGauge_strain    .score-gauge__liquid { --fill-color: var(--orange); }
-[data-theme="nebula"] #scoreGauge_nutrition .score-gauge__liquid { --fill-color: var(--green); }
+[data-theme="nebula"] #scoreGauge_recovery  .score-gauge__liquid,
+[data-theme="nebula-light"] #scoreGauge_recovery  .score-gauge__liquid { --fill-color: var(--purple); }
+[data-theme="nebula"] #scoreGauge_sleep     .score-gauge__liquid,
+[data-theme="nebula-light"] #scoreGauge_sleep     .score-gauge__liquid { --fill-color: var(--blue); }
+[data-theme="nebula"] #scoreGauge_strain    .score-gauge__liquid,
+[data-theme="nebula-light"] #scoreGauge_strain    .score-gauge__liquid { --fill-color: var(--orange); }
+[data-theme="nebula"] #scoreGauge_nutrition .score-gauge__liquid,
+[data-theme="nebula-light"] #scoreGauge_nutrition .score-gauge__liquid { --fill-color: var(--green); }
+
+/* ── NEBULA POLISH — glass cards, ambient background glow, gradient
+   primary buttons and a frosted tab bar. Shared by both Nebula themes
+   via the --glass-*/--ambient-* tokens each defines (see the :root
+   blocks up top), so this is one ruleset, not two. Placed after the
+   base .card/.btn--primary/.tab-bar rules and the hero rules above so
+   it wins on specificity ties without needing !important, but still
+   loses to .card--scores' own background (defined above) since that
+   selector is more specific for the one card it targets. */
+[data-theme="nebula"] body,
+[data-theme="nebula-light"] body {
+  background:
+    radial-gradient(ellipse 640px 520px at 12% -6%, var(--ambient-1), transparent 60%),
+    radial-gradient(ellipse 520px 520px at 104% 18%, var(--ambient-2), transparent 60%),
+    var(--bg);
+  background-attachment: fixed;
+}
+[data-theme="nebula"] .card,
+[data-theme="nebula-light"] .card {
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur)) saturate(150%);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(150%);
+  border: 1px solid var(--glass-border);
+}
+[data-theme="nebula"] .tab-bar,
+[data-theme="nebula-light"] .tab-bar {
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur)) saturate(150%);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(150%);
+  border-top: 1px solid var(--glass-border);
+}
+[data-theme="nebula"] .btn--primary,
+[data-theme="nebula-light"] .btn--primary {
+  background: linear-gradient(135deg, var(--blue) 0%, var(--accent-b) 100%);
+  box-shadow: 0 4px 20px color-mix(in srgb, var(--blue) 35%, transparent);
+}
+[data-theme="nebula"] .btn--primary:hover,
+[data-theme="nebula-light"] .btn--primary:hover {
+  background: linear-gradient(135deg, var(--blue) 0%, var(--accent-b) 100%);
+  filter: brightness(1.08);
+}
+[data-theme="nebula"] .card-eyebrow,
+[data-theme="nebula-light"] .card-eyebrow {
+  letter-spacing: .04em;
+  font-weight: 700;
+}
 
 .score-detail[hidden] { display: none; }
 .score-detail {
@@ -2099,6 +2313,7 @@ input[type="checkbox"].import-check {
 .battery-factor__fill--deep        { background: var(--purple); }
 .battery-factor__fill--rem         { background: var(--blue); }
 .battery-factor__fill--consistency { background: var(--green); }
+.battery-factor__fill--breathing   { background: var(--red); }
 .battery-factor__fill--active      { background: var(--orange); }
 .battery-factor__fill--exercise    { background: var(--red); }
 .battery-factor__fill--intensity   { background: var(--red); }
@@ -2111,6 +2326,209 @@ input[type="checkbox"].import-check {
   text-align: right;
 }
 
+
+/* ── DAILY BRIEFING (behind the appbar bell icon) ────────── */
+.appbar__bell { position: relative; }
+.appbar__bell-dot {
+  position: absolute;
+  top: 6px; right: 6px;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--red);
+  border: 1.5px solid var(--surface);
+}
+.coach-briefing__date {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-4);
+  margin-bottom: 8px;
+}
+.coach-briefing__text {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+}
+
+/* ── DAILY CHECKLIST (Gemma's account) ──────────────────── */
+.card--checklist {
+  grid-column: 1 / -1;
+}
+.checklist-streak {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink);
+  text-transform: none;
+  letter-spacing: 0;
+}
+.checklist-tiles {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+.checklist-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 6px 10px;
+  border-radius: var(--r-lg);
+  border: 1.5px solid var(--border);
+  background: var(--surface-2);
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.checklist-tile__check {
+  position: absolute;
+  top: 6px; right: 6px;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border);
+  background: var(--surface);
+  color: transparent;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 15px;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.checklist-tile__icon { font-size: 20px; }
+.checklist-tile__label {
+  font-size: 11px; font-weight: 700; color: var(--ink-2);
+}
+.checklist-tile__target {
+  font-size: 10px; color: var(--ink-4);
+}
+.checklist-tile__streak {
+  font-size: 10px; font-weight: 700; color: var(--ink-3); margin-top: 1px;
+}
+.checklist-tile.is-done {
+  background: var(--green-light);
+  border-color: var(--green);
+}
+.checklist-tile.is-done .checklist-tile__check {
+  background: var(--green);
+  border-color: var(--green);
+  color: #fff;
+}
+
+/* ── PEPTIDE SECTION ─────────────────────────────────────── */
+/* One shared panel (behind the History view's 💉 icon) split into a
+   per-peptide accordion each — Tirzepatide, SS-31, BPC-157 — rather
+   than a separate feature build per peptide. */
+.peptide-accordion {
+  border-top: 1px solid var(--border-2);
+}
+.peptide-accordion:first-of-type {
+  border-top: none;
+}
+.peptide-accordion__header {
+  width: 100%;
+  display: flex; align-items: center; gap: 10px;
+  padding: 14px 2px;
+  background: none; border: none; cursor: pointer;
+  text-align: left;
+}
+.peptide-accordion__name {
+  font-size: 15px; font-weight: 700; color: var(--ink);
+}
+.peptide-accordion__chevron {
+  margin-left: auto;
+  color: var(--ink-4);
+  font-size: 12px;
+}
+.peptide-status-badge {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+  border-radius: 20px; padding: 3px 9px;
+}
+.peptide-status-badge--active {
+  background: var(--green-light); color: var(--green);
+}
+.peptide-status-badge--discontinued {
+  background: var(--surface-2); color: var(--ink-4);
+}
+.peptide-status-badge--completed {
+  background: var(--surface-2); color: var(--ink-3);
+}
+.peptide-accordion__body {
+  padding: 0 2px 16px;
+}
+.peptide-logged-badge {
+  font-size: 11px; font-weight: 700; color: var(--green);
+  text-transform: none; letter-spacing: 0;
+}
+.peptide-today__phase {
+  font-size: 13px; font-weight: 600; color: var(--ink-2); margin-bottom: 10px;
+}
+.peptide-today__dose-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+.peptide-today__dose {
+  font-size: 22px; font-weight: 800; color: var(--ink);
+}
+.peptide-history {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-2);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.peptide-history__row {
+  display: flex; justify-content: space-between;
+  font-size: 12px; color: var(--ink-3);
+}
+.peptide-history__date { color: var(--ink-4); }
+
+.peptide-remaining {
+  margin-top: 12px;
+}
+.peptide-remaining__row {
+  display: flex; justify-content: space-between;
+  font-size: 12px; font-weight: 600; color: var(--ink-2);
+  margin-bottom: 6px;
+}
+.peptide-remaining__bar {
+  height: 6px; border-radius: 4px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.peptide-remaining__bar-fill {
+  height: 100%; border-radius: 4px;
+  background: var(--green);
+  transition: width .3s ease;
+}
+.peptide-remaining--empty .peptide-remaining__row { color: var(--red); }
+.peptide-remaining--empty .peptide-remaining__bar-fill { background: var(--red); }
+.peptide-plan-coverage {
+  font-size: 11px; font-weight: 600; color: var(--green);
+  margin: 6px 0 0;
+  line-height: 1.4;
+}
+.peptide-plan-coverage--short { color: var(--red); }
+.peptide-titration {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-2);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.peptide-titration__row {
+  display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center;
+  font-size: 12px; color: var(--ink-4);
+  padding: 6px 8px; border-radius: 8px;
+}
+.peptide-titration__row--past { color: var(--ink-3); }
+.peptide-titration__row--current {
+  background: var(--green-light); color: var(--ink);
+}
+.peptide-titration__row--current .peptide-titration__label,
+.peptide-titration__row--current .peptide-titration__dose {
+  color: var(--green); font-weight: 700;
+}
+.peptide-titration__label { font-weight: 600; }
+.peptide-titration__days { color: inherit; opacity: .8; }
+.peptide-titration__dose { text-align: right; font-variant-numeric: tabular-nums; }
 
 /* ── HEALTH METRICS TILES ───────────────────────────────── */
 .card--health-tiles {
@@ -2205,6 +2623,12 @@ input[type="checkbox"].import-check {
 .health-tile--good  .health-tile__val { color: var(--green); }
 .health-tile--warn  .health-tile__val { color: var(--orange); }
 .health-tile--alert .health-tile__val { color: var(--red); }
+
+/* Estimated-A1c sub-line colours independently of the parent tile's own
+   good/warn/alert state (that's driven by the live glucose reading, a
+   different signal from the 7-day A1c estimate) — see tileGlucoseA1c. */
+.health-tile__sub--good  { color: var(--green); }
+.health-tile__sub--alert { color: var(--red); }
 
 .health-tiles-empty {
   font-size: 13px;
@@ -2932,6 +3356,15 @@ body { font-size: 15px; }
   border-radius: var(--r-md);
   overflow: hidden;
   border: 1px solid var(--border-2);
+  /* .bottom-sheet__body is a flex column with overflow-y:auto — without
+     this, flex's default shrink-below-content-size behavior squishes this
+     row's text (label/value/unit stacked 3 lines deep) whenever the
+     sheet's total content is taller than the viewport budget, instead of
+     the body scrolling like it's supposed to. The chart canvas below
+     survives the same squeeze only because its height="140" attribute
+     gives it a protected intrinsic size — this needs the same protection
+     explicitly since flex text content has none by default. */
+  flex-shrink: 0;
 }
 .metric-stat {
   flex: 1;
@@ -2968,6 +3401,7 @@ body { font-size: 15px; }
   border-radius: var(--r-md);
   padding: 12px;
   border: 1px solid var(--border-2);
+  flex-shrink: 0; /* see .metric-sheet-stats comment — same flex-column-squeeze risk */
 }
 
 /* Table — only ever 2 narrow columns (date + value), so it never
@@ -2977,6 +3411,7 @@ body { font-size: 15px; }
   border-radius: var(--r-md);
   overflow-x: auto;
   border: 1px solid var(--border-2);
+  flex-shrink: 0; /* see .metric-sheet-stats comment — same flex-column-squeeze risk */
 }
 .metric-sheet-table-wrap .data-table { min-width: 0; }
 
@@ -3192,8 +3627,8 @@ body { font-size: 15px; }
   border: 1px solid var(--border-2);
 }
 .exercise-admin-row .drag-handle { color: var(--ink-4); cursor: grab; font-size: 14px; text-align: center; }
-.exercise-admin-row input[type="text"]  { font-size: 13px; }
-.exercise-admin-row input[type="number"] { font-size: 13px; text-align: center; }
+.exercise-admin-row input[type="text"]  { font-size: 16px; }
+.exercise-admin-row input[type="number"] { font-size: 16px; text-align: center; }
 .exercise-admin-row .notes-input { font-size: 12px; color: var(--ink-3); }
 .exercise-admin-row .del-btn {
   background: none; border: none; color: var(--red, #DC2626);
@@ -3317,6 +3752,13 @@ body { font-size: 15px; }
    against its own dark backdrop. The mobile/pending variants sit on
    the light form surface and correctly keep following --ink. */
 .auth-brand--hero .brand-fit { color: #FFFFFF; }
+
+/* Nebula Light's own hero gradient (see .auth-features above) is a
+   mid-tone violet-to-magenta, close enough to --blue's own violet that
+   "loop" (normally colored via --blue, and fine on every other theme's
+   much darker hero panel) goes near-invisible against it. Same fix as
+   brand-fit above, scoped to just this one theme. */
+[data-theme="nebula-light"] .auth-brand--hero .brand-loop { color: #FFFFFF; }
 
 /* Onboarding logo */
 .onboard-brand .brand-wordmark { gap: 10px; }
@@ -3547,6 +3989,8 @@ body { font-size: 15px; }
 [data-theme="slate"]    .auth-features { background: linear-gradient(160deg, #004080 0%, #001830 100%); }
 [data-theme="obsidian"] .auth-features { background: linear-gradient(160deg, #121212 0%, #003044 100%); }
 [data-theme="aurora"]   .auth-features { background: linear-gradient(160deg, #005066 0%, #002233 100%); }
+[data-theme="nebula"]   .auth-features { background: linear-gradient(160deg, #2D1B4E 0%, #09090F 100%); }
+[data-theme="nebula-light"] .auth-features { background: linear-gradient(160deg, #7C5CE0 0%, #C93B87 100%); }
 
 /* Today card metric tiles — individual card style (Slate structure) */
 .today-metric {
@@ -3607,6 +4051,17 @@ body { font-size: 15px; }
   line-height: 1.5;
   margin: 0 2px 14px;
 }
+.dx-section-label {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  color: var(--ink-3);
+  margin: 26px 4px 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 .dx-now-row {
   display: flex;
   align-items: center;
@@ -3625,6 +4080,29 @@ body { font-size: 15px; }
   letter-spacing: -.03em;
   color: var(--ink);
   line-height: 1;
+  transition: color .2s;
+}
+.dx-now-glucose__val--low  { color: var(--red); }
+.dx-now-glucose__val--high { color: var(--orange); }
+.dx-now-glucose__val--in-range { color: var(--green); }
+
+/* Now card doubles as the tab's hero — a soft range-tinted wash (still
+   just the existing card shell underneath) gives it the visual weight
+   its glanceability deserves without a special one-off card variant. */
+.card--dx-now {
+  transition: background .2s, border-color .2s;
+}
+.card--dx-now--low {
+  background: var(--red-light);
+  border-color: color-mix(in srgb, var(--red) 35%, var(--border-2));
+}
+.card--dx-now--high {
+  background: var(--orange-light);
+  border-color: color-mix(in srgb, var(--orange) 35%, var(--border-2));
+}
+.card--dx-now--in-range {
+  background: var(--green-light);
+  border-color: color-mix(in srgb, var(--green) 35%, var(--border-2));
 }
 .dx-now-glucose__unit {
   font-size: 13px;
@@ -3680,6 +4158,10 @@ body { font-size: 15px; }
   color: var(--ink-3);
   line-height: 1.5;
   margin-top: 10px;
+}
+.dx-note--carb {
+  color: var(--orange);
+  font-weight: 600;
 }
 .dx-suggestion {
   display: flex;
@@ -3763,6 +4245,8 @@ body { font-size: 15px; }
   border-left: 3px solid var(--accent-b);
 }
 .dx-insight__try b { color: var(--accent-b); }
+.dx-patterns-toggle { width: 100%; margin-top: 8px; }
+.dx-patterns-secondary { margin-top: 4px; }
 .dx-tir-bar {
   display: flex;
   width: 100%;
@@ -3823,6 +4307,14 @@ body { font-size: 15px; }
   color: var(--ink-4);
   margin-top: 10px;
 }
+.dx-regimen-cell--empty { color: var(--ink-4); }
+.dx-regimen-cell__n {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--ink-4);
+  margin-top: 2px;
+}
 
 .dx-workout-history__title {
   font-size: 11px;
@@ -3851,7 +4343,102 @@ body { font-size: 15px; }
   font-weight: 600;
   color: var(--ink-3);
 }
-.lf-today-actions { display: flex; gap: 8px; margin-top: 2px; }
+.lf-section { padding: 14px 0; border-top: 1px solid var(--border-2); }
+.lf-section:first-of-type { border-top: none; padding-top: 0; }
+.lf-section__head { margin-bottom: 2px; }
+.lf-section__headrow { display: flex; align-items: baseline; justify-content: space-between; }
+.lf-section__name { font-size: 15px; font-weight: 700; color: var(--ink); }
+.lf-section__total { font-size: 13px; font-weight: 700; color: var(--ink); }
+.lf-section__macros { font-size: 11px; color: var(--ink-3); margin-top: 2px; }
+.lf-section__add {
+  display: block;
+  margin-top: 10px;
+  padding: 4px 0;
+  background: none;
+  border: none;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .03em;
+  color: var(--blue);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.lf-section__add:hover { text-decoration: underline; }
+
+/* MFP-style item row: name + kcal, then a muted brand/serving sub-line
+   with the time/delete actions — the whole row is tappable to edit. */
+.lf-item { padding: 10px 0; border-top: 1px solid var(--border-2); cursor: pointer; }
+.lf-item:first-of-type { border-top: none; }
+.lf-item__main { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.lf-item__name { font-size: 14px; font-weight: 600; color: var(--ink); }
+.lf-item__kcal { font-size: 14px; font-weight: 600; color: var(--ink); white-space: nowrap; }
+.lf-item__sub { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 3px; min-height: 20px; }
+.lf-item__desc { font-size: 12px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Describe mode's parsed-item list — every number stays editable,
+   since an estimate is only useful if it's cheap to correct. */
+.lf-text-item { padding: 10px 0; border-top: 1px solid var(--border-2); }
+.lf-text-item:first-of-type { border-top: none; }
+.lf-text-item__head { display: flex; align-items: center; gap: 8px; }
+.lf-text-item__name {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 6px 8px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border-2);
+  background: var(--surface-2);
+  color: var(--ink);
+}
+.lf-text-item__remove {
+  flex: 0 0 auto;
+  border: none;
+  background: none;
+  color: var(--ink-3);
+  font-size: 15px;
+  line-height: 1;
+  padding: 6px;
+  cursor: pointer;
+}
+.lf-text-item__remove:hover { color: var(--red, #e5484d); }
+.lf-text-item__serving { font-size: 11px; color: var(--ink-3); margin: 4px 0 6px 2px; }
+.lf-text-item__macros { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.lf-text-item__macros label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.lf-text-item__macros input {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  padding: 5px 6px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border-2);
+  background: var(--surface-2);
+  color: var(--ink);
+  width: 100%;
+}
+.lf-text-total {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.lf-text-total__macros { font-size: 11px; font-weight: 500; color: var(--ink-3); }
+
+.lf-today-actions { display: flex; gap: 8px; margin-top: 2px; flex-shrink: 0; }
 .lf-time-edit { display: inline-flex; align-items: center; gap: 6px; }
 .lf-time-input {
   font-size: 12px;
@@ -3949,11 +4536,22 @@ body { font-size: 15px; }
   margin-top: 4px;
 }
 .dx-chart-hint--warn { color: var(--orange); font-weight: 600; }
+.dx-gap-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  background: rgba(248, 113, 113, 0.12);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  border-radius: 10px;
+  padding: 9px 12px;
+  margin-bottom: 10px;
+  font-size: 12px; font-weight: 600; color: var(--red);
+}
 .dx-chart-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin-top: 10px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 12px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-2);
 }
 .dx-chart-legend__item {
   display: flex;
@@ -3962,6 +4560,7 @@ body { font-size: 15px; }
   font-size: 11px;
   color: var(--ink-3);
 }
+.dx-chart-legend__item--wide { grid-column: 1 / -1; }
 .dx-chart-legend__swatch {
   width: 10px;
   height: 10px;

@@ -112,14 +112,16 @@ Work through this explicitly before answering:
 Portion size, cooking method, and visible ingredients all matter across all photos. Never refuse to estimate; if you're unsure, give your best guess and say so in "note" with a lower "confidence".
 
 Respond with ONLY a single JSON object, no markdown fences, no other text, in exactly this shape:
-{"calories_kcal": <number>, "protein_g": <number>, "carbs_g": <number>, "fat_g": <number>, "confidence": "low"|"medium"|"high", "note": "<one short sentence naming what was left over and how much, e.g. '2 of 4 salami slices left uneaten'>"}` : `You are estimating calories and macronutrients for a food diary entry, from ${multiAngle ? `${images.length} photos of the same meal` : 'a photo'} and a short description.
+{"calories_kcal": <number>, "protein_g": <number>, "carbs_g": <number>, "fat_g": <number>, "confidence": "low"|"medium"|"high", "note": "<one short sentence naming what was left over and how much, e.g. '2 of 4 salami slices left uneaten'>"}` : `${multiAngle ? `Look at the ${images.length} photos below` : 'Look at the photo below'} and first work out which of these two cases it is:
+
+CASE A — a screenshot of printed nutrition facts (a food-tracking app's "Save Recipe"/nutrition screen, a packaging nutrition label, a diary entry's macro breakdown — printed digits and labels, not a photographed plate of food). If so, do NOT estimate anything: read and transcribe the EXACT numbers shown for calories, protein, carbs, and fat FOR ONE SERVING (use the "per serving" figures if a serving size/count is shown, not a multi-serving total). Also read off the recipe/food title if one is visible, as "food_name" (omit "food_name" entirely if no title is visible). Set "confidence" to "high" and "note" to something like "Read directly from a nutrition label screenshot." — you are transcribing printed facts, not guessing.
+
+CASE B — an actual photograph of real food (a plate, a bowl, a wrapper with food in/on it). If so, estimate as normal: give your best-effort visual estimate of the TOTAL meal shown${multiAngle ? ', using all the angles together — they show the SAME meal, not separate meals; do not double-count an item just because it appears in more than one photo' : ''} (or described, if the photo is unclear/partial) — portion size, cooking method, and visible ingredients all matter. Never refuse to estimate; if you're unsure, give your best guess and say so in "note" with a lower "confidence". Do not include "food_name" in this case unless the user's description names the meal.
 
 Description from the user: ${description ? JSON.stringify(String(description).slice(0, 500)) : '(none given)'}
 
-${multiAngle ? `Look at the photos — they show the SAME meal from different angles.${angleNote}` : 'Look at the photo'} and give your best-effort estimate of the TOTAL meal shown (or described, if the photos are unclear/partial) — portion size, cooking method, and visible ingredients all matter. Never refuse to estimate; if you're unsure, give your best guess and say so in "note" with a lower "confidence".
-
 Respond with ONLY a single JSON object, no markdown fences, no other text, in exactly this shape:
-{"calories_kcal": <number>, "protein_g": <number>, "carbs_g": <number>, "fat_g": <number>, "confidence": "low"|"medium"|"high", "note": "<one short sentence on your key assumptions, e.g. portion size or ingredients guessed>"}`;
+{"calories_kcal": <number>, "protein_g": <number>, "carbs_g": <number>, "fat_g": <number>, "confidence": "low"|"medium"|"high", "note": "<one short sentence — either what was transcribed from, or your key assumptions>", "food_name": "<optional — only include this key at all when a title was actually visible to read>"}`;
 
   const imageContent = [];
   images.forEach((img, i) => {
@@ -181,7 +183,7 @@ function parseEstimateJson(text) {
   }
   const num = v => (Number.isFinite(Number(v)) ? Math.max(0, Number(v)) : 0);
   if (parsed.calories_kcal == null) return null;
-  return {
+  const result = {
     calories_kcal: Math.round(num(parsed.calories_kcal)),
     protein_g: Math.round(num(parsed.protein_g)),
     carbs_g: Math.round(num(parsed.carbs_g)),
@@ -189,4 +191,11 @@ function parseEstimateJson(text) {
     confidence: ['low', 'medium', 'high'].includes(parsed.confidence) ? parsed.confidence : 'low',
     note: typeof parsed.note === 'string' ? parsed.note.slice(0, 300) : '',
   };
+  // Only present when a title was actually read off a label/screenshot —
+  // the client uses this to prefill the food name instead of falling
+  // back to the photo description, but only when there's a real title.
+  if (typeof parsed.food_name === 'string' && parsed.food_name.trim()) {
+    result.food_name = parsed.food_name.trim().slice(0, 200);
+  }
+  return result;
 }
