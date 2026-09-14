@@ -7,16 +7,17 @@ only you can make — none of it was attempted.
 
 ## 1. Apple Developer Program
 
-- [ ] Confirm you're enrolled in the Apple Developer Program ($99/year). Required
-      before any of the steps below are possible.
+- [x] Already enrolled — team "Lewis Chandler", team ID `EH5PN32N9S` (an
+      existing team, previously used for the unrelated Trio/nightscout app).
 
 ## 2. Apple Developer Portal (developer.apple.com)
 
-- [ ] Register an App ID with bundle identifier **`com.lwychan.fitl00p`**
-- [ ] On that App ID, enable capabilities: **HealthKit** and **Push Notifications**
-      (the local project already has the matching entitlements —
-      `ios/App/App/App.entitlements` — but the App ID must have them enabled
-      on Apple's side too, or automatic signing will fail to apply them)
+- [x] Registered the App ID with bundle identifier **`com.lwychan.fitl00p`**
+      (identifier `ZJZDD4NM9M`)
+- [x] Enabled capabilities on that App ID: **HealthKit** and **Push
+      Notifications** — confirmed persisted after a fresh page reload.
+      (The local project already has the matching entitlements in
+      `ios/App/App/App.entitlements`.)
 - [ ] Signing certificate + provisioning profile — the Xcode project is set to
       `CODE_SIGN_STYLE = Automatic`, so once the App ID above exists, Xcode
       (or your chosen cloud build service, using an App Store Connect API key)
@@ -30,15 +31,24 @@ only you can make — none of it was attempted.
 
 ## 3. App Store Connect (appstoreconnect.apple.com)
 
-- [ ] Create the app record: bundle ID `com.lwychan.fitl00p`, name "FitLoop"
+- [x] Created the app record: bundle ID `com.lwychan.fitl00p`, name "FitLoop",
+      Apple ID `6811922097` (already filled into `codemagic.yaml`)
+- [ ] **Decision: TestFlight External Testing, invite-only by email — not a
+      public App Store release, and not a public TestFlight link either.**
+      `codemagic.yaml` already has `submit_to_app_store: false` /
+      `submit_to_testflight: true`, matching this. External testing needs a
+      one-time, lightweight Beta App Review from Apple (far shorter than full
+      App Store review) before your first family tester can install a build.
 - [ ] Fill in App Privacy ("nutrition label") — this app reads HealthKit data
       (steps, sleep, HR, weight, workouts) and handles diabetes/glucose data
-      and meal photos, so answer these carefully. Required before TestFlight
-      **external** testing (internal testing with your own Apple ID doesn't
-      need it yet).
+      and meal photos, so answer these carefully. Required before external
+      TestFlight testing.
 - [ ] Answer the export-compliance question on each build upload (a
       standard HTTPS-only app like this typically qualifies for the usual
       exemption, but you still have to answer it each time).
+- [ ] Once you have a build in TestFlight, add family members as external
+      testers by email (App Store Connect → TestFlight tab) — never generate/
+      share the public TestFlight link.
 
 ## 4. App icon — done, but revisit before a public release
 
@@ -69,12 +79,8 @@ already written at the repo root, targeting this project's actual setup
       add an App Store Connect API key. Name it **`codemagic`** exactly, or
       edit the `integrations: app_store_connect:` line in `codemagic.yaml`
       to match whatever name you actually give it.
-- [ ] Once the app exists in App Store Connect (see section 3), fill in its
-      numeric Apple ID in `codemagic.yaml`'s `APP_STORE_APPLE_ID` var (App
-      Store Connect → App Information → Apple ID). Not required for a
-      first build — the build-number step falls back to build 1 if it's
-      still `0` — but needed before a second build to avoid a duplicate
-      build-number rejection.
+- [x] `codemagic.yaml`'s `APP_STORE_APPLE_ID` is filled in: `6811922097`
+      (the FitLoop app record's Apple ID)
 - [ ] No `triggering:` block is set — builds only start when you trigger
       them manually from the Codemagic dashboard, so nothing consumes free
       build minutes automatically on every push. Add one later if you want
