@@ -33,16 +33,22 @@ only you can make — none of it was attempted.
 
 - [x] Created the app record: bundle ID `com.lwychan.fitl00p`, name "FitLoop",
       Apple ID `6811922097` (already filled into `codemagic.yaml`)
-- [ ] **Decision: TestFlight External Testing, invite-only by email — not a
+- [x] **Decision: TestFlight External Testing, invite-only by email — not a
       public App Store release, and not a public TestFlight link either.**
       `codemagic.yaml` already has `submit_to_app_store: false` /
       `submit_to_testflight: true`, matching this. External testing needs a
       one-time, lightweight Beta App Review from Apple (far shorter than full
       App Store review) before your first family tester can install a build.
-- [ ] Fill in App Privacy ("nutrition label") — this app reads HealthKit data
-      (steps, sleep, HR, weight, workouts) and handles diabetes/glucose data
-      and meal photos, so answer these carefully. Required before external
-      TestFlight testing.
+- [x] Filled in App Privacy ("nutrition label"): 7 data types declared
+      (Name, Email, Health, Fitness, Photos or Videos, User ID, Device ID),
+      each marked "Used for App Functionality" + "Linked to the user's
+      identity", none used for tracking.
+- [ ] **Privacy Policy URL** — drafted at `src/privacy.html`, not live yet
+      (needs including in your next manual Netlify deploy). Once live at
+      `https://fitl00p.netlify.app/privacy.html`, tell me and I'll enter the
+      URL in App Store Connect and click **Publish** on the App Privacy
+      label (I've filled in the 7 data types but deliberately have not
+      clicked Publish yet, pending this URL).
 - [ ] Answer the export-compliance question on each build upload (a
       standard HTTPS-only app like this typically qualifies for the usual
       exemption, but you still have to answer it each time).
