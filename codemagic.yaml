@@ -33,13 +33,11 @@ workflows:
     integrations:
       app_store_connect: codemagic
     environment:
-      ios_signing:
-        distribution_type: app_store
-        bundle_identifier: com.lwychan.fitl00p
       vars:
         XCODE_PROJECT: "ios/App/App.xcodeproj"
         XCODE_SCHEME: "App"
         APP_STORE_APPLE_ID: 6811922097
+        BUNDLE_ID: com.lwychan.fitl00p
       node: 20.11.1
       xcode: latest
 
@@ -50,7 +48,27 @@ workflows:
       - name: Sync Capacitor (copies src/ into the iOS project, updates Package.swift)
         script: npx cap sync ios
 
-      - name: Set up code signing (App Store Connect integration + automatic signing)
+      # No `environment.ios_signing` block on purpose — that's Codemagic's
+      # UI-managed signing path (Code Signing Identities), which needs a
+      # provisioning profile pre-uploaded there. Mixing it with the CLI
+      # flow below causes "No matching profiles found" even once a
+      # certificate exists. These 4 steps are the CLI-only path: they
+      # fetch (or, on a brand-new bundle ID, create) both the certificate
+      # and the App Store distribution profile via the App Store Connect
+      # API key at build time.
+      - name: Set up keychain for code signing
+        script: keychain initialize
+
+      - name: Fetch signing files
+        script: |
+          app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --type IOS_APP_STORE \
+            --create
+
+      - name: Add certificates to keychain
+        script: keychain add-certificates
+
+      - name: Set up code signing settings on Xcode project
         script: xcode-project use-profiles
 
       - name: Increment build number
