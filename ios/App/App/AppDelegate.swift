@@ -53,7 +53,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         NotificationCenter.default.post(name: .capacitorDidFailToRegisterForRemoteNotifications, object: error)
     }
 
-    func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any], fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
-        NotificationCenter.default.post(name: .capacitorDidReceiveRemoteNotification, object: userInfo, userInfo: [UIBackgroundFetchResult.self: completionHandler])
-    }
+    // No didReceiveRemoteNotification forwarder — current @capacitor/push-notifications
+    // (8.x) handles incoming notifications entirely through its own
+    // UNUserNotificationCenter delegate (PushNotificationsHandler), not this
+    // AppDelegate callback. There's no matching Notification.Name for it in
+    // Capacitor core; only the two registration ones above exist.
 }
