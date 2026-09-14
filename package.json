@@ -1,0 +1,22 @@
+{
+  "name": "fitl00p",
+  "version": "1.0.0",
+  "private": true,
+  "description": "FitLoop iOS wrapper (Capacitor) around the fitl00p PWA",
+  "scripts": {
+    "cap:sync": "cap sync ios",
+    "cap:open": "cap open ios"
+  },
+  "dependencies": {
+    "@capacitor/camera": "^8.2.4",
+    "@capacitor/core": "^8.5.2",
+    "@capacitor/filesystem": "^8.1.3",
+    "@capacitor/ios": "^8.5.2",
+    "@capacitor/push-notifications": "^8.1.2",
+    "@capgo/capacitor-health": "^8.10.6"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.2",
+    "typescript": "^7.0.2"
+  }
+}

@@ -1,0 +1,26 @@
+# Node
+node_modules/
+npm-debug.log*
+
+# Capacitor
+ios/App/Pods/
+ios/App/build/
+ios/App/App/public/
+ios/.gradle/
+ios/DerivedData/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/capacitor-cordova-android-plugins/
+*.xcuserstate
+*.xcuserdatad/
+xcuserdata/
+DerivedData/
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# OS
+.DS_Store
+Thumbs.db
