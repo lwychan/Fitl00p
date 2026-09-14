@@ -49,12 +49,32 @@ only you can make — none of it was attempted.
       URL in App Store Connect and click **Publish** on the App Privacy
       label (I've filled in the 7 data types but deliberately have not
       clicked Publish yet, pending this URL).
-- [ ] Answer the export-compliance question on each build upload (a
-      standard HTTPS-only app like this typically qualifies for the usual
-      exemption, but you still have to answer it each time).
-- [ ] Once you have a build in TestFlight, add family members as external
-      testers by email (App Store Connect → TestFlight tab) — never generate/
-      share the public TestFlight link.
+- [x] Answered the export-compliance question for Build 1: **"None of the
+      algorithms mentioned above"** (the app only uses standard HTTPS via
+      iOS's built-in networking, no custom/proprietary crypto).
+- [x] Filled in Test Information (Beta App Description, Feedback Email,
+      Beta App Review contact info). **Sign-In Information**: "Sign-in
+      required" is checked with username `lwychndlr@gmail.com` (Lewy's
+      real FitLoop login) — you entered the password directly. You also
+      entered your own contact phone number directly.
+- [x] **Switched from External to Internal Testing** — no Apple Beta App
+      Review needed, since you and your wife just want a controlled group
+      rather than public/reviewed beta testers. The External "Family"
+      group and its pending Beta App Review submission were deleted.
+- [x] Invited `gemmaking960@gmail.com` (Gem Chandler) as an App Store
+      Connect user (Users and Access → role: **Developer** — the most
+      limited role that still grants TestFlight access; scoped only to
+      the FitLoop app, not your other Trio-lwychan app). **Pending: she
+      needs to accept the invite email** before she can be added as an
+      internal tester.
+- [x] Created an Internal Testing group named **"Family"** (automatic
+      distribution enabled, so future Xcode builds reach it automatically)
+      and added Build 1 to it.
+- [x] Added Lewis as an internal tester in the "Family" group — build is
+      available to install immediately, no review wait.
+- [ ] **Once Gemma accepts her App Store Connect invite**, add her to the
+      "Family" internal testing group too (TestFlight → iOS → Family →
+      Testers → + → select her).
 
 ## 4. App icon — done, but revisit before a public release
 
@@ -102,10 +122,15 @@ already written at the repo root, targeting this project's actual setup
       run at all.
 - [x] `codemagic.yaml`'s `APP_STORE_APPLE_ID` is filled in: `6811922097`
       (the FitLoop app record's Apple ID)
-- [ ] **First successful build still pending** — builds #1-5 all failed
-      (missing profile → Node version → TS config loading → wrong API key
-      role); the three fixes above target the last of those. Next build
-      attempt should confirm.
+- [x] **First successful build confirmed — build #8.** Builds #1-7 failed in
+      sequence (missing profile → Node version → TS config loading → wrong
+      API key role/stale cert → missing CERTIFICATE_PRIVATE_KEY → an
+      AppDelegate.swift Swift compile error from a nonexistent Capacitor
+      notification name). Build #8 cleared every step and uploaded to
+      TestFlight — confirmed live in App Store Connect → TestFlight → iOS
+      Builds as Version 1.0, Build 1. (Codemagic's UI labelled the run
+      "post-processing failed", which just reflects Apple's export-
+      compliance question below — not an actual build/upload failure.)
 - [ ] No `triggering:` block is set — builds only start when you trigger
       them manually from the Codemagic dashboard, so nothing consumes free
       build minutes automatically on every push. Add one later if you want
