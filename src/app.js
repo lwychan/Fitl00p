@@ -136,6 +136,15 @@
 // they're two views of the same keypair, not independent settings.
 const VAPID_PUBLIC = 'BOUj3c5wS_5htviclNYyinBVVxCkz0HfJOZVcVrEoxIwBFqPqxljCg7l5mQ1hGjQKWz_NvhGlvoEeRSMuDI7m98';
 
+// Netlify Functions live at fitl00p.netlify.app regardless of how this
+// page itself got loaded. On the web (PWA/browser) that's simply the
+// current origin, so this is a no-op there. Inside the native app the
+// HTML/CSS/JS are bundled directly into the ipa — there's no server
+// behind a relative path — so every Functions call below needs the
+// real, absolute origin instead. window.Capacitor is injected
+// automatically by the native runtime; it's simply absent on the web.
+const NETLIFY_ORIGIN = window.Capacitor?.isNativePlatform?.() ? 'https://fitl00p.netlify.app' : '';
+
 const { createClient } = window.supabase;
 let db = null; // initialised after config loads
 
@@ -2530,7 +2539,7 @@ async function sendChecklistCompleteNotification(streak) {
 
   for (const s of subs) {
     try {
-      await fetch('/.netlify/functions/push-send', {
+      await fetch(`${NETLIFY_ORIGIN}/.netlify/functions/push-send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -5387,7 +5396,7 @@ async function fetchExerciseGif(ei, excludeId = null) {
   if (gifEl) { gifEl.innerHTML = `<span class="exercise-info-drawer__gif--loading">⏳</span>`; }
 
   try {
-    const url = `/.netlify/functions/exercise-media?name=${encodeURIComponent(ex.media.search_name)}`
+    const url = `${NETLIFY_ORIGIN}/.netlify/functions/exercise-media?name=${encodeURIComponent(ex.media.search_name)}`
       + (excludeId ? `&exclude=${encodeURIComponent(excludeId)}` : '');
     const res  = await fetch(url);
     const data = await res.json();
@@ -7694,7 +7703,7 @@ const MFP_SHORTCUT_SRC = `(function(){
 })();`;
 
 function buildMfpBookmarklet(token) {
-  const endpoint = `${location.origin}/.netlify/functions/mfp-import`;
+  const endpoint = `${NETLIFY_ORIGIN}/.netlify/functions/mfp-import`;
   const payloadUrl = `${location.origin}/mfp-bookmarklet-payload.js`;
   const src = MFP_BOOKMARKLET_SRC
     .replace('__TOKEN__', JSON.stringify(token))
@@ -7706,7 +7715,7 @@ function buildMfpBookmarklet(token) {
 // Plain script, no "javascript:" prefix — Shortcuts' "Run JavaScript on Web
 // Page" action wants raw JS in its script field, not a URI.
 function buildMfpShortcutScript(token) {
-  const endpoint = `${location.origin}/.netlify/functions/mfp-import`;
+  const endpoint = `${NETLIFY_ORIGIN}/.netlify/functions/mfp-import`;
   return MFP_SHORTCUT_SRC
     .replace('__TOKEN__', JSON.stringify(token))
     .replace('__ENDPOINT__', JSON.stringify(endpoint));
@@ -7816,7 +7825,7 @@ async function fetchDiabetesData(force = false) {
   if (profile.diabetes_ns_token)  qs.set('token', profile.diabetes_ns_token);
   if (profile.diabetes_ns_secret) qs.set('secret', profile.diabetes_ns_secret);
 
-  const res = await fetch(`/.netlify/functions/diabetes-sync?${qs.toString()}`);
+  const res = await fetch(`${NETLIFY_ORIGIN}/.netlify/functions/diabetes-sync?${qs.toString()}`);
   const body = await res.json();
   if (!res.ok) throw new Error(body?.error || `Sync failed (${res.status})`);
 
@@ -7845,7 +7854,7 @@ async function fetchDiabetesDataWide(force = false) {
   if (profile.diabetes_ns_token)  qs.set('token', profile.diabetes_ns_token);
   if (profile.diabetes_ns_secret) qs.set('secret', profile.diabetes_ns_secret);
 
-  const res = await fetch(`/.netlify/functions/diabetes-sync?${qs.toString()}`);
+  const res = await fetch(`${NETLIFY_ORIGIN}/.netlify/functions/diabetes-sync?${qs.toString()}`);
   const body = await res.json();
   if (!res.ok) throw new Error(body?.error || `Sync failed (${res.status})`);
 
@@ -10535,7 +10544,7 @@ async function loadHealthKeyStatus() {
   if (!dot) return;
 
   try {
-    const res  = await fetch('/.netlify/functions/health-apikey', {
+    const res  = await fetch(`${NETLIFY_ORIGIN}/.netlify/functions/health-apikey`, {
       headers: { 'Authorization': `Bearer ${(await db.auth.getSession()).data.session?.access_token}` },
     });
     const data = await res.json();
@@ -10560,7 +10569,7 @@ document.addEventListener('click', async e => {
   setBtn(btn, true, 'Generate API key', 'Generating…');
   try {
     const session = (await db.auth.getSession()).data.session;
-    const res  = await fetch('/.netlify/functions/health-apikey', {
+    const res  = await fetch(`${NETLIFY_ORIGIN}/.netlify/functions/health-apikey`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${session?.access_token}` },
     });
@@ -10584,7 +10593,7 @@ document.addEventListener('click', async e => {
   if (!e.target.closest('#btnRevokeKey')) return;
   if (!confirm('Revoke your Health Auto Export API key? The app will stop syncing until you generate a new key.')) return;
   const session = (await db.auth.getSession()).data.session;
-  await fetch('/.netlify/functions/health-apikey', {
+  await fetch(`${NETLIFY_ORIGIN}/.netlify/functions/health-apikey`, {
     method: 'DELETE',
     headers: { 'Authorization': `Bearer ${session?.access_token}` },
   });
@@ -11195,7 +11204,7 @@ async function loadIamData() {
       btn.textContent = action === 'approve' ? 'Approving…' : 'Rejecting…';
 
       const session = (await db.auth.getSession()).data.session;
-      const res = await fetch('/.netlify/functions/admin-approve', {
+      const res = await fetch(`${NETLIFY_ORIGIN}/.netlify/functions/admin-approve`, {
         method: 'POST',
         headers: {
           'Content-Type':  'application/json',
@@ -11981,7 +11990,7 @@ async function runLfSearch(query) {
       .or(`name.ilike.%${query}%,brand.ilike.%${query}%`)
       .order('name', { ascending: true })
       .limit(20),
-    fetch(`/.netlify/functions/food-search?q=${encodeURIComponent(query)}`)
+    fetch(`${NETLIFY_ORIGIN}/.netlify/functions/food-search?q=${encodeURIComponent(query)}`)
       .then(r => (r.ok ? r.json() : { results: [] }))
       .catch(() => ({ results: [] })),
   ]);
@@ -12253,7 +12262,7 @@ el.btnLfEstimate?.addEventListener('click', async () => {
   if (el.lfEstimateStatus) el.lfEstimateStatus.textContent = '';
   try {
     const session = (await db.auth.getSession()).data.session;
-    const res = await fetch('/.netlify/functions/food-photo-estimate', {
+    const res = await fetch(`${NETLIFY_ORIGIN}/.netlify/functions/food-photo-estimate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
       body: JSON.stringify({
@@ -12314,7 +12323,7 @@ el.btnLfTextEstimate?.addEventListener('click', async () => {
   if (el.lfTextEstimateStatus) el.lfTextEstimateStatus.textContent = '';
   try {
     const session = (await db.auth.getSession()).data.session;
-    const res = await fetch('/.netlify/functions/food-text-estimate', {
+    const res = await fetch(`${NETLIFY_ORIGIN}/.netlify/functions/food-text-estimate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
       body: JSON.stringify({ text }),
@@ -12490,7 +12499,7 @@ el.btnLfTextSave?.addEventListener('click', async () => {
       try {
         const session = (await db.auth.getSession()).data.session;
         for (const row of rows) {
-          const shareRes = await fetch('/.netlify/functions/share-food-log', {
+          const shareRes = await fetch(`${NETLIFY_ORIGIN}/.netlify/functions/share-food-log`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token}` },
             body: JSON.stringify({
@@ -12705,7 +12714,7 @@ el.btnLfSave?.addEventListener('click', async () => {
     if (wantsShare) {
       try {
         const session = (await db.auth.getSession()).data.session;
-        const shareRes = await fetch('/.netlify/functions/share-food-log', {
+        const shareRes = await fetch(`${NETLIFY_ORIGIN}/.netlify/functions/share-food-log`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token}` },
           body: JSON.stringify({
@@ -13456,7 +13465,7 @@ async function fetchWithRetries(url, { attempts = 3, attemptTimeoutMs = 7000, ba
     // Worst case ~3 attempts × 7s + backoff ≈ 25s, still entirely behind
     // the spinner — see fetchWithRetries above for why this retries
     // instead of just bounding a single attempt like before.
-    const cfgRes = await fetchWithRetries('/.netlify/functions/config', { attempts: 3, attemptTimeoutMs: 7000, backoffMs: 1500 });
+    const cfgRes = await fetchWithRetries(`${NETLIFY_ORIGIN}/.netlify/functions/config`, { attempts: 3, attemptTimeoutMs: 7000, backoffMs: 1500 });
     if (!cfgRes.ok) throw new Error(`Config HTTP ${cfgRes.status}`);
     const cfg = await cfgRes.json();
     if (!cfg.url || !cfg.key) throw new Error('Missing url or key in config response');
