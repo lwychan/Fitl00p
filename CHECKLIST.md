@@ -79,39 +79,41 @@ already written at the repo root, targeting this project's actual setup
 (SPM, not CocoaPods — builds `ios/App/App.xcodeproj` directly, no
 `.xcworkspace`/`pod install`).
 
-- [ ] Sign up for Codemagic yourself (Claude Code won't do this or spend
-      any money) and connect the `lwychan/Fitl00p` GitHub repo to it
-- [ ] In Codemagic's Team settings → Integrations → Apple Developer Portal,
-      add an App Store Connect API key. Name it **`codemagic`** exactly, or
-      edit the `integrations: app_store_connect:` line in `codemagic.yaml`
-      to match whatever name you actually give it.
+- [x] Signed up for Codemagic (via GitHub OAuth) and installed the Codemagic
+      GitHub App, scoped to just the `lwychan/Fitl00p` repo
+- [x] Connected the repo in Codemagic — `codemagic.yaml` is detected on
+      `main`
+- [x] Generated an App Store Connect API key (App Manager role, least
+      privilege needed) named **`codemagic`**, Key ID `AAYXF4YJBL`, and
+      connected it under Codemagic's Team settings → Integrations →
+      Developer Portal. Matches `integrations: app_store_connect: codemagic`
+      in `codemagic.yaml` exactly. The downloaded `.p8` file has been
+      deleted from Downloads now that it's uploaded to Codemagic (Apple
+      won't let it be re-downloaded anyway — a new key would need
+      generating if ever lost).
 - [x] `codemagic.yaml`'s `APP_STORE_APPLE_ID` is filled in: `6811922097`
       (the FitLoop app record's Apple ID)
+- [ ] **Not yet done: trigger the first build.** Everything's wired up but
+      no build has been started — say the word when you want to try one.
 - [ ] No `triggering:` block is set — builds only start when you trigger
       them manually from the Codemagic dashboard, so nothing consumes free
       build minutes automatically on every push. Add one later if you want
       that (e.g. on git tags).
 
-## 6. Connect the build service to GitHub
+## 6. Connect the build service to GitHub — done
 
-- [ ] The repo already has a remote: `git@github.com:lwychan/Fitl00p` (private,
-      via SSH). No new remote needs creating.
-- [ ] Nothing from this session has been pushed yet — two local commits sit
-      ahead of `origin/main` (the auth/sync work, and this Capacitor scaffold).
-      Whichever build service you choose will need to read from this GitHub
-      repo, so it'll need pushing eventually. Per your own `CLAUDE.md`,
-      pushing to `main` also triggers a Netlify deploy — so that push needs
-      your explicit go-ahead regardless of the iOS work.
-- [ ] Once chosen, connect the build service to the GitHub repo (its own
-      web UI — a "connect repository" / GitHub App install flow)
+- [x] Repo remote already existed: `git@github.com:lwychan/Fitl00p` (private,
+      via SSH). No new remote needed.
+- [x] All local commits pushed to `origin/main` — confirmed this does NOT
+      trigger a Netlify deploy (that project is zip-upload-only, not
+      git-connected).
+- [x] Codemagic's GitHub App installed and connected to the repo.
 
-## 7. Secrets the build service will need
+## 7. Secrets the build service needs — done
 
-- [ ] An **App Store Connect API key** (App Store Connect → Users and Access →
-      Integrations → Keys) — used for automatic code signing and uploading
-      the build to TestFlight. This is new; it's unrelated to and doesn't
-      touch your existing Supabase, Anthropic, or VAPID keys, which stay
-      exactly where they are in Netlify's environment.
+- [x] App Store Connect API key generated and connected (see section 5).
+      Unrelated to and doesn't touch your existing Supabase, Anthropic, or
+      VAPID keys, which stay exactly where they are in Netlify's environment.
 
 ## 8. Testing note
 
