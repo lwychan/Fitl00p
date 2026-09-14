@@ -7,6 +7,13 @@ const SB_SERVICE = process.env.SUPABASE_SERVICE_KEY;
 
 const HEADERS = {
   'Access-Control-Allow-Origin': '*',
+  // Same-origin browser requests never trigger a CORS preflight, so this
+  // was invisible until the native app started calling this cross-origin
+  // — without these two, the browser rejects the OPTIONS preflight for
+  // the POST's Content-Type/Authorization headers, and the real request
+  // never sends.
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
   'Content-Type': 'application/json',
 };
 

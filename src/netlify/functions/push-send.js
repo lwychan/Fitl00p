@@ -12,6 +12,13 @@ const VAPID_PRIVATE = process.env.VAPID_PRIVATE;
 exports.handler = async function (event) {
   const headers = {
     'Access-Control-Allow-Origin': '*',
+    // Same-origin browser requests never trigger a CORS preflight, so
+    // this was invisible until the native app started calling this
+    // cross-origin (its own bundle, not fitl00p.netlify.app) — without
+    // these two, the browser rejects the OPTIONS preflight for any POST
+    // carrying a Content-Type header, and the real request never sends.
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
     'Content-Type': 'application/json',
   };
 
