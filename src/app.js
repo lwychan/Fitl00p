@@ -188,6 +188,7 @@ const el = {
   btnOpenSettingsHeader: $('btnOpenSettingsHeader'),
   btnReloadHeader: $('btnReloadHeader'),
   sessionBrokenBanner:     $('sessionBrokenBanner'),
+  btnReloadSession:        $('btnReloadSession'),
   btnFixSession:           $('btnFixSession'),
   btnDismissSessionBanner: $('btnDismissSessionBanner'),
   // views
@@ -1041,6 +1042,18 @@ function initApp() {
     el.btnReloadHeader.classList.add('is-loading');
     window.__fitl00pHardReset();
   });
+  // "Reload" is the primary action — same non-destructive cache-clear-
+  // and-reload as the header's reload button, which fixes the exact
+  // stale/stuck-service-worker cause this banner's own detection can't
+  // tell apart from a genuinely dead session (see looksLikeBrokenSession
+  // below). "Sign in again" stays available as a secondary, explicit
+  // last resort — it wasn't safe to make it the ONLY option, since a
+  // false-positive here used to mean every stale-load hiccup forced a
+  // real password login.
+  el.btnReloadSession?.addEventListener('click', () => {
+    el.btnReloadSession.disabled = true;
+    window.__fitl00pHardReset();
+  });
   el.btnFixSession?.addEventListener('click', handleSignOut);
   el.btnDismissSessionBanner?.addEventListener('click', () => {
     if (el.sessionBrokenBanner) el.sessionBrokenBanner.hidden = true;
@@ -1697,8 +1710,18 @@ async function _loadDashboardInner(signal) {
   // come back completely empty, that's not a new user, it's a broken
   // session. Checked fresh on every load (not just once) so the banner
   // clears itself as soon as a real reload brings real data back.
+  //
+  // Both queries must have actually SUCCEEDED for "empty" to mean
+  // anything here — logsRes.data/healthHistRes.data were being read as
+  // `.data || []` with no error check, so a plain network error on
+  // either one (not a real RLS-denial "confirmed empty", just a fetch
+  // that failed) looked identical to a broken session and triggered the
+  // same alarming banner. That's a transient hiccup, not proof of
+  // anything — don't flag it.
   const cachedForSessionCheck = readCachedProfile(currentUser.id);
-  const looksLikeBrokenSession = !!cachedForSessionCheck?.activePlan && logs.length === 0 && healthHistory.length === 0;
+  const looksLikeBrokenSession = !!cachedForSessionCheck?.activePlan
+    && !logsRes.error && !healthHistRes.error
+    && logs.length === 0 && healthHistory.length === 0;
   if (el.sessionBrokenBanner) el.sessionBrokenBanner.hidden = !looksLikeBrokenSession;
 
   todayLog = log;
