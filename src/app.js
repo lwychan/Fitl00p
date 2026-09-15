@@ -40,7 +40,7 @@
   window.addEventListener('unhandledrejection', e => showCrash('unhandledrejection', e.reason));
 })();
 
-/* ── Console log capture panel ─────────────────────────────
+/* ── Remote error logging ──────────────────────────────────
    The crash reporter above only catches uncaught throws and
    unhandled promise rejections. Many things in this app fail
    "quietly" via console.error/console.warn without ever
@@ -48,18 +48,26 @@
    a profile load failing, a theme write failing. Those never
    trigger the red crash screen and are normally only visible
    in a real browser dev console.
-   This panel mirrors every console.error/console.warn call
-   into a small on-screen tab, specifically so this is
-   diagnosable from a phone alone with no computer or Web
-   Inspector needed. Tap the tab in the bottom-right corner to
-   expand/collapse. Does not affect normal console behavior —
-   every call still goes to the real console as well. */
-(function installConsoleCapture() {
-  const entries = [];
-  const MAX_ENTRIES = 100;
-
+   This used to mirror every console.error/console.warn call
+   into an on-screen "Log (N)" tab — useful while building the
+   app, but not something family testers should see. It now
+   mirrors the same calls into a Supabase table (error_logs)
+   instead, so problems on someone else's phone are visible
+   from anywhere without needing physical access to the device.
+   Best-effort only: never throws, never blocks the real
+   console.error/warn, and silently drops everything until both
+   the Supabase client and a signed-in user exist — matches
+   error_logs' own RLS (insert requires auth.uid() = user_id),
+   and a pre-auth failure is already covered by the crash
+   reporter above. A per-session cap and de-dupe stop a
+   repeating error from writing hundreds of rows. */
+(function installErrorLogging() {
   const origError = console.error.bind(console);
   const origWarn  = console.warn.bind(console);
+
+  const MAX_REMOTE_LOGS_PER_SESSION = 25;
+  const alreadySent = new Set();
+  let sentCount = 0;
 
   function fmt(args) {
     return args.map(a => {
@@ -69,64 +77,35 @@
     }).join(' ');
   }
 
-  function record(level, args) {
-    const time = new Date().toLocaleTimeString();
-    entries.push({ level, time, text: fmt(args) });
-    if (entries.length > MAX_ENTRIES) entries.shift();
-    renderPanel();
+  function logRemote(level, text) {
+    try {
+      if (!db || !currentUser) return; // nothing to attach the row to yet
+      if (sentCount >= MAX_REMOTE_LOGS_PER_SESSION) return;
+      if (alreadySent.has(text)) return; // same message already logged this session
+      alreadySent.add(text);
+      sentCount++;
+      db.from('error_logs').insert({
+        user_id: currentUser.id,
+        level,
+        message: text.slice(0, 4000),
+        url: location.href,
+      }).then(({ error }) => {
+        // origError, not console.error — must never re-enter logRemote
+        if (error) origError('Remote error log insert failed:', error.message);
+      }).catch(() => {});
+    } catch {
+      // Logging must never itself throw
+    }
   }
 
   console.error = (...args) => {
     origError(...args);
-    try { record('error', args); } catch (captureErr) { origError('Console capture failed:', captureErr); }
+    logRemote('error', fmt(args));
   };
   console.warn = (...args) => {
     origWarn(...args);
-    try { record('warn', args); } catch (captureErr) { origError('Console capture failed:', captureErr); }
+    logRemote('warn', fmt(args));
   };
-
-  let panelOpen = false;
-
-  function renderPanel() {
-    let tab = document.getElementById('__consoleTab');
-    if (!tab) {
-      tab = document.createElement('button');
-      tab.id = '__consoleTab';
-      tab.style.cssText = 'position:fixed;bottom:12px;left:12px;z-index:999998;' +
-        'background:#1a1a1a;color:#fff;border:1px solid #444;border-radius:20px;' +
-        'padding:6px 12px;font:11px -apple-system,sans-serif;opacity:0.55;';
-      document.documentElement.appendChild(tab);
-      tab.addEventListener('click', () => {
-        panelOpen = !panelOpen;
-        renderPanel();
-      });
-    }
-    tab.textContent = `Log (${entries.length})`;
-    tab.style.opacity = entries.length ? '0.9' : '0.55';
-    tab.style.background = entries.some(e => e.level === 'error') ? '#4a1414' : '#1a1a1a';
-
-    let panel = document.getElementById('__consolePanel');
-    if (!panelOpen) {
-      if (panel) panel.remove();
-      return;
-    }
-    if (!panel) {
-      panel = document.createElement('div');
-      panel.id = '__consolePanel';
-      panel.style.cssText = 'position:fixed;left:8px;right:8px;bottom:52px;top:60px;z-index:999997;' +
-        'background:#111;color:#ddd;font:11px/1.4 -apple-system,monospace;overflow:auto;' +
-        'border-radius:10px;padding:10px;border:1px solid #333;white-space:pre-wrap;word-break:break-word;';
-      document.documentElement.appendChild(panel);
-    }
-    panel.innerHTML = entries.length
-      ? entries.map(e =>
-          `<div style="margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid #2a2a2a;color:${e.level === 'error' ? '#ff8080' : '#ffd080'}">` +
-          `[${e.time}] ${e.level.toUpperCase()}: ${e.text.replace(/</g,'&lt;')}</div>`
-        ).join('')
-      : '<div style="color:#777">No console.error or console.warn calls yet.</div>';
-  }
-
-  renderPanel();
 })();
 
 // Regenerated 2026-07-24 — the previous key here didn't match Netlify's
