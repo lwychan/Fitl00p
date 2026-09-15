@@ -717,6 +717,116 @@ function setBtn(btn, loading, text, loadingText = 'Saving…') {
 }
 
 /* ═══════════════════════════════════════════════════════════
+   OFFLINE SYNC QUEUE
+   Scope (deliberately narrow, not a blanket wrapper around every write
+   in the app — see the memory/commit notes for why): weight logging and
+   workout sets only. Diabetes-related writes (food log, meal dosing,
+   insulin) are excluded on purpose — they bridge into a real-time dose-
+   suggestion flow, so a write that silently succeeds now and only
+   actually lands in the DB minutes/hours later (once back online) would
+   surface a suggestion against stale glucose data. Better to fail
+   loudly and ask the person to retry when they have signal than to
+   queue something dosing-adjacent invisibly.
+
+   localStorage, not IndexedDB — the queue only ever holds a handful of
+   small pending-write objects, never bulk data, so localStorage's
+   simpler synchronous API is enough and avoids IndexedDB's async
+   transaction complexity for no real benefit here. Plain
+   navigator.onLine/'online' event, not @capacitor/network — Capacitor's
+   WKWebView already reflects real OS connectivity through those, so
+   pulling in another native plugin (another Xcode capability, another
+   `cap sync`) isn't needed just for this.
+═══════════════════════════════════════════════════════════ */
+const OFFLINE_QUEUE_KEY = 'fitl00p_offline_queue_v1';
+
+function loadOfflineQueue() {
+  try { return JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || '[]'); }
+  catch { return []; }
+}
+function saveOfflineQueue(queue) {
+  try { localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(queue)); }
+  catch (err) { console.error('Failed to persist offline queue:', err); }
+}
+
+// Supabase-js never throws on a failed request — a network failure comes
+// back as an `error` object too, same as a real server-side rejection.
+// The two need telling apart: a genuine PostgREST/Postgres error carries
+// a `code` (e.g. '23505' unique violation, '42501' RLS denial) — those
+// are real problems to surface, not retry blindly forever. A network
+// failure has no such code, just a generic fetch-level message.
+function isNetworkError(error) {
+  if (!error) return false;
+  if (error.code) return false;
+  const msg = (error.message || '').toLowerCase();
+  return msg.includes('failed to fetch') || msg.includes('network') || msg.includes('load failed');
+}
+
+function updateOfflineSyncBanner() {
+  const banner = $('offlineSyncBanner');
+  const textEl = $('offlineSyncText');
+  if (!banner) return;
+  const pending = loadOfflineQueue().length;
+  if (!navigator.onLine) {
+    banner.hidden = false;
+    if (textEl) textEl.textContent = pending
+      ? `Offline — ${pending} change${pending === 1 ? '' : 's'} will sync when you're back online.`
+      : "Offline — changes will sync when you're back online.";
+  } else if (pending) {
+    banner.hidden = false;
+    if (textEl) textEl.textContent = `Syncing ${pending} pending change${pending === 1 ? '' : 's'}…`;
+  } else {
+    banner.hidden = true;
+  }
+}
+
+// table/op/payload only (op: 'insert' | 'upsert') — deliberately not a
+// closure, so the queue survives JSON round-tripping through localStorage
+// across app restarts, not just the current session.
+async function queuedWrite(table, op, payload, opts) {
+  if (navigator.onLine) {
+    const { data, error } = await db.from(table)[op](payload, opts || undefined);
+    if (!error) return { data, error: null, queued: false };
+    if (!isNetworkError(error)) return { data: null, error, queued: false }; // real rejection — surface normally, don't queue
+  }
+  const queue = loadOfflineQueue();
+  queue.push({ table, op, payload, opts: opts || null, queuedAt: new Date().toISOString() });
+  saveOfflineQueue(queue);
+  updateOfflineSyncBanner();
+  return { data: null, error: null, queued: true };
+}
+
+async function flushOfflineQueue() {
+  if (!navigator.onLine || !currentUser) return;
+  const queue = loadOfflineQueue();
+  if (!queue.length) return;
+
+  const remaining = [];
+  let synced = 0;
+  for (const item of queue) {
+    try {
+      const { error } = await db.from(item.table)[item.op](item.payload, item.opts || undefined);
+      if (error) {
+        if (isNetworkError(error)) { remaining.push(item); continue; } // still no real connection — keep for next attempt
+        // A genuine rejection on retry (e.g. a stale conflict) — drop it
+        // rather than retry forever, but log it so it's not silently lost.
+        console.error(`Offline queue: dropped a queued ${item.table} write after reconnect —`, error.message);
+        continue;
+      }
+      synced++;
+    } catch (err) {
+      remaining.push(item);
+      console.error('Offline queue flush error:', err.message);
+    }
+  }
+  saveOfflineQueue(remaining);
+  updateOfflineSyncBanner();
+  if (synced) showToast(`Synced ${synced} offline change${synced === 1 ? '' : 's'}.`);
+}
+
+window.addEventListener('online', flushOfflineQueue);
+window.addEventListener('offline', updateOfflineSyncBanner);
+
+/* ═══════════════════════════════════════════════════════════
    AUTH — wired in initApp() after db is ready
 ═══════════════════════════════════════════════════════════ */
 
@@ -1080,6 +1190,8 @@ async function handleAuthStateChange(event, session) {
             if (profile?.healthkit_sync_enabled) {
               runHealthKitSync({ days: 7 }).catch(err => console.error('HealthKit sync failed:', err.message));
             }
+            updateOfflineSyncBanner();
+            flushOfflineQueue();
           }
         } else if (role === 'rejected') {
           showScreen('pending');
@@ -3726,20 +3838,18 @@ el.logForm.addEventListener('submit', async e => {
     notes:         el.logNotes.value.trim() || null,
   };
 
-  const { error } = await db
-    .from('daily_logs')
-    .upsert(row, { onConflict: 'user_id,log_date' });
+  const { error, queued } = await queuedWrite('daily_logs', 'upsert', row, { onConflict: 'user_id,log_date' });
 
   setBtn(el.btnSaveLog, false, 'Save entry');
 
   if (error) {
     flash(el.logStatus, 'Error saving — ' + error.message, true);
   } else {
-    flash(el.logStatus, 'Saved.');
+    flash(el.logStatus, queued ? "Saved offline — will sync when you're back online." : 'Saved.');
     if (el.logDate.value === todayISO()) {
       todayLog = row;
     }
-    if (row.weight != null) writeWeightToHealthKit(row.weight, row.log_date);
+    if (row.weight != null) writeWeightToHealthKit(row.weight, row.log_date); // local HealthKit write — works offline too
   }
 });
 
@@ -10450,18 +10560,21 @@ $('btnSaveManualWeight')?.addEventListener('click', async () => {
     return;
   }
   setBtn(btn, true, 'Log weight', 'Saving…');
-  const { error } = await db
-    .from('daily_logs')
-    .upsert({ user_id: currentUser.id, log_date: date, weight: weightToKg(inputWeight, unit) }, { onConflict: 'user_id,log_date' });
+  const { error, queued } = await queuedWrite(
+    'daily_logs',
+    'upsert',
+    { user_id: currentUser.id, log_date: date, weight: weightToKg(inputWeight, unit) },
+    { onConflict: 'user_id,log_date' }
+  );
   setBtn(btn, false, 'Log weight');
   if (error) {
     flash($('manualWeightStatus'), 'Error: ' + error.message, true);
     return;
   }
-  flash($('manualWeightStatus'), 'Saved.');
+  flash($('manualWeightStatus'), queued ? "Saved offline — will sync when you're back online." : 'Saved.');
   if ($('mwWeight')) $('mwWeight').value = '';
-  writeWeightToHealthKit(weightToKg(inputWeight, unit), date);
-  renderManualWeightRecent();
+  writeWeightToHealthKit(weightToKg(inputWeight, unit), date); // local HealthKit write — not a network call, works offline too
+  if (!queued) renderManualWeightRecent();
 });
 
 async function renderManualWeightRecent() {

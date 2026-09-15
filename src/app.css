@@ -502,6 +502,22 @@ body {
 }
 .session-broken-banner__dismiss:hover { opacity: 1; }
 
+.offline-sync-banner[hidden] { display: none; }
+.offline-sync-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--orange-light);
+  border-bottom: 1.5px solid var(--orange);
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--orange);
+  text-align: center;
+}
+.offline-sync-banner__text { display: flex; align-items: center; gap: 6px; }
+
 /* ── BOTTOM TAB BAR ──────────────────────────────────────── */
 .tab-bar {
   position: fixed;
