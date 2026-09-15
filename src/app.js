@@ -10702,6 +10702,7 @@ $('setHealthKitSyncEnabled')?.addEventListener('change', async (e) => {
       if (error) throw error;
     }
   } catch (err) {
+    console.error('HealthKit sync toggle failed:', err); // mirrored to error_logs — see installErrorLogging()
     showToast("Couldn't update Health sync: " + err.message, true);
     e.target.checked = !checked; // revert the visible toggle on failure
   } finally {
@@ -10716,6 +10717,7 @@ $('btnHealthKitSyncNow')?.addEventListener('click', async () => {
     await runHealthKitSync({ days: 7 });
     showToast('Health synced.');
   } catch (err) {
+    console.error('HealthKit manual sync failed:', err); // mirrored to error_logs — see installErrorLogging()
     showToast("Couldn't sync: " + err.message, true);
   }
   setBtn(btn, false, 'Sync Health Now');
