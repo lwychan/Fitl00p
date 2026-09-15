@@ -3743,6 +3743,7 @@ el.logForm.addEventListener('submit', async e => {
     if (el.logDate.value === todayISO()) {
       todayLog = row;
     }
+    if (row.weight != null) writeWeightToHealthKit(row.weight, row.log_date);
   }
 });
 
@@ -10456,6 +10457,9 @@ const HEALTHKIT_READ_TYPES = [
   'respiratoryRate', 'oxygenSaturation', 'vo2Max', 'appleSleepingWristTemperature',
   'exerciseTime', 'sleep', 'workouts',
 ];
+// Weight is the only thing this app ever writes back to Health — every
+// other type here is read-only, sourced FROM Health.
+const HEALTHKIT_WRITE_TYPES = ['weight'];
 
 function healthKitAvailable() { return !!window.Capacitor?.isNativePlatform?.(); }
 
@@ -10472,7 +10476,25 @@ async function requestHealthKitAuth() {
   // means "the permission sheet has been resolved for this type", not
   // "granted". A denied read type silently returns empty data rather
   // than erroring, so there's nothing further to gate on here.
-  return getHealthPlugin().requestAuthorization({ read: HEALTHKIT_READ_TYPES, write: [] });
+  return getHealthPlugin().requestAuthorization({ read: HEALTHKIT_READ_TYPES, write: HEALTHKIT_WRITE_TYPES });
+}
+
+// Best-effort write-back to Health for a weight the user just entered in
+// fitl00p — gated on the same "Built-in Health sync" toggle as the read
+// path, rather than a separate switch, since this app only ever writes
+// this one data type and it's the natural complement to reading the rest
+// from Health. startDate uses noon local on the log's own date (not
+// "now") so a backdated weigh-in lands on the right day in Health rather
+// than today's — same noon-anchor trick used elsewhere in this codebase
+// to dodge a DST-related day-shift.
+async function writeWeightToHealthKit(weightKg, logDateStr) {
+  if (!healthKitAvailable() || !profile?.healthkit_sync_enabled) return;
+  try {
+    const startDate = new Date(`${logDateStr}T12:00:00`).toISOString();
+    await getHealthPlugin().saveSample({ dataType: 'weight', value: weightKg, startDate });
+  } catch (err) {
+    console.error('HealthKit weight write-back failed:', err); // mirrored to error_logs — see installErrorLogging()
+  }
 }
 
 function hkRound1(n) { return Math.round(n * 10) / 10; }
@@ -10791,6 +10813,7 @@ $('btnSaveManualWeight')?.addEventListener('click', async () => {
   }
   flash($('manualWeightStatus'), 'Saved.');
   if ($('mwWeight')) $('mwWeight').value = '';
+  writeWeightToHealthKit(weightToKg(inputWeight, unit), date);
   renderManualWeightRecent();
 });
 
