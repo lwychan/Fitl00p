@@ -1541,7 +1541,7 @@
       </div>
 
       <div class="settings-section">
-        <div class="settings-section__title">Apple Health sync</div>
+        <div class="settings-section__title">Apple Health sync (via Health Auto Export)</div>
         <label class="settings-toggle-row" style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
           <input type="checkbox" id="setUsesAppleHealth">
           <span>I use an Apple Watch / Apple Health</span>
@@ -1629,10 +1629,13 @@
       </div>
 
       <div class="settings-section" id="healthKitSyncSection" hidden>
-        <div class="settings-section__title">Health sync</div>
+        <div class="settings-section__title">Built-in Health sync (no Health Auto Export)</div>
+        <p style="font-size:13px;color:var(--ink-3);line-height:1.6;margin-bottom:12px">
+          Not the same as "Apple Health sync" below, which needs the separate Health Auto Export app — this reads straight from Health using fitl00p's own iOS integration, nothing else to install.
+        </p>
         <label class="checkbox-option checkbox-option--full">
           <input type="checkbox" id="setHealthKitSyncEnabled">
-          <span>Sync Apple Health directly from this app <span class="field-hint">Reads steps, sleep, heart rate, weight, workouts and more straight from Health — no need for Health Auto Export. Turning this on prompts for Health permission and backfills the last 30 days.</span></span>
+          <span>Sync Apple Health directly from this app <span class="field-hint">Reads steps, sleep, heart rate, weight, workouts and more straight from Health. Turning this on prompts for Health permission and backfills the last 30 days.</span></span>
         </label>
         <div class="settings-actions" style="padding-top:8px">
           <button class="btn btn--ghost btn--small" id="btnHealthKitSyncNow">Sync Health Now</button>
