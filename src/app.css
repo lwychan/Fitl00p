@@ -4684,18 +4684,18 @@ body { font-size: 15px; }
   color: var(--ink-2);
   line-height: 1.5;
 }
-.dx-mfp-item {
+.dx-dose-item {
   padding: 10px 0;
   border-top: 1px solid var(--border-2);
 }
-.dx-mfp-item:first-child { border-top: none; padding-top: 0; }
-.dx-mfp-item__head {
+.dx-dose-item:first-child { border-top: none; padding-top: 0; }
+.dx-dose-item__head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
 }
-.dx-mfp-item select {
+.dx-dose-item select {
   font-size: 12px;
   padding: 5px 6px;
   border-radius: var(--r-sm);

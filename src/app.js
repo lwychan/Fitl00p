@@ -9593,8 +9593,8 @@ function renderDxTodaysMeals(items, boluses) {
     const title = dashIdx >= 0 ? mealName.slice(0, dashIdx).trim() : mealName;
     const ingredients = dashIdx >= 0 ? mealName.slice(dashIdx + 1).trim() : '';
     return `
-      <div class="dx-mfp-item">
-        <div class="dx-mfp-item__head">
+      <div class="dx-dose-item">
+        <div class="dx-dose-item__head">
           <strong>${escapeHtml(title)}</strong>
           <span class="field-hint">${fmt1(it.carbs_g)}g carbs · ${new Date(eatenMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
         </div>
@@ -11247,7 +11247,6 @@ function initOnboarding() {
   // State
   const state = {
     name:         profile?.display_name || '',
-    usesAppleHealth: profile?.uses_apple_health ?? null,
     goal:         profile?.goal         || null,
     duration:     profile?.session_duration || 45,
     fullBody:     profile?.prefer_full_body || false,
@@ -11260,7 +11259,6 @@ function initOnboarding() {
 
   // Pre-fill from profile if returning user
   if (state.name)    { const el2 = $('obName'); if (el2) el2.value = state.name; }
-  if (state.usesAppleHealth !== null) activatePill($('obAppleHealth'), state.usesAppleHealth ? 'yes' : 'no');
   if (state.goal)    activateCard($('obGoal'), state.goal);
   activatePill($('obDuration'), String(state.duration));
   if (state.fullBody) { const cb = $('obFullBody'); if (cb) cb.checked = true; }
@@ -11282,13 +11280,6 @@ function initOnboarding() {
   }
 
   // Wire pill groups
-  $('obAppleHealth')?.querySelectorAll('.pill').forEach(p => {
-    p.addEventListener('click', () => {
-      state.usesAppleHealth = p.dataset.val === 'yes';
-      activatePill($('obAppleHealth'), p.dataset.val);
-    });
-  });
-
   $('obDuration')?.querySelectorAll('.pill').forEach(p => {
     p.addEventListener('click', () => {
       state.duration = parseInt(p.dataset.val);
@@ -11384,11 +11375,6 @@ function initOnboarding() {
         return false;
       }
       state.name = name;
-      if (state.usesAppleHealth === null) {
-        $('obAppleHealth')?.classList.add('shake');
-        setTimeout(() => $('obAppleHealth')?.classList.remove('shake'), 400);
-        return false;
-      }
     }
     if (step === 1 && !state.goal) {
       // Highlight goal cards
@@ -11454,7 +11440,6 @@ function initOnboarding() {
 
     const profileUpdate = {
       display_name:       state.name || null,
-      uses_apple_health:  state.usesAppleHealth,
       goal:               state.goal,
       session_duration:   state.duration,
       prefer_full_body:   state.fullBody,
