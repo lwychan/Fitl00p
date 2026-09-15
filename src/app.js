@@ -10369,8 +10369,31 @@ async function hkSyncWorkouts(startISO, endISO) {
 // Health Now" button) — the trailing window re-covers the last few days
 // on every call rather than just "since last sync", to pick up samples
 // that land late (sleep logged after waking, a delayed Watch sync).
+// Resolves a single HealthKit fetch, falling back to `fallback` (and
+// logging) on failure instead of letting one type's rejection (a type
+// the user denied, or "Authorization not determined" for a scope added
+// after the toggle was already on) take down the whole Promise.all with
+// it — every other type should still sync.
+function hkSafe(promise, fallback) {
+  return promise.catch(err => {
+    console.error('HealthKit fetch failed:', err.message); // mirrored to error_logs — see installErrorLogging()
+    return fallback;
+  });
+}
+
 async function runHealthKitSync({ days }) {
   if (!currentUser || !healthKitAvailable()) return;
+
+  // Re-requesting on every sync (not just when the toggle first flips
+  // on) is deliberate and safe: HealthKit only re-prompts for scopes
+  // that are genuinely undetermined, silently no-ops for anything
+  // already granted. Without this, a scope added to HEALTHKIT_READ_TYPES/
+  // HEALTHKIT_WRITE_TYPES in a later app update (e.g. the 'weight' write
+  // scope added alongside writeWeightToHealthKit) never actually gets
+  // requested for someone whose toggle was already on from before that
+  // update shipped — confirmed live: exactly this caused every sync to
+  // fail outright with "Authorization not determined" until this fix.
+  await requestHealthKitAuth().catch(err => console.error('HealthKit re-auth failed:', err.message));
 
   const endDate = new Date();
   const startDate = new Date(endDate.getTime() - days * 86400000);
@@ -10379,13 +10402,13 @@ async function runHealthKitSync({ days }) {
   const ignoreWeight = !!profile?.manual_weight_logging; // see health-sync.js's identical guard
 
   const [steps, distance, calories, heartRate, restingHeartRate, weightAgg, dietaryEnergy] = await Promise.all([
-    hkAggregatedByDay('steps', startISO, endISO, 'sum'),
-    hkAggregatedByDay('distance', startISO, endISO, 'sum'),
-    hkAggregatedByDay('calories', startISO, endISO, 'sum'),
-    hkAggregatedByDay('heartRate', startISO, endISO, 'average'),
-    hkAggregatedByDay('restingHeartRate', startISO, endISO, 'average'),
-    ignoreWeight ? Promise.resolve({}) : hkAggregatedByDay('weight', startISO, endISO, 'average'),
-    hkAggregatedByDay('dietaryEnergyConsumed', startISO, endISO, 'sum'),
+    hkSafe(hkAggregatedByDay('steps', startISO, endISO, 'sum'), {}),
+    hkSafe(hkAggregatedByDay('distance', startISO, endISO, 'sum'), {}),
+    hkSafe(hkAggregatedByDay('calories', startISO, endISO, 'sum'), {}),
+    hkSafe(hkAggregatedByDay('heartRate', startISO, endISO, 'average'), {}),
+    hkSafe(hkAggregatedByDay('restingHeartRate', startISO, endISO, 'average'), {}),
+    ignoreWeight ? Promise.resolve({}) : hkSafe(hkAggregatedByDay('weight', startISO, endISO, 'average'), {}),
+    hkSafe(hkAggregatedByDay('dietaryEnergyConsumed', startISO, endISO, 'sum'), {}),
   ]);
 
   // basalCalories, exerciseTime, vo2Max and appleSleepingWristTemperature
@@ -10395,17 +10418,17 @@ async function runHealthKitSync({ days }) {
   // everything else is rejected) — these, plus the other instantaneous
   // measurement types, go through readSamples() and get bucketed by day here.
   const [basalSamples, exerciseSamples, hrvSamples, respSamples, spo2Samples, vo2Samples, wristSamples, bodyFatSamples, sleepSamples] = await Promise.all([
-    hkReadAll('basalCalories', startISO, endISO),
-    hkReadAll('exerciseTime', startISO, endISO),
-    hkReadAll('heartRateVariability', startISO, endISO),
-    hkReadAll('respiratoryRate', startISO, endISO),
-    hkReadAll('oxygenSaturation', startISO, endISO),
-    hkReadAll('vo2Max', startISO, endISO),
-    hkReadAll('appleSleepingWristTemperature', startISO, endISO),
-    hkReadAll('bodyFat', startISO, endISO),
+    hkSafe(hkReadAll('basalCalories', startISO, endISO), []),
+    hkSafe(hkReadAll('exerciseTime', startISO, endISO), []),
+    hkSafe(hkReadAll('heartRateVariability', startISO, endISO), []),
+    hkSafe(hkReadAll('respiratoryRate', startISO, endISO), []),
+    hkSafe(hkReadAll('oxygenSaturation', startISO, endISO), []),
+    hkSafe(hkReadAll('vo2Max', startISO, endISO), []),
+    hkSafe(hkReadAll('appleSleepingWristTemperature', startISO, endISO), []),
+    hkSafe(hkReadAll('bodyFat', startISO, endISO), []),
     // Widened a day either side so a session starting just before startISO
     // or ending just after endISO isn't truncated mid-session.
-    hkReadAll('sleep', new Date(startDate.getTime() - 86400000).toISOString(), new Date(endDate.getTime() + 86400000).toISOString()),
+    hkSafe(hkReadAll('sleep', new Date(startDate.getTime() - 86400000).toISOString(), new Date(endDate.getTime() + 86400000).toISOString()), []),
   ]);
 
   const basalByDay    = hkByDay(basalSamples);
@@ -10457,10 +10480,17 @@ async function runHealthKitSync({ days }) {
     if (error) throw error;
   }
 
-  const workoutRows = await hkSyncWorkouts(startISO, endISO);
-  if (workoutRows.length) {
-    const { error } = await db.from('apple_health_workouts').upsert(workoutRows, { onConflict: 'user_id,external_id' });
-    if (error) throw error;
+  try {
+    const workoutRows = await hkSyncWorkouts(startISO, endISO);
+    if (workoutRows.length) {
+      const { error } = await db.from('apple_health_workouts').upsert(workoutRows, { onConflict: 'user_id,external_id' });
+      if (error) throw error;
+    }
+  } catch (err) {
+    // Daily metrics above already saved successfully by this point —
+    // don't let a workouts-specific failure (e.g. that scope denied)
+    // make the whole sync look like it failed.
+    console.error('HealthKit workout sync failed:', err.message);
   }
 }
 
