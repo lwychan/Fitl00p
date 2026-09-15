@@ -1,5 +1,33 @@
 # FitLoop iOS (Capacitor) — manual steps
 
+## ⏸ Where this was left off (Sep 15, 2026)
+
+All pushed to GitHub (`main`), nothing built or deployed yet:
+
+- **Native app independence**: `capacitor.config.ts` no longer points at
+  `fitl00p.netlify.app` — the app now bundles `src/` directly, so a bad
+  Netlify deploy/outage can't stop it from launching. `app.js`'s Netlify
+  Functions calls now use an absolute `NETLIFY_ORIGIN` (native-only) so
+  they still reach the backend.
+- **CORS fix**: 6 functions (`push-send`, `health-apikey`,
+  `admin-approve`, `food-photo-estimate`, `food-text-estimate`,
+  `share-food-log`) were missing headers needed for cross-origin POST —
+  fixed, but **needs a Netlify deploy to take effect** (blocked on your
+  Netlify credits resetting).
+- **Boot-hang fix**: `getSession()` could deadlock forever on a valid
+  cached session — confirmed live on the real site, confirmed fixed via
+  a local test harness. Also needs a Netlify deploy to reach the current
+  build; will also be included once you rebuild natively.
+- **Onboarding bug fix**: skipping the "optional" weight goal in
+  onboarding was silently impossible — fixed.
+- **Still pending, once you're back**: deploy `src/` to Netlify (all the
+  above), then trigger a new Codemagic build so the *native* app also
+  gets these fixes (the version currently on your phone still points at
+  the live site). A leftover Supabase test user
+  (`fitl00p.qa.test@example.com`) exists from testing — fine to leave or
+  ask to delete.
+
+
 Everything Claude Code can do from a Windows machine without Xcode/macOS is
 done (see "What's already set up" below). Everything below requires either
 macOS/Xcode, the Apple Developer Portal web UI, a paid account, or a decision
