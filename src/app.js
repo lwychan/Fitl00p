@@ -10488,10 +10488,17 @@ async function requestHealthKitAuth() {
 // than today's — same noon-anchor trick used elsewhere in this codebase
 // to dodge a DST-related day-shift.
 async function writeWeightToHealthKit(weightKg, logDateStr) {
-  if (!healthKitAvailable() || !profile?.healthkit_sync_enabled) return;
+  if (!healthKitAvailable() || !profile?.healthkit_sync_enabled) {
+    // console.warn (not silent return) — mirrored to error_logs, same as
+    // the success/failure cases below, so a skip here is distinguishable
+    // from the call never happening at all.
+    console.warn('HealthKit weight write-back skipped — native:', healthKitAvailable(), 'toggle on:', !!profile?.healthkit_sync_enabled);
+    return;
+  }
   try {
     const startDate = new Date(`${logDateStr}T12:00:00`).toISOString();
     await getHealthPlugin().saveSample({ dataType: 'weight', value: weightKg, startDate });
+    console.warn('HealthKit weight write-back succeeded:', weightKg, 'kg at', startDate); // mirrored to error_logs — see installErrorLogging()
   } catch (err) {
     console.error('HealthKit weight write-back failed:', err); // mirrored to error_logs — see installErrorLogging()
   }
