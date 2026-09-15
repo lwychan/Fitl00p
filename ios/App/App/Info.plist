@@ -32,6 +32,8 @@
 	<string>FitLoop reads your Health data (steps, sleep, heart rate, weight, workouts) to power your dashboard and recovery scores.</string>
 	<key>NSHealthUpdateUsageDescription</key>
 	<string>FitLoop writes weight and workout entries you log back to Health.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>FitLoop uses Face ID so you can log back in without retyping your password.</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UIApplicationSceneManifest</key>

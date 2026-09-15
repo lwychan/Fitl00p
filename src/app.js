@@ -175,6 +175,7 @@ const el = {
   siEmail:       $('siEmail'),
   siPassword:    $('siPassword'),
   btnSignin:     $('btnSignin'),
+  btnBiometricLogin: $('btnBiometricLogin'),
   btnForgot:     $('btnForgot'),
   msgSignin:     $('msgSignin'),
   btnAuthToggle:   $('btnAuthToggle'),
@@ -870,6 +871,52 @@ function showScreen(screen) {
     'screenApp'
   );
   if (target) { target.removeAttribute('hidden'); }
+  if (screen === 'auth') refreshBiometricLoginUI();
+}
+
+/* ═══════════════════════════════════════════════════════════
+   BIOMETRIC (FACE ID / TOUCH ID) LOGIN
+   Native-only, via @capgo/capacitor-native-biometric — same
+   no-bundler pattern as the HealthKit integration above: called
+   through window.Capacitor.Plugins.NativeBiometric, no import.
+
+   Credentials are stored in iOS Keychain (the plugin's own job, not
+   this app's), gated behind a biometric prompt on read — this app
+   never sees them except right after the user just typed them in, and
+   what actually decides whether a login succeeds is still
+   signInWithPassword() hitting Supabase's Auth API server-side.
+   Biometric auth here is a local convenience gate on retyping a
+   password, not a replacement for real server-side authentication.
+═══════════════════════════════════════════════════════════ */
+const BIOMETRIC_SERVER = 'fitl00p.app'; // stable namespace key for stored credentials, not a real domain
+
+function getBiometricPlugin() {
+  const Bio = window.Capacitor?.Plugins?.NativeBiometric;
+  if (!Bio) throw new Error('Biometric auth is not available on this platform');
+  return Bio;
+}
+
+// Shows/hides the auth screen's "Log in with Face ID" button — only
+// when biometrics are actually available on this device AND credentials
+// were already saved (from a previous successful manual login; see the
+// save-credentials offer in the sign-in submit handler below).
+async function refreshBiometricLoginUI() {
+  const btn = $('btnBiometricLogin');
+  const divider = $('biometricLoginDivider');
+  if (!btn) return;
+  const hide = () => { btn.hidden = true; if (divider) divider.hidden = true; };
+  if (!window.Capacitor?.isNativePlatform?.()) return hide();
+  try {
+    const Bio = getBiometricPlugin();
+    const avail = await Bio.isAvailable();
+    if (!avail.isAvailable) return hide();
+    const saved = await Bio.isCredentialsSaved({ server: BIOMETRIC_SERVER });
+    btn.hidden = !saved.isSaved;
+    if (divider) divider.hidden = !saved.isSaved;
+  } catch (err) {
+    console.error('Biometric availability check failed:', err.message || err);
+    hide();
+  }
 }
 
 // Dismisses the boot overlay (see index.html) — separate from showScreen()
@@ -977,8 +1024,57 @@ function initApp() {
       return;
     }
 
+    // Offer biometric login for next time — best-effort, never blocks
+    // the actual sign-in. Only asks when biometrics are available AND
+    // nothing's already saved (re-asking every login would be annoying;
+    // a stale mismatch after a password change gets cleared and can be
+    // re-saved automatically by the biometric login path itself, below).
+    if (window.Capacitor?.isNativePlatform?.()) {
+      try {
+        const Bio = getBiometricPlugin();
+        const avail = await Bio.isAvailable();
+        if (avail.isAvailable) {
+          const saved = await Bio.isCredentialsSaved({ server: BIOMETRIC_SERVER });
+          if (!saved.isSaved && confirm("Enable Face ID / Touch ID so you don't need to retype your password next time?")) {
+            await Bio.setCredentials({ username: email, password, server: BIOMETRIC_SERVER });
+          }
+        }
+      } catch (err) {
+        console.error('Biometric enrollment offer failed (non-fatal):', err.message || err);
+      }
+    }
+
     // Login succeeded. onAuthStateChange fires SIGNED_IN and handles the
     // screen transition (and button reset on failure) via its own logic.
+  });
+
+  // Log in with Face ID / Touch ID — only ever visible (see
+  // refreshBiometricLoginUI) when biometrics are available and
+  // credentials were already saved from a previous manual login.
+  el.btnBiometricLogin?.addEventListener('click', async () => {
+    const btn = el.btnBiometricLogin;
+    setBtn(btn, true, '🔓 Log in with Face ID', 'Verifying…');
+    try {
+      const Bio = getBiometricPlugin();
+      await Bio.verifyIdentity({ reason: 'Log in to fitl00p', title: 'Log in' });
+      const { username, password } = await Bio.getCredentials({ server: BIOMETRIC_SERVER });
+      const { error } = await db.auth.signInWithPassword({ email: username, password });
+      if (error) {
+        // Stored credentials are stale (password changed elsewhere) —
+        // clear them so this doesn't keep silently failing, and fall
+        // back to the manual form with the real error visible.
+        await Bio.deleteCredentials({ server: BIOMETRIC_SERVER }).catch(() => {});
+        el.msgSignin.textContent = error.message;
+        refreshBiometricLoginUI();
+      }
+      // Success: onAuthStateChange fires SIGNED_IN and handles the
+      // screen transition, same as the manual-password path above.
+    } catch (err) {
+      // Face ID cancelled/failed, or a real device error — not a login
+      // failure, just quietly fall back to the manual form below.
+      console.error('Biometric login failed:', err.message || err);
+    }
+    setBtn(btn, false, '🔓 Log in with Face ID');
   });
 
   // Forgot password
@@ -1028,6 +1124,16 @@ function initApp() {
 
   el.btnSignout.addEventListener('click', handleSignOut);
   el.btnSignoutHeader?.addEventListener('click', handleSignOut);
+  $('btnForgetBiometric')?.addEventListener('click', async () => {
+    if (!confirm("Forget your saved Face ID login? You'll need to type your password next time.")) return;
+    try {
+      await getBiometricPlugin().deleteCredentials({ server: BIOMETRIC_SERVER });
+      $('btnForgetBiometric').hidden = true;
+      showToast('Face ID login forgotten.');
+    } catch (err) {
+      showToast('Error: ' + (err.message || err), true);
+    }
+  });
   el.btnOpenSettingsHeader?.addEventListener('click', () => navigateTo('settings'));
   // Clears the service worker + its caches, then reloads — the session
   // token lives in localStorage, untouched by this, so it fixes the same
@@ -6966,6 +7072,22 @@ async function loadSettings() {
   // Show admin IAM button only for admins
   const adminSec = $('adminSection');
   if (adminSec) adminSec.hidden = profile?.role !== 'admin';
+
+  // "Forget Face ID login" — only shown when there's actually something
+  // stored to forget.
+  const btnForgetBiometric = $('btnForgetBiometric');
+  if (btnForgetBiometric) {
+    if (window.Capacitor?.isNativePlatform?.()) {
+      try {
+        const saved = await getBiometricPlugin().isCredentialsSaved({ server: BIOMETRIC_SERVER });
+        btnForgetBiometric.hidden = !saved.isSaved;
+      } catch {
+        btnForgetBiometric.hidden = true;
+      }
+    } else {
+      btnForgetBiometric.hidden = true;
+    }
+  }
 
   // Sync theme picker
   const currentTheme = localStorage.getItem(THEME_KEY) || 'nebula';

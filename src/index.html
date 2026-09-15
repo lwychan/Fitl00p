@@ -79,6 +79,8 @@
            signUp). Sign-up lands the account on the existing
            pending-approval screen until an admin approves it. -->
       <form class="auth-form" id="formSignin" novalidate>
+        <button type="button" class="btn btn--primary btn--full" id="btnBiometricLogin" hidden>🔓 Log in with Face ID</button>
+        <p class="field-hint" id="biometricLoginDivider" hidden style="text-align:center;margin:10px 0">or use your password</p>
         <div class="field">
           <label for="siEmail">Email</label>
           <input type="email" id="siEmail" placeholder="you@example.com" autocomplete="email" required>
@@ -1651,6 +1653,7 @@
             🏋️ Workout Editor
           </button>
         </div>
+        <button class="btn btn--ghost btn--danger" id="btnForgetBiometric" hidden style="margin-bottom:8px">Forget Face ID login</button>
         <button class="btn btn--ghost btn--danger" id="btnChangePassword">Change password</button>
         <p class="danger-note" id="changePasswordMsg"></p>
         <button class="btn btn--ghost btn--danger" id="btnSignout" style="margin-top:8px">Sign out</button>
