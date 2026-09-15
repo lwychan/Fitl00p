@@ -11393,7 +11393,16 @@ function initOnboarding() {
       const sw = parseFloat($('obCurrentWeight')?.value);
       const tw = parseFloat($('obTargetWeight')?.value);
       const td = $('obTargetDate')?.value;
-      if (!sw || !tw || !td) {
+      // This step's own copy says "optionally set a weight goal" — so
+      // leaving all three blank must be allowed (skip it entirely).
+      // saveOnboarding() only creates a weight_plans row when all three
+      // are present (target_date is NOT NULL in that table), so a
+      // partial fill can't produce a valid plan either — only block
+      // that ambiguous middle case, matching what was previously
+      // (incorrectly) required unconditionally.
+      const anyFilled = sw || tw || td;
+      const allFilled = sw && tw && td;
+      if (anyFilled && !allFilled) {
         const panel = $('obStep3') || $('obCurrentWeight')?.closest('.onboard-panel');
         panel?.classList.add('shake');
         setTimeout(() => panel?.classList.remove('shake'), 400);
