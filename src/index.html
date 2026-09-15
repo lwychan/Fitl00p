@@ -1541,86 +1541,6 @@
       </div>
 
       <div class="settings-section">
-        <div class="settings-section__title">Apple Health sync (via Health Auto Export)</div>
-        <label class="settings-toggle-row" style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
-          <input type="checkbox" id="setUsesAppleHealth">
-          <span>I use an Apple Watch / Apple Health</span>
-        </label>
-        <div id="appleHealthSyncControls">
-          <p style="font-size:13px;color:var(--ink-3);line-height:1.6">
-            Connect the <strong>Health Auto Export</strong> app on your iPhone to automatically sync sleep, HRV, resting heart rate, steps and blood glucose into fitl00p.
-          </p>
-          <p style="font-size:13px;color:var(--ink-3);line-height:1.6">
-            If diabetes tracking is on: create a <strong>second automation</strong> in Health Auto Export for the <strong>Workouts</strong> data set (it's separate from Health Data), pointed at the same sync URL and API key. Your real Apple Watch-detected sessions (with their actual start/end times) then feed the Diabetes tab's exercise-sensitivity and glucose-impact features — no need to log anything manually in the Workout tab for this to work.
-          </p>
-          <div id="healthKeyStatus" class="health-key-status">
-            <span class="health-key-dot" id="healthKeyDot"></span>
-            <span id="healthKeyLabel">Checking…</span>
-          </div>
-          <div class="health-key-actions">
-            <button class="btn btn--primary btn--small" id="btnGenerateKey">Generate API key</button>
-            <button class="btn btn--ghost btn--small btn--danger" id="btnRevokeKey" hidden>Revoke key</button>
-          </div>
-          <div class="health-key-reveal" id="healthKeyReveal" hidden>
-            <p style="font-size:12px;color:var(--ink-3);margin-bottom:8px">Copy this key now — it won't be shown again.</p>
-            <div class="health-key-box">
-              <code id="healthKeyValue"></code>
-              <button class="btn btn--ghost btn--small" id="btnCopyKey">Copy</button>
-            </div>
-            <p style="font-size:12px;color:var(--ink-3);margin-top:8px">Endpoint URL:</p>
-            <div class="health-key-box">
-              <code id="healthEndpointValue" style="font-size:11px;word-break:break-all"></code>
-              <button class="btn btn--ghost btn--small" id="btnCopyEndpoint">Copy</button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="settings-section">
-        <div class="settings-section__title">
-          Manual health entry
-          <span class="field-hint" style="text-transform:none;letter-spacing:0;font-weight:400">For Android or no wearable</span>
-        </div>
-        <p style="font-size:13px;color:var(--ink-3);line-height:1.6">
-          No Apple Health? Enter last night's sleep and this morning's biometrics manually. These are used to calculate your daily readiness score.
-        </p>
-        <div class="field">
-          <label for="mhDate">Date</label>
-          <input type="date" id="mhDate">
-        </div>
-        <div class="field-grid">
-          <div class="field">
-            <label for="mhSleepTotal">Total sleep <span class="field-hint">hours</span></label>
-            <input type="number" id="mhSleepTotal" step="0.25" min="0" max="24" placeholder="7.5" inputmode="decimal">
-          </div>
-          <div class="field">
-            <label for="mhSleepDeep">Deep sleep <span class="field-hint">hours</span></label>
-            <input type="number" id="mhSleepDeep" step="0.25" min="0" max="12" placeholder="1.5" inputmode="decimal">
-          </div>
-          <div class="field">
-            <label for="mhSleepRem">REM sleep <span class="field-hint">hours</span></label>
-            <input type="number" id="mhSleepRem" step="0.25" min="0" max="12" placeholder="1.5" inputmode="decimal">
-          </div>
-          <div class="field">
-            <label for="mhRestingHr">Resting HR <span class="field-hint">bpm</span></label>
-            <input type="number" id="mhRestingHr" step="1" min="30" max="200" placeholder="58" inputmode="numeric">
-          </div>
-          <div class="field">
-            <label for="mhHrv">HRV <span class="field-hint">ms</span></label>
-            <input type="number" id="mhHrv" step="1" min="0" max="300" placeholder="52" inputmode="numeric">
-          </div>
-          <div class="field">
-            <label for="mhGlucoseAvg">Avg glucose <span class="field-hint">mmol/L</span></label>
-            <input type="number" id="mhGlucoseAvg" step="0.1" min="0" max="30" placeholder="6.2" inputmode="decimal">
-          </div>
-        </div>
-        <div class="settings-actions" style="padding-top:8px">
-          <button class="btn btn--primary btn--small" id="btnSaveManualHealth">Save health data</button>
-          <span class="save-status" id="manualHealthStatus"></span>
-        </div>
-      </div>
-
-      <div class="settings-section">
         <div class="settings-section__title">Weight logging</div>
         <label class="checkbox-option checkbox-option--full">
           <input type="checkbox" id="setManualWeightLogging">
@@ -1629,10 +1549,7 @@
       </div>
 
       <div class="settings-section" id="healthKitSyncSection" hidden>
-        <div class="settings-section__title">Built-in Health sync (no Health Auto Export)</div>
-        <p style="font-size:13px;color:var(--ink-3);line-height:1.6;margin-bottom:12px">
-          Not the same as "Apple Health sync" below, which needs the separate Health Auto Export app — this reads straight from Health using fitl00p's own iOS integration, nothing else to install.
-        </p>
+        <div class="settings-section__title">Health sync</div>
         <label class="checkbox-option checkbox-option--full">
           <input type="checkbox" id="setHealthKitSyncEnabled">
           <span>Sync Apple Health directly from this app <span class="field-hint">Reads steps, sleep, heart rate, weight, workouts and more straight from Health. Turning this on prompts for Health permission and backfills the last 30 days.</span></span>
@@ -1720,34 +1637,6 @@
           <span class="save-status" id="diabetesSettingsStatus"></span>
         </div>
         </div>
-      </div>
-
-      <div class="settings-section">
-        <div class="settings-section__title">MyFitnessPal import</div>
-        <p style="font-size:13px;color:var(--ink-3);line-height:1.6">
-          MyFitnessPal blocks server-side access to diaries, so this works as a bookmarklet instead: a button you drag to your bookmarks bar. Open your own MFP diary while logged in, tap it, and it reads the page directly in your session and sends today's food to fitl00p — no password ever touches this app. For best results, turn on the Carbs/Fat/Protein columns under MFP → Settings → Diary Settings → Nutrients Displayed.
-        </p>
-        <p style="font-size:13px;color:var(--ink-3);line-height:1.6">
-          This is meant to be the fast path to a dose: log a meal in MFP, tap the bookmarklet, and it shows you a suggested dose right there — the same current-glucose/IOB-aware calculation as the Meal bolus calculator below, using whatever you already logged instead of retyping it. If you'd already dosed before syncing, it matches to that bolus instead; if it's a hypo treatment (glucose low or falling), it skips the suggestion entirely. Once you've actually dosed for a suggested item, link the real bolus to it in the Diabetes tab so fitl00p can learn from what you actually did.
-        </p>
-        <div id="mfpNoToken">
-          <button class="btn btn--primary btn--small" id="btnMfpGenerateToken">Set up MyFitnessPal import</button>
-        </div>
-        <div id="mfpHasToken" hidden>
-          <p class="field-hint" style="text-transform:none;letter-spacing:0;font-weight:400;margin-bottom:8px">On a computer: drag this button to your bookmarks bar.</p>
-          <a class="btn btn--ghost btn--small" id="mfpBookmarklet" href="javascript:void(0)" style="display:inline-block;text-decoration:none" draggable="true">📥 Send to fitl00p</a>
-          <p class="field-hint" style="text-transform:none;letter-spacing:0;font-weight:400;margin-top:10px;margin-bottom:8px">On iPhone/iPad: bookmark any page in Safari first, then edit that bookmark and paste this into the URL field instead of the address.</p>
-          <div class="settings-actions" style="padding-top:0">
-            <button class="btn btn--ghost btn--small" id="btnMfpCopyLink">Copy bookmarklet link</button>
-            <button class="btn btn--ghost btn--small" id="btnMfpRegenerateToken">Regenerate link</button>
-          </div>
-          <p class="field-hint" style="text-transform:none;letter-spacing:0;font-weight:400;margin-top:16px;margin-bottom:8px">Using a Shortcuts automation instead? Its "Run JavaScript on Web Page" action needs a different version of the script (no confirmation prompts, reports back through Shortcuts' own completion step instead) — use this one there, not the bookmarklet above.</p>
-          <div class="settings-actions" style="padding-top:0">
-            <button class="btn btn--ghost btn--small" id="btnMfpCopyShortcutScript">Copy Shortcuts script</button>
-          </div>
-          <p class="field-hint" style="text-transform:none;letter-spacing:0;font-weight:400;margin-top:8px">Regenerating breaks both the bookmarklet and the Shortcuts script — you'd need to update both.</p>
-        </div>
-        <span class="save-status" id="mfpTokenStatus"></span>
       </div>
 
       <div class="settings-section settings-section--danger">

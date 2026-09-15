@@ -33,9 +33,6 @@
 [functions."notify-glucose-forecast"]
   schedule = "*/15 * * * *"    # every 15 minutes, always — no self-gated hour window, since a hypo/hyper risk isn't confined to office hours the way a reminder is
 
-[functions."notify-sync-reminder-gemma"]
-  schedule = "0 8,9,11,12,15,16,19,20 * * *"    # 09:00, 12:00, 16:00, 20:00 Europe/London daily — Gemma only
-
 [functions."notify-sleep-target"]
   schedule = "0 19,20 * * *"    # 20:00 Europe/London daily — both accounts
 
@@ -74,11 +71,6 @@
 
 [[headers]]
   for = "/app.js"
-  [headers.values]
-    Cache-Control = "no-cache, no-store, must-revalidate"
-
-[[headers]]
-  for = "/mfp-bookmarklet-payload.js"
   [headers.values]
     Cache-Control = "no-cache, no-store, must-revalidate"
 

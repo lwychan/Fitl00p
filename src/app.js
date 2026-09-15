@@ -489,10 +489,6 @@ const el = {
   dxSimpleAction:      $('dxSimpleAction'),
   dxSimpleActionText:  $('dxSimpleActionText'),
   dxSimpleUpdated:   $('dxSimpleUpdated'),
-  mfpNoToken:        $('mfpNoToken'),
-  mfpHasToken:       $('mfpHasToken'),
-  mfpBookmarklet:    $('mfpBookmarklet'),
-  mfpTokenStatus:    $('mfpTokenStatus'),
   // detected activity
   detectedActivityModal:     $('detectedActivityModal'),
   detectedActivityClose:     $('detectedActivityClose'),
@@ -6844,26 +6840,6 @@ async function loadSettings() {
     btn.classList.toggle('is-active', btn.dataset.theme === currentTheme);
   });
 
-  loadHealthKeyStatus();
-
-  // Apple Health toggle — defaults to checked/visible when unanswered
-  // (profile.uses_apple_health is null, e.g. an account from before
-  // this question existed), rather than silently hiding a real feature
-  // from someone who was never actually asked.
-  const appleToggle = $('setUsesAppleHealth');
-  const syncControls = $('appleHealthSyncControls');
-  if (appleToggle) {
-    appleToggle.checked = profile?.uses_apple_health !== false;
-    if (syncControls) syncControls.hidden = !appleToggle.checked;
-    appleToggle.addEventListener('change', () => {
-      if (syncControls) syncControls.hidden = !appleToggle.checked;
-    });
-  }
-
-  // Pre-fill manual health date to today
-  const mhDate = $('mhDate');
-  if (mhDate && !mhDate.value) mhDate.value = todayISO();
-
   if (!profile) return;
 
   // Manual weight logging toggle — just the switch lives here; the
@@ -6909,7 +6885,6 @@ async function loadSettings() {
   if ($('setCorrectionFactor')) $('setCorrectionFactor').value = profile.diabetes_correction_factor ?? '';
   if ($('setInsulinPeak'))     $('setInsulinPeak').value     = profile.diabetes_insulin_peak_min     ?? '';
   if ($('setInsulinDuration')) $('setInsulinDuration').value = profile.diabetes_insulin_duration_min ?? '';
-  renderMfpImportSettings();
 
   el.setDisplayName.value  = profile.display_name || '';
   el.setTdee.value         = profile.tdee         || 2200;
@@ -6967,7 +6942,6 @@ el.btnSaveSettings.addEventListener('click', async () => {
 
   const profileUpdates = {
     display_name:     el.setDisplayName.value.trim() || null,
-    uses_apple_health: !!$('setUsesAppleHealth')?.checked,
     tdee:             parseInt(el.setTdee.value)      || 2200,
     steps_goal:       parseInt(el.setStepsGoal.value) || 10000,
     eat_target_manual_kcal: el.setEatTargetManual.value.trim() ? parseInt(el.setEatTargetManual.value) : null,
@@ -7513,269 +7487,6 @@ $('btnSaveDiabetesSettings')?.addEventListener('click', async () => {
   diabetesData = null;
   applyDiabetesTabVisibility();
   flash($('diabetesSettingsStatus'), 'Saved.');
-});
-
-/* ── MyFitnessPal import bookmarklet ────────────────────────
-   MFP sits behind a Cloudflare bot challenge that blocks any
-   server-side fetch (confirmed directly against a real public diary —
-   this isn't a "diary is private" issue), so there's no way for a
-   Netlify function to poll it. A bookmarklet runs inside the user's
-   own already-authenticated MFP tab instead — same-origin, so it can
-   read the diary DOM directly with no CORS/Cloudflare problem — and
-   POSTs the parsed items to mfp-import.js, which does the actual
-   bolus-matching against Nightscout.
-
-   This used to inline the ENTIRE parser (~4.5KB) into the javascript:
-   URL itself. That's long enough that iOS Safari bookmarks — and
-   iCloud bookmark sync especially — can silently truncate or corrupt
-   it, producing exactly "nothing happens when I tap it": no error
-   anywhere, because the mangled URL never reaches any of this code.
-   The bookmarklet is now just a short loader that sets the token/
-   endpoint as globals and injects a <script src="…/mfp-bookmarklet-
-   payload.js"> tag — script tags aren't subject to CORS, so this works
-   cross-origin from MFP's page with no server config needed. The real
-   parsing logic lives in src/mfp-bookmarklet-payload.js, a plain
-   static file (NOT run through this __TOKEN__/__ENDPOINT__
-   substitution — it reads window.__FITL00P_TOKEN__/__ENDPOINT__ that
-   the loader below sets first) — keep the two in sync by hand.
-
-   IMPORTANT — no `//` line comments inside MFP_BOOKMARKLET_SRC or
-   MFP_SHORTCUT_SRC below, ever. When this string is actually clicked
-   as a real bookmark (not just read as a JS variable), the browser
-   parses it through the WHATWG URL algorithm first, which strips
-   every ASCII tab/newline from the string *before* it's handed to
-   eval. A `//` comment has no other terminator — with the newline
-   after it gone, the comment silently swallows every line after it,
-   including the closing `})();`, producing a bare "Unexpected end of
-   input" with no dialog, no network request, nothing. Slash-star block
-   comments are safe if ever needed (explicit terminator, not newline-
-   dependent), but simplest is just: keep this template comment-free
-   and put any explanation here instead. */
-const MFP_BOOKMARKLET_SRC = `(function(){
-  window.__FITL00P_TOKEN__ = __TOKEN__;
-  window.__FITL00P_ENDPOINT__ = __ENDPOINT__;
-  var s = document.createElement('script');
-  s.src = __PAYLOAD_URL__ + '?v=' + Date.now();
-  document.body.appendChild(s);
-})();`;
-
-// Shortcuts variant — for the "Run JavaScript on Web Page" action, not a
-// bookmark click. Same parsing logic as MFP_BOOKMARKLET_SRC, but that
-// action requires the script to call the global completion(result) on
-// every exit path (Shortcuts enforces this and won't save the action
-// without it) and confirm()/alert() aren't guaranteed to render inside
-// its embedded WKWebView context, so this drops both dialogs — no
-// preview-before-send, straight to completion(summary) — and surfaces
-// the result via whatever the Shortcut does with the returned text
-// (e.g. a "Show Result" or "Show Notification" action placed after it).
-const MFP_SHORTCUT_SRC = `(function(){
-  var TOKEN = __TOKEN__;
-  var ENDPOINT = __ENDPOINT__;
-  function num(text){
-    if (text == null) return null;
-    var m = String(text).replace(/,/g, '').match(/-?\\d+(\\.\\d+)?/);
-    return m ? parseFloat(m[0]) : null;
-  }
-  function numFromCell(cell){
-    if (!cell) return null;
-    var whole = cell.querySelector('.macro-value');
-    if (whole) {
-      var dec = cell.querySelector('.macro-percentage');
-      var s = (whole.textContent || '').trim() + (dec ? '.' + (dec.textContent || '').trim() : '');
-      var v = parseFloat(s);
-      return isNaN(v) ? null : v;
-    }
-    return num(cell.textContent);
-  }
-  function sectionName(numStr){
-    var names = {'1':'breakfast','2':'lunch','3':'dinner','4':'snacks','5':'snacks','6':'snacks'};
-    return names[numStr] || 'snacks';
-  }
-  function detectDiaryDate(){
-    try {
-      var urlDate = new URL(location.href).searchParams.get('date');
-      if (urlDate && /^\\d{4}-\\d{2}-\\d{2}$/.test(urlDate)) return urlDate;
-    } catch (e) {}
-    var headingMatch = (document.body.innerText || '').match(/Food Diary For:\\s*([A-Za-z]+,?\\s*[A-Za-z]+\\s+\\d{1,2},?\\s+\\d{4})/);
-    if (headingMatch) {
-      var parsed = new Date(headingMatch[1]);
-      if (!isNaN(parsed.getTime())) {
-        return parsed.getFullYear() + '-' + String(parsed.getMonth() + 1).padStart(2, '0') + '-' + String(parsed.getDate()).padStart(2, '0');
-      }
-    }
-    return new Date().toISOString().slice(0, 10);
-  }
-  function isSugarSection(label){
-    return /^sugar$/i.test((label || '').trim());
-  }
-  var items = [];
-  var rows = document.querySelectorAll('#diary-table tr');
-  var section = 'breakfast';
-  var sectionLabel = 'Breakfast';
-  var sectionItems = [];
-  function flushSection(totalsRow){
-    if (!sectionItems.length) return;
-    if (isSugarSection(sectionLabel)) {
-      for (var i = 0; i < sectionItems.length; i++) {
-        var it = sectionItems[i];
-        if (it.carbsG != null || it.fatG != null || it.proteinG != null || it.calories != null) {
-          items.push({ mealSection: section, name: it.name, carbsG: it.carbsG, fatG: it.fatG, proteinG: it.proteinG, calories: it.calories });
-        }
-      }
-      sectionItems = [];
-      return;
-    }
-    var cells = totalsRow.querySelectorAll('td');
-    var calories = numFromCell(cells[1]);
-    var carbsG = numFromCell(cells[2]);
-    var fatG = numFromCell(cells[3]);
-    var proteinG = numFromCell(cells[4]);
-    if (carbsG != null || fatG != null || proteinG != null || calories != null) {
-      var names = sectionItems.map(function(it){ return it.name; });
-      items.push({ mealSection: section, name: sectionLabel + ' \\u2014 ' + names.join(', '), carbsG: carbsG, fatG: fatG, proteinG: proteinG, calories: calories });
-    }
-    sectionItems = [];
-  }
-  for (var r = 0; r < rows.length; r++) {
-    var row = rows[r];
-    var cls = row.className || '';
-    if (/meal_header/i.test(cls)) {
-      var headCell = row.querySelector('td');
-      var rawSection = headCell ? (headCell.textContent || '').trim() : '';
-      section = sectionName(rawSection);
-      sectionLabel = rawSection && !/^\\d+$/.test(rawSection) ? rawSection : (section.charAt(0).toUpperCase() + section.slice(1));
-      sectionItems = [];
-      continue;
-    }
-    if (/bottom|total/i.test(cls)) {
-      flushSection(row);
-      continue;
-    }
-    var cells = row.querySelectorAll('td');
-    if (cells.length < 7) continue;
-    var rawName = (cells[0].textContent || '').trim();
-    if (!rawName) continue;
-    var name = rawName.replace(/\\s*\\/?,\\s*[\\d.]+\\s*[a-zA-Z%]*\\s*$/, '').trim() || rawName;
-    sectionItems.push({
-      name: name,
-      calories: numFromCell(cells[1]),
-      carbsG: numFromCell(cells[2]),
-      fatG: numFromCell(cells[3]),
-      proteinG: numFromCell(cells[4]),
-    });
-  }
-  if (!items.length) {
-    completion('fitl00p: no food rows found on this page.');
-    return;
-  }
-  var dateVal = detectDiaryDate();
-  fetch(ENDPOINT, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token: TOKEN, date: dateVal, items: items }),
-  }).then(function(r){ return r.json(); }).then(function(res){
-    if (res.error) { completion('fitl00p import failed: ' + res.error + (res.detail ? '\\n\\n' + res.detail : '')); return; }
-    var lines = (res.suggestions || []).map(function(s){
-      if (s.suggestedUnits != null) {
-        var line = s.name + ': ' + s.suggestedUnits + 'u';
-        if (s.splitTier && s.splitTier !== 'single' && s.delayedUnits > 0) {
-          line += ' (' + s.upfrontUnits + 'u now, ' + s.delayedUnits + 'u delayed)';
-        }
-        if (s.lowGlucoseWarning) line += ' \\u26a0 glucose is low';
-        return line;
-      }
-      if (s.hypoTreatment) return s.name + ': hypo treatment, no bolus needed';
-      if (s.withheldReason) return s.name + ': no suggestion (' + s.withheldReason + ')';
-      return null;
-    }).filter(Boolean);
-    var summary = res.autoMatched + ' matched to an existing bolus' + (res.skippedDuplicate ? ', ' + res.skippedDuplicate + ' already sent before' : '') + '.';
-    completion('fitl00p:\\n\\n' + (lines.length ? lines.join('\\n\\n') : 'Nothing new to suggest.') + '\\n\\n' + summary);
-  }).catch(function(err){
-    completion('fitl00p import failed: ' + err.message);
-  });
-})();`;
-
-function buildMfpBookmarklet(token) {
-  const endpoint = `${NETLIFY_ORIGIN}/.netlify/functions/mfp-import`;
-  const payloadUrl = `${location.origin}/mfp-bookmarklet-payload.js`;
-  const src = MFP_BOOKMARKLET_SRC
-    .replace('__TOKEN__', JSON.stringify(token))
-    .replace('__ENDPOINT__', JSON.stringify(endpoint))
-    .replace('__PAYLOAD_URL__', JSON.stringify(payloadUrl));
-  return 'javascript:' + src;
-}
-
-// Plain script, no "javascript:" prefix — Shortcuts' "Run JavaScript on Web
-// Page" action wants raw JS in its script field, not a URI.
-function buildMfpShortcutScript(token) {
-  const endpoint = `${NETLIFY_ORIGIN}/.netlify/functions/mfp-import`;
-  return MFP_SHORTCUT_SRC
-    .replace('__TOKEN__', JSON.stringify(token))
-    .replace('__ENDPOINT__', JSON.stringify(endpoint));
-}
-
-// Kept separately from the anchor's .href on purpose: reading a <a> element's
-// .href back from the DOM re-serializes the URL, and because the bookmarklet
-// source contains "?" (ternaries), the browser's URL parser treats everything
-// after the first one as a query string and percent-encodes spaces in it —
-// silently corrupting the copy-to-clipboard text into invalid JS. Clicking
-// the link still works (browsers percent-decode javascript: URLs before
-// running them), but copying should hand back the exact original string.
-let dxMfpBookmarkletRaw = null;
-let dxMfpShortcutScriptRaw = null;
-
-function renderMfpImportSettings() {
-  const token = profile?.diabetes_mfp_import_token;
-  if (el.mfpNoToken) el.mfpNoToken.hidden = !!token;
-  if (el.mfpHasToken) el.mfpHasToken.hidden = !token;
-  if (token && el.mfpBookmarklet) {
-    dxMfpBookmarkletRaw = buildMfpBookmarklet(token);
-    // setAttribute, not .href = ... — assigning through the IDL href
-    // property runs the string through the URL parser immediately (not
-    // just when read back later), and because the script contains "?"
-    // ternaries, that parse percent-encodes everything after the first
-    // one — corrupting the *stored* attribute at set-time, not just on
-    // a later read. setAttribute stores the raw string untouched.
-    el.mfpBookmarklet.setAttribute('href', dxMfpBookmarkletRaw);
-    dxMfpShortcutScriptRaw = buildMfpShortcutScript(token);
-  }
-}
-
-async function generateMfpToken() {
-  if (!currentUser) return;
-  const token = Array.from(crypto.getRandomValues(new Uint8Array(24)))
-    .map(b => b.toString(16).padStart(2, '0')).join('');
-  const { error } = await saveNsProfileFields({ diabetes_mfp_import_token: token });
-  if (error) { flash($('mfpTokenStatus'), 'Error: ' + error.message, true); return; }
-  renderMfpImportSettings();
-  flash($('mfpTokenStatus'), 'Ready — drag the button to your bookmarks bar.');
-}
-
-$('btnMfpGenerateToken')?.addEventListener('click', generateMfpToken);
-$('btnMfpRegenerateToken')?.addEventListener('click', async () => {
-  if (!confirm('This breaks the old bookmarklet — you\'ll need to set it up again. Continue?')) return;
-  await generateMfpToken();
-});
-$('btnMfpCopyLink')?.addEventListener('click', async () => {
-  const href = dxMfpBookmarkletRaw;
-  if (!href) return;
-  try {
-    await navigator.clipboard.writeText(href);
-    flash($('mfpTokenStatus'), 'Copied — paste it as a bookmark\'s URL.');
-  } catch {
-    flash($('mfpTokenStatus'), 'Could not copy — long-press the button above instead.', true);
-  }
-});
-
-$('btnMfpCopyShortcutScript')?.addEventListener('click', async () => {
-  const script = dxMfpShortcutScriptRaw;
-  if (!script) return;
-  try {
-    await navigator.clipboard.writeText(script);
-    flash($('mfpTokenStatus'), 'Copied — paste into a "Run JavaScript on Web Page" action.');
-  } catch {
-    flash($('mfpTokenStatus'), 'Could not copy.', true);
-  }
 });
 
 /* ── Data fetch (via the diabetes-sync Netlify function) ──── */
@@ -9763,7 +9474,7 @@ function renderDxTodaysMeals(items, boluses) {
         <button class="btn btn--ghost btn--small" data-action="below-target" data-id="${it.id}">Below target, no dose</button>`;
     }
     // Meal-grouped imports encode "Section — ingredient, ingredient, …"
-    // in meal_name (see MFP_BOOKMARKLET_SRC) — split that into a bold
+    // in meal_name (from legacy MFP-import rows) — split that into a bold
     // section title plus an ingredient sub-line. Older per-ingredient
     // rows (imported before grouping) have no dash and just show as-is;
     // meal_name can also be null on very old rows, hence the fallback.
@@ -10366,77 +10077,6 @@ async function openMetricSheet(key, cfg) {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   MANUAL HEALTH ENTRY
-═══════════════════════════════════════════════════════════ */
-document.addEventListener('click', async e => {
-  if (!e.target.closest('#btnSaveManualHealth') || !currentUser) return;
-
-  const date        = $('mhDate')?.value         || todayISO();
-  const sleepTotal  = parseFloat($('mhSleepTotal')?.value)  || null;
-  const sleepDeep   = parseFloat($('mhSleepDeep')?.value)   || null;
-  const sleepRem    = parseFloat($('mhSleepRem')?.value)    || null;
-  const restingHr   = parseFloat($('mhRestingHr')?.value)   || null;
-  const hrv         = parseFloat($('mhHrv')?.value)         || null;
-  const glucoseAvg  = parseFloat($('mhGlucoseAvg')?.value)  || null;
-
-  // Need at least one field
-  if (!sleepTotal && !restingHr && !hrv && !glucoseAvg) {
-    flash($('manualHealthStatus'), 'Enter at least one value.', true);
-    return;
-  }
-
-  // Compute readiness locally using same formula as the server
-  function computeReadinessLocal(sleep, hrv, rhr) {
-    let score = 100;
-    let factors = 0;
-    if (sleep != null) {
-      const s = sleep;
-      let ss = s >= 7 && s <= 9 ? 100 : s >= 6 ? 75 : s >= 5 ? 50 : s > 9 ? 85 : 25;
-      score = score * 0.6 + ss * 0.4; factors++;
-    }
-    if (hrv != null) {
-      const h = hrv;
-      let hs = h >= 80 ? 100 : h >= 60 ? 85 : h >= 40 ? 70 : h >= 20 ? 50 : 30;
-      score = score * 0.7 + hs * 0.3; factors++;
-    }
-    if (rhr != null) {
-      const r = rhr;
-      let rs = r < 55 ? 100 : r < 65 ? 85 : r < 75 ? 70 : r < 85 ? 50 : 30;
-      score = score * 0.8 + rs * 0.2; factors++;
-    }
-    return factors > 0 ? Math.round(Math.max(0, Math.min(100, score))) : null;
-  }
-
-  const row = {
-    user_id:           currentUser.id,
-    log_date:          date,
-    sleep_total_hrs:   sleepTotal,
-    sleep_deep_hrs:    sleepDeep,
-    sleep_rem_hrs:     sleepRem,
-    resting_hr:        restingHr,
-    hrv_ms:            hrv,
-    glucose_avg_mmol:  glucoseAvg,
-    readiness_score:   computeReadinessLocal(sleepTotal, hrv, restingHr),
-  };
-
-  // Remove null values so we don't overwrite existing data
-  Object.keys(row).forEach(k => row[k] === null && delete row[k]);
-
-  const { error } = await db
-    .from('health_daily')
-    .upsert(row, { onConflict: 'user_id,log_date' });
-
-  if (error) {
-    flash($('manualHealthStatus'), 'Error: ' + error.message, true);
-  } else {
-    flash($('manualHealthStatus'), 'Saved.');
-    // Clear form
-    ['mhSleepTotal','mhSleepDeep','mhSleepRem','mhRestingHr','mhHrv','mhGlucoseAvg']
-      .forEach(id => { if ($(id)) $(id).value = ''; });
-  }
-});
-
-/* ═══════════════════════════════════════════════════════════
    NATIVE HEALTHKIT SYNC
    Reads Apple Health directly via @capgo/capacitor-health, replacing the
    third-party Health Auto Export app. No bundler in this project (app.js
@@ -10843,87 +10483,6 @@ async function renderManualWeightRecent() {
     .map(r => `${new Date(r.log_date + 'T00:00:00').toLocaleDateString([], { month: 'short', day: 'numeric' })} — ${fmt1(weightFromKg(r.weight, unit))}${unit}`)
     .join(' · ');
 }
-
-/* ═══════════════════════════════════════════════════════════
-   APPLE HEALTH API KEY MANAGEMENT
-═══════════════════════════════════════════════════════════ */
-async function loadHealthKeyStatus() {
-  const dot   = $('healthKeyDot');
-  const label = $('healthKeyLabel');
-  const btnRevoke = $('btnRevokeKey');
-  if (!dot) return;
-
-  try {
-    const res  = await fetch(`${NETLIFY_ORIGIN}/.netlify/functions/health-apikey`, {
-      headers: { 'Authorization': `Bearer ${(await db.auth.getSession()).data.session?.access_token}` },
-    });
-    const data = await res.json();
-    if (data.hasKey) {
-      dot.className   = 'health-key-dot is-connected';
-      label.textContent = `Connected · Last sync: ${data.key?.last_used ? fmtDate(data.key.last_used.slice(0,10)) : 'never'}`;
-      btnRevoke.hidden = false;
-    } else {
-      dot.className   = 'health-key-dot is-none';
-      label.textContent = 'Not connected';
-      btnRevoke.hidden = true;
-    }
-  } catch {
-    label.textContent = 'Could not check status';
-  }
-}
-
-document.addEventListener('click', async e => {
-  const btn = e.target.closest('#btnGenerateKey');
-  if (!btn || !currentUser) return;
-
-  setBtn(btn, true, 'Generate API key', 'Generating…');
-  try {
-    const session = (await db.auth.getSession()).data.session;
-    const res  = await fetch(`${NETLIFY_ORIGIN}/.netlify/functions/health-apikey`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${session?.access_token}` },
-    });
-    const data = await res.json();
-
-    if (data.key) {
-      $('healthKeyValue').textContent     = data.key;
-      $('healthEndpointValue').textContent = data.endpoint;
-      $('healthKeyReveal').hidden = false;
-      loadHealthKeyStatus();
-    } else {
-      showToast('Failed to generate key: ' + (data.error || 'unknown error'), true);
-    }
-  } catch (err) {
-    showToast('Error: ' + err.message, true);
-  }
-  setBtn(btn, false, 'Generate API key');
-});
-
-document.addEventListener('click', async e => {
-  if (!e.target.closest('#btnRevokeKey')) return;
-  if (!confirm('Revoke your Health Auto Export API key? The app will stop syncing until you generate a new key.')) return;
-  const session = (await db.auth.getSession()).data.session;
-  await fetch(`${NETLIFY_ORIGIN}/.netlify/functions/health-apikey`, {
-    method: 'DELETE',
-    headers: { 'Authorization': `Bearer ${session?.access_token}` },
-  });
-  $('healthKeyReveal').hidden = true;
-  loadHealthKeyStatus();
-  showToast('API key revoked.');
-});
-
-document.addEventListener('click', e => {
-  if (e.target.closest('#btnCopyKey')) {
-    navigator.clipboard.writeText($('healthKeyValue').textContent)
-      .then(() => showToast('API key copied.'))
-      .catch(() => showToast('Copy failed — select and copy manually.', true));
-  }
-  if (e.target.closest('#btnCopyEndpoint')) {
-    navigator.clipboard.writeText($('healthEndpointValue').textContent)
-      .then(() => showToast('Endpoint URL copied.'))
-      .catch(() => showToast('Copy failed — select and copy manually.', true));
-  }
-});
 
 /* ═══════════════════════════════════════════════════════════
    SMART EAT TARGET — recalculates weekly using real Apple data
