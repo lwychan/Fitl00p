@@ -1628,6 +1628,18 @@
         </label>
       </div>
 
+      <div class="settings-section" id="healthKitSyncSection" hidden>
+        <div class="settings-section__title">Health sync</div>
+        <label class="checkbox-option checkbox-option--full">
+          <input type="checkbox" id="setHealthKitSyncEnabled">
+          <span>Sync Apple Health directly from this app <span class="field-hint">Reads steps, sleep, heart rate, weight, workouts and more straight from Health — no need for Health Auto Export. Turning this on prompts for Health permission and backfills the last 30 days.</span></span>
+        </label>
+        <div class="settings-actions" style="padding-top:8px">
+          <button class="btn btn--ghost btn--small" id="btnHealthKitSyncNow">Sync Health Now</button>
+          <span class="save-status" id="healthKitSyncStatus"></span>
+        </div>
+      </div>
+
       <div class="settings-section">
         <div class="settings-section__title">
           Diabetes tracking

@@ -1081,6 +1081,9 @@ async function handleAuthStateChange(event, session) {
 
             requestNotificationPermission();
             checkDetectedActivities();
+            if (profile?.healthkit_sync_enabled) {
+              runHealthKitSync({ days: 7 }).catch(err => console.error('HealthKit sync failed:', err.message));
+            }
           }
         } else if (role === 'rejected') {
           showScreen('pending');
@@ -6872,6 +6875,16 @@ async function loadSettings() {
   const manualWeightToggle = $('setManualWeightLogging');
   if (manualWeightToggle) manualWeightToggle.checked = !!profile.manual_weight_logging;
 
+  // Native HealthKit sync — only relevant inside the Capacitor iOS app
+  // (the plugin throws on web), so the whole section stays hidden on the
+  // PWA rather than showing a toggle that can never work there.
+  const healthKitSection = $('healthKitSyncSection');
+  if (healthKitSection && window.Capacitor?.isNativePlatform?.()) {
+    healthKitSection.hidden = false;
+    const hkToggle = $('setHealthKitSyncEnabled');
+    if (hkToggle) hkToggle.checked = !!profile.healthkit_sync_enabled;
+  }
+
   // Diabetes tracking (Nightscout) config — stored on the profile row,
   // same as every other per-user setting, so it survives across devices.
   // Defaults to enabled (profile.diabetes_enabled is a NOT NULL column
@@ -10420,6 +10433,292 @@ document.addEventListener('click', async e => {
     ['mhSleepTotal','mhSleepDeep','mhSleepRem','mhRestingHr','mhHrv','mhGlucoseAvg']
       .forEach(id => { if ($(id)) $(id).value = ''; });
   }
+});
+
+/* ═══════════════════════════════════════════════════════════
+   NATIVE HEALTHKIT SYNC
+   Reads Apple Health directly via @capgo/capacitor-health, replacing the
+   third-party Health Auto Export app. No bundler in this project (app.js
+   loads as a plain <script>), so the plugin isn't imported — Capacitor's
+   native bridge exposes it as window.Capacitor.Plugins.Health once the
+   app is running inside the native shell; on web every method but
+   isAvailable() throws, so every call here is native-gated.
+
+   Writes straight to health_daily/apple_health_workouts via the same
+   RLS-scoped `db` client the rest of the app already uses for those
+   tables (see the manual health-entry upsert and detected-activity
+   insert above) — no backend function involved.
+═══════════════════════════════════════════════════════════ */
+
+const HEALTHKIT_READ_TYPES = [
+  'steps', 'distance', 'calories', 'basalCalories', 'dietaryEnergyConsumed',
+  'heartRate', 'restingHeartRate', 'weight', 'bodyFat', 'heartRateVariability',
+  'respiratoryRate', 'oxygenSaturation', 'vo2Max', 'appleSleepingWristTemperature',
+  'exerciseTime', 'sleep', 'workouts',
+];
+
+function healthKitAvailable() { return !!window.Capacitor?.isNativePlatform?.(); }
+
+function getHealthPlugin() {
+  const Health = window.Capacitor?.Plugins?.Health;
+  if (!Health) throw new Error('HealthKit is not available on this platform');
+  return Health;
+}
+
+async function requestHealthKitAuth() {
+  // On iOS, HealthKit never reveals whether a READ type was actually
+  // granted or denied (a deliberate Apple privacy restriction — only
+  // WRITE-type authorization is inspectable) — readAuthorized here just
+  // means "the permission sheet has been resolved for this type", not
+  // "granted". A denied read type silently returns empty data rather
+  // than erroring, so there's nothing further to gate on here.
+  return getHealthPlugin().requestAuthorization({ read: HEALTHKIT_READ_TYPES, write: [] });
+}
+
+function hkRound1(n) { return Math.round(n * 10) / 10; }
+function hkRound2(n) { return Math.round(n * 100) / 100; }
+
+function hkByDay(samples) {
+  const byDate = {};
+  for (const s of samples) {
+    const d = (s.startDate || '').slice(0, 10);
+    if (!d) continue;
+    (byDate[d] = byDate[d] || []).push(s);
+  }
+  return byDate;
+}
+function hkSum(samples) { return samples.reduce((a, s) => a + (Number(s.value) || 0), 0); }
+function hkAvg(samples) { return samples.length ? hkSum(samples) / samples.length : null; }
+
+async function hkAggregatedByDay(dataType, startISO, endISO, aggregation) {
+  const { samples } = await getHealthPlugin().queryAggregated({ dataType, startDate: startISO, endDate: endISO, bucket: 'day', aggregation });
+  const out = {};
+  for (const s of samples || []) {
+    const d = (s.startDate || '').slice(0, 10);
+    if (d) out[d] = s.value;
+  }
+  return out;
+}
+
+// readSamples() has no built-in pagination for a date-range query — a
+// generous limit is used instead of paging, since even the busiest of
+// these types (HRV, respiratory rate, SpO2 — a few samples/day) stays
+// far under it across the 7-30 day windows this app ever syncs.
+async function hkReadAll(dataType, startISO, endISO) {
+  const { samples } = await getHealthPlugin().readSamples({ dataType, startDate: startISO, endDate: endISO, limit: 5000, ascending: true });
+  return samples || [];
+}
+
+// Raw HealthKit sleep data is many small per-stage segments (inBed/
+// asleep/awake/rem/deep/light — HealthKit's own "core" stage is
+// reported as 'light' by this plugin), not one row per night. Groups
+// contiguous segments (gap < 90 min) into sessions and attributes each
+// whole session to the calendar date of its LAST segment (the wake-up
+// date), matching how "last night's sleep" is normally reported.
+function hkSleepSessionsByWakeDate(samples) {
+  const sorted = [...samples].sort((a, b) => (a.startDate || '').localeCompare(b.startDate || ''));
+  const GAP_MS = 90 * 60000;
+  const sessions = [];
+  let cur = null;
+  for (const s of sorted) {
+    const startMs = new Date(s.startDate).getTime();
+    const endMs = new Date(s.endDate || s.startDate).getTime();
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) continue;
+    if (cur && startMs - cur.lastEndMs <= GAP_MS) {
+      cur.segments.push(s);
+      cur.lastEndMs = Math.max(cur.lastEndMs, endMs);
+    } else {
+      cur = { segments: [s], lastEndMs: endMs };
+      sessions.push(cur);
+    }
+  }
+
+  const byWakeDate = {};
+  for (const session of sessions) {
+    const segs = session.segments;
+    const asleepSegs = segs.filter(s => s.sleepState && s.sleepState !== 'inBed' && s.sleepState !== 'awake');
+    if (!asleepSegs.length) continue;
+    const wakeDate = new Date(Math.max(...segs.map(s => new Date(s.endDate || s.startDate).getTime()))).toISOString().slice(0, 10);
+    const hrsOf = state => asleepSegs.filter(s => s.sleepState === state).reduce((a, s) => a + (Number(s.value) || 0), 0) / 60;
+    byWakeDate[wakeDate] = {
+      sleep_total_hrs: hkRound2(asleepSegs.reduce((a, s) => a + (Number(s.value) || 0), 0) / 60),
+      sleep_deep_hrs:  hkRound2(hrsOf('deep')),
+      sleep_rem_hrs:   hkRound2(hrsOf('rem')),
+      sleep_core_hrs:  hkRound2(hrsOf('light')),
+      sleep_start: segs.reduce((a, s) => a.startDate < s.startDate ? a : s, segs[0]).startDate,
+      sleep_end:   segs.reduce((a, s) => (a.endDate || a.startDate) > (s.endDate || s.startDate) ? a : s, segs[0]).endDate,
+    };
+  }
+  return byWakeDate;
+}
+
+async function hkSyncWorkouts(startISO, endISO) {
+  const { workouts } = await getHealthPlugin().queryWorkouts({ startDate: startISO, endDate: endISO, limit: 200 });
+  const rows = [];
+  for (const w of workouts || []) {
+    // The plugin's Workout has no avg/max heart rate of its own — read
+    // heart-rate samples within the workout's own window and derive them,
+    // the same numbers Health Auto Export used to send directly.
+    let avgHr = null, maxHr = null;
+    try {
+      const hrSamples = await hkReadAll('heartRate', w.startDate, w.endDate);
+      if (hrSamples.length) {
+        avgHr = hkRound1(hkAvg(hrSamples));
+        maxHr = hkRound1(Math.max(...hrSamples.map(s => Number(s.value))));
+      }
+    } catch { /* heart rate during the workout is optional */ }
+
+    rows.push({
+      user_id: currentUser.id,
+      external_id: w.platformId || `${w.workoutType}_${w.startDate}`,
+      workout_type: w.workoutType,
+      started_at: w.startDate,
+      ended_at: w.endDate,
+      duration_min: w.duration != null ? hkRound1(w.duration / 60) : null,
+      active_energy_kcal: w.totalEnergyBurned != null ? hkRound1(w.totalEnergyBurned) : null,
+      distance_km: w.totalDistance != null ? hkRound2(w.totalDistance / 1000) : null,
+      avg_heart_rate: avgHr,
+      max_heart_rate: maxHr,
+      synced_at: new Date().toISOString(),
+    });
+  }
+  return rows;
+}
+
+// Shared by both the 30-day backfill (on first enabling the toggle) and
+// the routine 7-day trailing sync (on every app open + the manual "Sync
+// Health Now" button) — the trailing window re-covers the last few days
+// on every call rather than just "since last sync", to pick up samples
+// that land late (sleep logged after waking, a delayed Watch sync).
+async function runHealthKitSync({ days }) {
+  if (!currentUser || !healthKitAvailable()) return;
+
+  const endDate = new Date();
+  const startDate = new Date(endDate.getTime() - days * 86400000);
+  const startISO = startDate.toISOString();
+  const endISO = endDate.toISOString();
+  const ignoreWeight = !!profile?.manual_weight_logging; // see health-sync.js's identical guard
+
+  const [steps, distance, calories, heartRate, restingHeartRate, weightAgg, dietaryEnergy] = await Promise.all([
+    hkAggregatedByDay('steps', startISO, endISO, 'sum'),
+    hkAggregatedByDay('distance', startISO, endISO, 'sum'),
+    hkAggregatedByDay('calories', startISO, endISO, 'sum'),
+    hkAggregatedByDay('heartRate', startISO, endISO, 'average'),
+    hkAggregatedByDay('restingHeartRate', startISO, endISO, 'average'),
+    ignoreWeight ? Promise.resolve({}) : hkAggregatedByDay('weight', startISO, endISO, 'average'),
+    hkAggregatedByDay('dietaryEnergyConsumed', startISO, endISO, 'sum'),
+  ]);
+
+  // basalCalories, exerciseTime, vo2Max and appleSleepingWristTemperature
+  // are NOT in the plugin's aggregation allow-list (confirmed in its iOS
+  // source — only steps/distance/calories/dietaryWater/dietaryEnergyConsumed
+  // support 'sum' and heartRate/weight/restingHeartRate support 'average';
+  // everything else is rejected) — these, plus the other instantaneous
+  // measurement types, go through readSamples() and get bucketed by day here.
+  const [basalSamples, exerciseSamples, hrvSamples, respSamples, spo2Samples, vo2Samples, wristSamples, bodyFatSamples, sleepSamples] = await Promise.all([
+    hkReadAll('basalCalories', startISO, endISO),
+    hkReadAll('exerciseTime', startISO, endISO),
+    hkReadAll('heartRateVariability', startISO, endISO),
+    hkReadAll('respiratoryRate', startISO, endISO),
+    hkReadAll('oxygenSaturation', startISO, endISO),
+    hkReadAll('vo2Max', startISO, endISO),
+    hkReadAll('appleSleepingWristTemperature', startISO, endISO),
+    hkReadAll('bodyFat', startISO, endISO),
+    // Widened a day either side so a session starting just before startISO
+    // or ending just after endISO isn't truncated mid-session.
+    hkReadAll('sleep', new Date(startDate.getTime() - 86400000).toISOString(), new Date(endDate.getTime() + 86400000).toISOString()),
+  ]);
+
+  const basalByDay    = hkByDay(basalSamples);
+  const exerciseByDay = hkByDay(exerciseSamples);
+  const hrvByDay      = hkByDay(hrvSamples);
+  const respByDay     = hkByDay(respSamples);
+  const spo2ByDay      = hkByDay(spo2Samples);
+  const vo2ByDay       = hkByDay(vo2Samples);
+  const wristByDay     = hkByDay(wristSamples);
+  const bodyFatByDay   = hkByDay(bodyFatSamples);
+  const sleepByWakeDate = hkSleepSessionsByWakeDate(sleepSamples);
+
+  const allDates = new Set([
+    ...Object.keys(steps), ...Object.keys(distance), ...Object.keys(calories),
+    ...Object.keys(heartRate), ...Object.keys(restingHeartRate), ...Object.keys(weightAgg),
+    ...Object.keys(dietaryEnergy), ...Object.keys(basalByDay), ...Object.keys(exerciseByDay),
+    ...Object.keys(hrvByDay), ...Object.keys(respByDay), ...Object.keys(spo2ByDay),
+    ...Object.keys(vo2ByDay), ...Object.keys(wristByDay), ...Object.keys(bodyFatByDay),
+    ...Object.keys(sleepByWakeDate),
+  ]);
+
+  const rows = [];
+  for (const logDate of allDates) {
+    const row = { user_id: currentUser.id, log_date: logDate, synced_at: new Date().toISOString() };
+    if (steps[logDate] != null)            row.steps = Math.round(steps[logDate]);
+    if (distance[logDate] != null)         row.distance_km = hkRound2(distance[logDate] / 1000);
+    if (calories[logDate] != null)         row.active_energy_kcal = hkRound1(calories[logDate]);
+    if (heartRate[logDate] != null)        row.heart_rate_avg = hkRound1(heartRate[logDate]);
+    if (restingHeartRate[logDate] != null) row.resting_hr = hkRound1(restingHeartRate[logDate]);
+    if (!ignoreWeight && weightAgg[logDate] != null) row.weight_kg = hkRound2(weightAgg[logDate]);
+    if (dietaryEnergy[logDate] != null)    row.dietary_energy_kcal = hkRound1(dietaryEnergy[logDate]);
+    if (basalByDay[logDate])    row.resting_energy_kcal = hkRound1(hkSum(basalByDay[logDate]));
+    if (exerciseByDay[logDate]) row.exercise_mins = Math.round(hkSum(exerciseByDay[logDate]));
+    if (hrvByDay[logDate])      row.hrv_ms = hkRound2(hkAvg(hrvByDay[logDate]));
+    if (respByDay[logDate])     row.respiratory_rate = hkRound1(hkAvg(respByDay[logDate]));
+    if (spo2ByDay[logDate]) {
+      row.spo2_avg = hkRound1(hkAvg(spo2ByDay[logDate]));
+      row.spo2_min = hkRound1(Math.min(...spo2ByDay[logDate].map(s => Number(s.value))));
+    }
+    if (vo2ByDay[logDate])      row.vo2_max = hkRound1(hkAvg(vo2ByDay[logDate]));
+    if (wristByDay[logDate])    row.wrist_temp_dev = hkRound2(hkAvg(wristByDay[logDate]));
+    if (bodyFatByDay[logDate])  row.body_fat_pct = hkRound2(hkAvg(bodyFatByDay[logDate]));
+    if (sleepByWakeDate[logDate]) Object.assign(row, sleepByWakeDate[logDate]);
+    rows.push(row);
+  }
+
+  if (rows.length) {
+    const { error } = await db.from('health_daily').upsert(rows, { onConflict: 'user_id,log_date' });
+    if (error) throw error;
+  }
+
+  const workoutRows = await hkSyncWorkouts(startISO, endISO);
+  if (workoutRows.length) {
+    const { error } = await db.from('apple_health_workouts').upsert(workoutRows, { onConflict: 'user_id,external_id' });
+    if (error) throw error;
+  }
+}
+
+$('setHealthKitSyncEnabled')?.addEventListener('change', async (e) => {
+  const checked = e.target.checked;
+  if (!currentUser) return;
+  e.target.disabled = true;
+  try {
+    if (checked) {
+      await requestHealthKitAuth();
+      const { error } = await saveNsProfileFields({ healthkit_sync_enabled: true });
+      if (error) throw error;
+      showToast('Health sync enabled — backfilling the last 30 days…');
+      await runHealthKitSync({ days: 30 });
+      showToast('Health sync backfill complete.');
+    } else {
+      const { error } = await saveNsProfileFields({ healthkit_sync_enabled: false });
+      if (error) throw error;
+    }
+  } catch (err) {
+    showToast("Couldn't update Health sync: " + err.message, true);
+    e.target.checked = !checked; // revert the visible toggle on failure
+  } finally {
+    e.target.disabled = false;
+  }
+});
+
+$('btnHealthKitSyncNow')?.addEventListener('click', async () => {
+  const btn = $('btnHealthKitSyncNow');
+  setBtn(btn, true, 'Sync Health Now', 'Syncing…');
+  try {
+    await runHealthKitSync({ days: 7 });
+    showToast('Health synced.');
+  } catch (err) {
+    showToast("Couldn't sync: " + err.message, true);
+  }
+  setBtn(btn, false, 'Sync Health Now');
 });
 
 /* ═══════════════════════════════════════════════════════════
