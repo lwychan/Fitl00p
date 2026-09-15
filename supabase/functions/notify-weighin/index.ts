@@ -13,7 +13,7 @@
 import { sendWebPush, londonNow, GEMMA_USER_ID, kgToLb } from '../_shared/webpush.ts';
 
 const SB_URL     = Deno.env.get('SUPABASE_URL');
-const SB_SERVICE = Deno.env.get('SUPABASE_SERVICE_KEY');
+const SB_SERVICE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 
 const WINDOW_START_HOUR = 10;
 const WINDOW_END_HOUR   = 21; // last hour this still fires on

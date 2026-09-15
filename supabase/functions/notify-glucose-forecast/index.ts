@@ -35,7 +35,7 @@ import DiabetesEngine from '../_shared/diabetes-engine.ts';
 import { fetchNightscoutInput } from '../_shared/nightscout-fetch.ts';
 
 const SB_URL     = Deno.env.get('SUPABASE_URL');
-const SB_SERVICE = Deno.env.get('SUPABASE_SERVICE_KEY');
+const SB_SERVICE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 
 const RENOTIFY_COOLDOWN_MINUTES = 45;
 const TIER_ORDER = ['minimal', 'low', 'moderate', 'high'];

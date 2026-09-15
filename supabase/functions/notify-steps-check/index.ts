@@ -11,7 +11,7 @@
 import { sendWebPush, londonNow, GEMMA_USER_ID } from '../_shared/webpush.ts';
 
 const SB_URL     = Deno.env.get('SUPABASE_URL');
-const SB_SERVICE = Deno.env.get('SUPABASE_SERVICE_KEY');
+const SB_SERVICE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 const STEP_THRESHOLD = 9000;
 const STEP_GOAL      = 12000;
 

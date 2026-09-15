@@ -33,7 +33,7 @@ import { fetchNightscoutInput } from '../_shared/nightscout-fetch.ts';
 import DiabetesEngine from '../_shared/diabetes-engine.ts';
 
 const SB_URL     = Deno.env.get('SUPABASE_URL');
-const SB_SERVICE = Deno.env.get('SUPABASE_SERVICE_KEY');
+const SB_SERVICE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 const ANTHROPIC_API_KEY = Deno.env.get('ANTHROPIC_API_KEY');
 // Reasoning across several unrelated data domains (training, nutrition,
 // insulin) into one coherent, well-prioritised briefing is worth

@@ -13,7 +13,7 @@ import { sendWebPush, londonNow } from '../_shared/webpush.ts';
 import { computeRecoveryScore, computeSleepScore, computeStrainScore, loadSuggestion } from '../_shared/health-scores.ts';
 
 const SB_URL     = Deno.env.get('SUPABASE_URL');
-const SB_SERVICE = Deno.env.get('SUPABASE_SERVICE_KEY');
+const SB_SERVICE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 
 async function sbFetch(path: string) {
   const res = await fetch(`${SB_URL}${path}`, {

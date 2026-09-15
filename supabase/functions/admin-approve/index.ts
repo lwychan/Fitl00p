@@ -5,7 +5,7 @@
 // translation to Deno.serve; logic unchanged.
 
 const SB_URL     = Deno.env.get('SUPABASE_URL');
-const SB_SERVICE = Deno.env.get('SUPABASE_SERVICE_KEY');
+const SB_SERVICE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 
 const HEADERS = {
   'Access-Control-Allow-Origin': '*',
