@@ -33,6 +33,7 @@ public class ScoreWidgetBridgePlugin: CAPPlugin, CAPBridgedPlugin {
         if let v = call.getInt("strain") { scores["strain"] = v }
         if let v = call.getInt("netCaloriesKcal") { scores["netCaloriesKcal"] = v }
         if let v = call.getBool("netCaloriesIsDeficit") { scores["netCaloriesIsDeficit"] = v }
+        if let v = call.getInt("steps") { scores["steps"] = v }
 
         if let data = try? JSONSerialization.data(withJSONObject: scores) {
             defaults.set(data, forKey: Self.scoresKey)

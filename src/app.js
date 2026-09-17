@@ -1982,7 +1982,9 @@ async function _loadDashboardInner(signal) {
   });
   renderHealthTiles(health, healthHistory);
   const netCaloriesResult = renderNetCalories(health, healthHistory, log, estimatedBmr);
-  pushScoresToWidgets({ recovery: recoveryResult, sleep: sleepResult, strain: todayStrainResult, netCalories: netCaloriesResult });
+  // Same log-then-health precedence el.dTodaySteps already displays.
+  const todayStepsForWidgets = log?.steps || health?.steps || null;
+  pushScoresToWidgets({ recovery: recoveryResult, sleep: sleepResult, strain: todayStrainResult, netCalories: netCaloriesResult, steps: todayStepsForWidgets });
 
   // ── Last workout ────────────────────────────────────────────
   // "Last workout" should reflect whichever actually happened more
@@ -3896,7 +3898,7 @@ function renderNetCalories(today, history, log, bmrFallback) {
 // logic on the native side, just a mirror of whatever the dashboard just
 // showed. A no-op on web/no native bridge, and inert until the widget
 // extension target exists.
-function pushScoresToWidgets({ recovery, sleep, strain, netCalories }) {
+function pushScoresToWidgets({ recovery, sleep, strain, netCalories, steps }) {
   const Bridge = window.Capacitor?.Plugins?.ScoreWidgetBridge;
   if (!Bridge) return;
   Bridge.writeScores({
@@ -3907,6 +3909,7 @@ function pushScoresToWidgets({ recovery, sleep, strain, netCalories }) {
       ? Math.round(netCalories.consumed - netCalories.burned) : null,
     netCaloriesIsDeficit: (netCalories?.consumed != null && netCalories?.burned != null)
       ? (netCalories.consumed - netCalories.burned) < 0 : null,
+    steps: steps ?? null,
     updatedAt: new Date().toISOString(),
   }).catch(err => console.warn('pushScoresToWidgets failed:', err));
 }
