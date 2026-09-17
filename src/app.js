@@ -1973,14 +1973,16 @@ async function _loadDashboardInner(signal) {
   // without opening the app at all.
   const tonightSleepNeed = computeSleepNeed(healthHistory, todayDateStr, todayStrainResult.score);
 
+  const sleepResult = computeSleepScore(health, healthHistory, sleepNeedResult, tonightSleepNeed);
   renderScoreGauges({
     recovery:  recoveryResult,
-    sleep:     computeSleepScore(health, healthHistory, sleepNeedResult, tonightSleepNeed),
+    sleep:     sleepResult,
     strain:    todayStrainResult,
     nutrition: computeNutritionScore(health, log, smartTarget),
   });
   renderHealthTiles(health, healthHistory);
-  renderNetCalories(health, healthHistory, log, estimatedBmr);
+  const netCaloriesResult = renderNetCalories(health, healthHistory, log, estimatedBmr);
+  pushScoresToWidgets({ recovery: recoveryResult, sleep: sleepResult, strain: todayStrainResult, netCalories: netCaloriesResult });
 
   // ── Last workout ────────────────────────────────────────────
   // "Last workout" should reflect whichever actually happened more
@@ -3883,6 +3885,30 @@ function renderNetCalories(today, history, log, bmrFallback) {
     if (weeklyEl)  weeklyEl.textContent  = '—';
     if (fatLostEl) fatLostEl.textContent = '—';
   }
+
+  return { consumed, burned };
+}
+
+// Pushes today's already-computed dashboard scores into the native
+// ScoreWidgetBridge plugin (see ios/App/App/ScoreWidgetBridgePlugin.swift),
+// which writes them into the shared App Group container for the Home/Lock
+// Screen widgets and Watch complications to read — no separate scoring
+// logic on the native side, just a mirror of whatever the dashboard just
+// showed. A no-op on web/no native bridge, and inert until the widget
+// extension target exists.
+function pushScoresToWidgets({ recovery, sleep, strain, netCalories }) {
+  const Bridge = window.Capacitor?.Plugins?.ScoreWidgetBridge;
+  if (!Bridge) return;
+  Bridge.writeScores({
+    recovery: recovery?.score ?? null,
+    sleep: sleep?.score ?? null,
+    strain: strain?.score ?? null,
+    netCaloriesKcal: (netCalories?.consumed != null && netCalories?.burned != null)
+      ? Math.round(netCalories.consumed - netCalories.burned) : null,
+    netCaloriesIsDeficit: (netCalories?.consumed != null && netCalories?.burned != null)
+      ? (netCalories.consumed - netCalories.burned) < 0 : null,
+    updatedAt: new Date().toISOString(),
+  }).catch(err => console.warn('pushScoresToWidgets failed:', err));
 }
 async function loadLog() {
   const unit = BODY_WEIGHT_UNIT;
