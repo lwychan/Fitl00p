@@ -87,6 +87,10 @@ Deno.serve(async () => {
   const subsByUser: Record<string, any[]> = {};
   (subs as any[]).forEach(s => { (subsByUser[s.user_id] = subsByUser[s.user_id] || []).push(s); });
 
+  const { data: prefsRows } = await sbFetch(`/rest/v1/notification_prefs?notif_key=eq.peptide&select=user_id,enabled`);
+  const prefsByUser: Record<string, any> = {};
+  ((prefsRows as any[]) || []).forEach(p => { prefsByUser[p.user_id] = p; });
+
   const { data: protocols } = await sbFetch(
     '/rest/v1/peptide_protocols?is_active=eq.true&select=id,user_id,name,start_date,phases,reminder_start_hour,reminder_start_minute'
   );
@@ -96,6 +100,7 @@ Deno.serve(async () => {
 
   for (const protocol of protocols as any[]) {
     if (protocol.user_id === GEMMA_USER_ID) { skipped++; continue; } // no peptide protocol UI wired for her yet
+    if (prefsByUser[protocol.user_id]?.enabled === false) { skipped++; continue; }
     const userSubs = subsByUser[protocol.user_id];
     if (!userSubs?.length) { skipped++; continue; }
     if (!inProtocolWindow(protocol, now)) { skipped++; continue; }

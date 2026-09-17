@@ -28,7 +28,6 @@ async function sbFetch(path: string) {
 
 Deno.serve(async () => {
   const now = londonNow();
-  if (now.hour !== 21) return new Response('not 21:00 London — skipping');
   if (!SB_URL || !SB_SERVICE) return new Response('Supabase env vars missing', { status: 500 });
 
   const { data: meds } = await sbFetch('/rest/v1/oral_meds?is_active=eq.true&select=id,user_id,name,dose_mg');
@@ -46,8 +45,16 @@ Deno.serve(async () => {
   const medsByUser: Record<string, any[]> = {};
   meds.filter((m: any) => !takenMedIds.has(m.id)).forEach((m: any) => { (medsByUser[m.user_id] = medsByUser[m.user_id] || []).push(m); });
 
+  // notif_key 'oral_meds' — per-user hour, default 21:00 London.
+  const { data: prefsRows } = await sbFetch(`/rest/v1/notification_prefs?notif_key=eq.oral_meds&select=user_id,enabled,check_hour`);
+  const prefsByUser: Record<string, any> = {};
+  ((prefsRows as any[]) || []).forEach(p => { prefsByUser[p.user_id] = p; });
+
   let sent = 0, failed = 0, skipped = 0;
   for (const [userId, missing] of Object.entries(medsByUser)) {
+    const prefs = prefsByUser[userId];
+    if (prefs?.enabled === false) { skipped++; continue; }
+    if (now.hour !== (prefs?.check_hour ?? 21)) { skipped++; continue; }
     const userSubs = subsByUser[userId];
     if (!userSubs?.length) { skipped++; continue; }
 

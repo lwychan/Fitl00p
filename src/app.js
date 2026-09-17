@@ -7134,6 +7134,8 @@ async function loadSettings() {
     if (hkToggle) hkToggle.checked = !!profile.healthkit_sync_enabled;
   }
 
+  loadNotificationSettings();
+
   // Diabetes tracking (Nightscout) config — stored on the profile row,
   // same as every other per-user setting, so it survives across devices.
   // Defaults to enabled (profile.diabetes_enabled is a NOT NULL column
@@ -7295,6 +7297,205 @@ async function saveNsProfileFields(updates) {
   if (!error) Object.assign(profile, updates);
   return { error };
 }
+
+/* ═══════════════════════════════════════════════════════════
+   NOTIFICATIONS SETTINGS
+   Two independent tables, both per-user with RLS scoping to
+   auth.uid() = user_id: `notification_prefs` (simple on/off, some
+   with a configurable time-of-day/day-of-week) for the ~8 reminders
+   that already existed as fixed schedules server-side, and
+   `metric_alert_rules` (one row per metric+direction) for the
+   generic "any tracked metric, either direction, my own target/%/
+   time/wording" alert builder. The matching notify-* Edge Functions
+   read these same tables; see supabase/functions/notify-metric-check
+   for the generic engine and the other notify-* functions for how
+   each reads notification_prefs before deciding whether/when to fire.
+   ═══════════════════════════════════════════════════════════ */
+const NOTIFICATION_DEFS = [
+  { key: 'daily_summary',    label: 'Daily readiness summary',   hint: 'Recovery/sleep/strain, once each morning.', hasSchedule: true, defaultHour: 7 },
+  { key: 'sleep_target',     label: 'Sleep target',              hint: "Tonight's sleep need + suggested bedtime, each evening.", hasSchedule: true, defaultHour: 20 },
+  { key: 'weighin',          label: 'Weigh-in reminder',         hint: "Nudges you to log a weight if you haven't yet.", hasSchedule: true, defaultHour: 10, hasDays: true, defaultDays: [2] },
+  { key: 'oral_meds',        label: 'Oral meds reminder',        hint: 'Any active pill not logged yet today.', hasSchedule: true, defaultHour: 21 },
+  { key: 'ai_coach',         label: 'AI morning briefing',       hint: 'A short cross-domain briefing each morning.', hasSchedule: true, defaultHour: 8 },
+  { key: 'tirzepatide',      label: 'Tirzepatide reminder',      hint: 'Due ~7 days after your last logged dose.', hasSchedule: false, isRelevant: () => currentUser?.id !== GEMMA_USER_ID },
+  { key: 'peptide',          label: 'Peptide protocol reminder', hint: "Follows your active protocol's own schedule.", hasSchedule: false, isRelevant: () => currentUser?.id !== GEMMA_USER_ID },
+  { key: 'glucose_forecast', label: 'Glucose forecast alerts',   hint: 'Predictive hypo/hyper warnings — an always-on safety check, deliberately no schedule to set.', hasSchedule: false, isRelevant: (p) => p?.diabetes_enabled !== false && currentUser?.id !== GEMMA_USER_ID },
+];
+
+// Deliberately excludes glucose/insulin (already covered by the more
+// sophisticated, safety-critical glucose_forecast alerts above) and
+// anything peptide/tirzepatide/weigh-in/oral-med related (those are
+// "did you log this" reminders, not metric-vs-target checks).
+const METRIC_DEFS = [
+  { key: 'steps',              label: 'Steps',             unit: '',     defaultTarget: 12000, defaultPct: 25 },
+  { key: 'calories_consumed',  label: 'Calories eaten',    unit: 'kcal', defaultTarget: null,  defaultPct: 10 },
+  { key: 'active_energy_kcal', label: 'Active energy',     unit: 'kcal', defaultTarget: 500,   defaultPct: 25 },
+  { key: 'exercise_mins',      label: 'Exercise minutes',  unit: 'min',  defaultTarget: 30,    defaultPct: 50 },
+  { key: 'sleep_total_hrs',    label: 'Sleep',             unit: 'h',    defaultTarget: 8,     defaultPct: 15 },
+  { key: 'hrv_ms',              label: 'HRV',              unit: 'ms',   defaultTarget: null,  defaultPct: 20 },
+  { key: 'resting_hr',         label: 'Resting heart rate',unit: 'bpm',  defaultTarget: null,  defaultPct: 15 },
+  { key: 'weight_kg',          label: 'Weight',            unit: 'kg',   defaultTarget: null,  defaultPct: 5  },
+  { key: 'recovery_score',     label: 'Recovery score',    unit: '/100', defaultTarget: 60,    defaultPct: 25 },
+  { key: 'sleep_score',        label: 'Sleep score',       unit: '/100', defaultTarget: 60,    defaultPct: 25 },
+  { key: 'strain_score',       label: 'Strain score',      unit: '/21',  defaultTarget: 10,    defaultPct: 30 },
+];
+// Direct health_daily columns with a same-day "Today: X" readout in
+// Settings — the three score metrics above don't get one here (they'd
+// need the exact dashboard scoring call, which is out of scope for a
+// preview line); check the Dashboard tab for those instead.
+const METRIC_TODAY_FIELD = {
+  steps: 'steps', active_energy_kcal: 'active_energy_kcal', exercise_mins: 'exercise_mins',
+  sleep_total_hrs: 'sleep_total_hrs', hrv_ms: 'hrv_ms', resting_hr: 'resting_hr', weight_kg: 'weight_kg',
+};
+
+const WEEKDAY_CHIP_LABELS = ['S', 'M', 'T', 'W', 'T', 'F', 'S']; // Sun..Sat, matches days_of_week's 0=Sun convention
+
+function hmFromMinutes(hour, minute) {
+  return `${String(hour ?? 0).padStart(2, '0')}:${String(minute ?? 0).padStart(2, '0')}`;
+}
+function minutesFromHm(value, fallbackHour) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(value || '');
+  if (!m) return { hour: fallbackHour, minute: 0 };
+  return { hour: Math.max(0, Math.min(23, parseInt(m[1], 10))), minute: Math.max(0, Math.min(59, parseInt(m[2], 10))) };
+}
+
+async function saveNotificationPref(key, updates) {
+  if (!currentUser) return { error: new Error('Not signed in') };
+  const { error } = await db.from('notification_prefs')
+    .upsert({ user_id: currentUser.id, notif_key: key, ...updates }, { onConflict: 'user_id,notif_key' });
+  return { error };
+}
+
+async function loadNotificationSettings() {
+  const simpleList = $('notificationsSimpleList');
+  const metricList = $('metricAlertRulesList');
+  if (!simpleList || !metricList || !currentUser) return;
+
+  const [{ data: prefRows }, { data: ruleRows }, { data: todayHealthRows }, { data: foodRows }] = await Promise.all([
+    db.from('notification_prefs').select('*').eq('user_id', currentUser.id),
+    db.from('metric_alert_rules').select('*').eq('user_id', currentUser.id),
+    db.from('health_daily').select('steps,active_energy_kcal,exercise_mins,sleep_total_hrs,hrv_ms,resting_hr,weight_kg')
+      .eq('user_id', currentUser.id).eq('log_date', todayISO()).limit(1),
+    db.from('food_log').select('calories_kcal').eq('user_id', currentUser.id).eq('log_date', todayISO()),
+  ]);
+
+  const prefsByKey = {};
+  (prefRows || []).forEach(r => { prefsByKey[r.notif_key] = r; });
+  const rulesByKey = {};
+  (ruleRows || []).forEach(r => { rulesByKey[`${r.metric_key}:${r.direction}`] = r; });
+  const todayHealth = (todayHealthRows || [])[0] || {};
+  const todayCalories = (foodRows || []).reduce((s, r) => s + (Number(r.calories_kcal) || 0), 0);
+
+  simpleList.innerHTML = NOTIFICATION_DEFS
+    .filter(def => !def.isRelevant || def.isRelevant(profile))
+    .map(def => {
+      const p = prefsByKey[def.key];
+      const enabled = p?.enabled !== false;
+      const scheduleBit = def.hasSchedule
+        ? `<input type="time" class="notif-time" data-key="${def.key}" value="${hmFromMinutes(p?.check_hour ?? def.defaultHour, p?.check_minute ?? 0)}" style="margin-left:10px;width:auto;display:inline-block">`
+        : '';
+      const days = p?.days_of_week ?? def.defaultDays ?? [];
+      const daysBit = def.hasDays
+        ? `<div class="notif-days" data-key="${def.key}" style="margin:6px 0 0 30px;display:flex;gap:4px">` +
+          WEEKDAY_CHIP_LABELS.map((lbl, i) => {
+            const on = days.includes(i);
+            return `<button type="button" class="chip-day${on ? ' is-active' : ''}" data-day="${i}" style="width:26px;height:26px;border-radius:50%;border:1px solid var(--border);background:${on ? 'var(--blue)' : 'transparent'};color:${on ? '#111318' : 'inherit'};font-size:11px">${lbl}</button>`;
+          }).join('') + `</div>`
+        : '';
+      return `<label class="checkbox-option checkbox-option--full" style="align-items:center">
+        <input type="checkbox" class="notif-toggle" data-key="${def.key}" ${enabled ? 'checked' : ''}>
+        <span>${def.label}${scheduleBit} <span class="field-hint">${def.hint}</span></span>
+      </label>${daysBit}`;
+    }).join('');
+
+  simpleList.querySelectorAll('.notif-toggle').forEach(cb => {
+    cb.addEventListener('change', async () => {
+      const { error } = await saveNotificationPref(cb.dataset.key, { enabled: cb.checked });
+      if (error) { showToast("Couldn't save: " + error.message, true); cb.checked = !cb.checked; }
+    });
+  });
+  simpleList.querySelectorAll('.notif-time').forEach(input => {
+    input.addEventListener('change', async () => {
+      const { hour, minute } = minutesFromHm(input.value, 8);
+      const { error } = await saveNotificationPref(input.dataset.key, { check_hour: hour, check_minute: minute });
+      if (error) showToast("Couldn't save: " + error.message, true);
+    });
+  });
+  simpleList.querySelectorAll('.notif-days').forEach(wrap => {
+    wrap.querySelectorAll('.chip-day').forEach(chip => {
+      chip.addEventListener('click', async () => {
+        chip.classList.toggle('is-active');
+        const on = chip.classList.contains('is-active');
+        chip.style.background = on ? 'var(--blue)' : 'transparent';
+        chip.style.color = on ? '#111318' : 'inherit';
+        const activeDays = Array.from(wrap.querySelectorAll('.chip-day.is-active')).map(c => parseInt(c.dataset.day, 10));
+        const { error } = await saveNotificationPref(wrap.dataset.key, { days_of_week: activeDays });
+        if (error) showToast("Couldn't save: " + error.message, true);
+      });
+    });
+  });
+
+  metricList.innerHTML = METRIC_DEFS.map(def => {
+    const under = rulesByKey[`${def.key}:under`];
+    const over  = rulesByKey[`${def.key}:over`];
+    const todayLine = def.key === 'calories_consumed'
+      ? `Today: ${todayCalories.toFixed(0)}${def.unit}`
+      : (METRIC_TODAY_FIELD[def.key] && todayHealth[METRIC_TODAY_FIELD[def.key]] != null
+          ? `Today: ${Number(todayHealth[METRIC_TODAY_FIELD[def.key]]).toFixed(1)}${def.unit}`
+          : 'See your Dashboard tab for today’s value.');
+
+    const row = (direction, rule) => {
+      const target = rule?.target_value ?? def.defaultTarget ?? '';
+      const pct = rule?.threshold_pct ?? def.defaultPct ?? '';
+      const hm = hmFromMinutes(rule?.check_hour ?? 19, rule?.check_minute ?? 0);
+      const msg = rule?.message_template ?? '';
+      const enabled = !!rule?.enabled;
+      const placeholderMsg = `Your ${def.label.toLowerCase()} was {value}${def.unit} today — {pct}% ${direction} your {target}${def.unit} target.`;
+      return `<div class="field-grid" data-metric="${def.key}" data-direction="${direction}" style="margin-top:8px;padding:10px;border:1px solid var(--border);border-radius:10px">
+        <label class="checkbox-option checkbox-option--full" style="grid-column:1/-1">
+          <input type="checkbox" class="rule-enabled" ${enabled ? 'checked' : ''}>
+          <span>${direction === 'under' ? 'Under target' : 'Over target'}</span>
+        </label>
+        <div class="field"><label>Target</label><input type="number" class="rule-target" value="${target}" inputmode="decimal" step="any"></div>
+        <div class="field"><label>% off to notify</label><input type="number" class="rule-pct" value="${pct}" inputmode="decimal" step="1" min="1" max="90"></div>
+        <div class="field"><label>Time</label><input type="time" class="rule-time" value="${hm}"></div>
+        <div class="field" style="grid-column:1/-1"><label>Message <span class="field-hint">placeholders: {value} {target} {pct} {unit}</span></label>
+          <textarea class="rule-message" rows="2" placeholder="${placeholderMsg}">${msg}</textarea>
+        </div>
+      </div>`;
+    };
+
+    return `<div class="settings-section" style="margin-top:14px;padding-top:10px">
+      <div class="settings-section__title" style="font-size:13px">${def.label} <span class="field-hint" style="text-transform:none">${todayLine}</span></div>
+      ${row('under', under)}
+      ${row('over', over)}
+    </div>`;
+  }).join('');
+}
+
+$('btnSaveMetricAlerts')?.addEventListener('click', async () => {
+  const btn = $('btnSaveMetricAlerts');
+  if (!currentUser) return;
+  setBtn(btn, true, 'Save metric alerts', 'Saving…');
+  const writes = Array.from(document.querySelectorAll('#metricAlertRulesList [data-metric]')).map(card => {
+    const targetRaw = card.querySelector('.rule-target').value;
+    const pctRaw = card.querySelector('.rule-pct').value;
+    const { hour, minute } = minutesFromHm(card.querySelector('.rule-time').value, 19);
+    const message = card.querySelector('.rule-message').value.trim();
+    return {
+      user_id: currentUser.id, metric_key: card.dataset.metric, direction: card.dataset.direction,
+      enabled: card.querySelector('.rule-enabled').checked,
+      target_value: targetRaw === '' ? null : parseFloat(targetRaw),
+      threshold_pct: pctRaw === '' ? null : parseFloat(pctRaw),
+      check_hour: hour, check_minute: minute,
+      message_template: message || null,
+    };
+  });
+  const { error } = await db.from('metric_alert_rules').upsert(writes, { onConflict: 'user_id,metric_key,direction' });
+  setBtn(btn, false, 'Save metric alerts');
+  if (error) { flash($('metricAlertsStatus'), 'Error: ' + error.message, true); return; }
+  flash($('metricAlertsStatus'), 'Saved.');
+});
 
 // Fat/protein per meal aren't tracked anywhere upstream (Nightscout
 // treatments don't carry them), so this is its own table — diabetes_meals,

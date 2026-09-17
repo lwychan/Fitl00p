@@ -50,10 +50,21 @@ async function buildReminder(todayDateStr: string) {
   return `${base} ${toGo.toFixed(1)}${unit} to your ${targetDisp.toFixed(1)}${unit} goal.`;
 }
 
+// notif_key 'weighin' — same shared key as notify-weighin (one concept,
+// "weigh-in reminder", to the user regardless of which function runs for
+// their account). Default here: every day, 07:00 London.
+const WEEKDAY_TO_NUM: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+
 Deno.serve(async () => {
   const now = londonNow();
-  if (now.hour !== 7) return new Response('not 07:15 London — skipping');
   if (!SB_URL || !SB_SERVICE) return new Response('Supabase env vars missing', { status: 500 });
+
+  const { data: prefsRows } = await sbFetch(`/rest/v1/notification_prefs?notif_key=eq.weighin&user_id=eq.${GEMMA_USER_ID}&select=enabled,check_hour,days_of_week`);
+  const prefs = (prefsRows as any[])?.[0];
+  if (prefs?.enabled === false) return new Response('disabled');
+  const days: number[] | null = prefs?.days_of_week ?? null; // default: every day
+  if (days && !days.includes(WEEKDAY_TO_NUM[now.weekday])) return new Response('not a configured day — skipping');
+  if (now.hour !== (prefs?.check_hour ?? 7)) return new Response('not the configured hour — skipping');
 
   const { data: subs } = await sbFetch(`/rest/v1/push_subscriptions?user_id=eq.${GEMMA_USER_ID}&select=endpoint,p256dh,auth_key`);
   if (!subs?.length) return new Response('no subscriptions');

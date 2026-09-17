@@ -64,7 +64,6 @@ async function buildSummary(userId: string, todayStr: string, yesterdayStr: stri
 
 Deno.serve(async () => {
   const now = londonNow();
-  if (now.hour !== 7) return new Response('not 07:00 London — skipping');
   if (!SB_URL || !SB_SERVICE) return new Response('Supabase env vars missing', { status: 500 });
 
   const yesterday = addDays(now.dateStr, -1);
@@ -75,8 +74,17 @@ Deno.serve(async () => {
   const byUser: Record<string, any[]> = {};
   subs.forEach((s: any) => { (byUser[s.user_id] = byUser[s.user_id] || []).push(s); });
 
-  let sent = 0, failed = 0;
+  // notif_key 'daily_summary' — per-user hour, default 07:00 London (see notification_prefs).
+  const { data: prefsRows } = await sbFetch(`/rest/v1/notification_prefs?notif_key=eq.daily_summary&select=user_id,enabled,check_hour`);
+  const prefsByUser: Record<string, any> = {};
+  ((prefsRows as any[]) || []).forEach(p => { prefsByUser[p.user_id] = p; });
+
+  let sent = 0, failed = 0, skipped = 0;
   for (const [userId, userSubs] of Object.entries(byUser)) {
+    const prefs = prefsByUser[userId];
+    if (prefs?.enabled === false) { skipped++; continue; }
+    if (now.hour !== (prefs?.check_hour ?? 7)) { skipped++; continue; }
+
     const body = await buildSummary(userId, now.dateStr, yesterday);
     if (!body) continue;
     const payload = { title: '⚡ Today’s Readiness', body, url: '/', tag: 'daily-summary' };
@@ -87,5 +95,5 @@ Deno.serve(async () => {
       } catch { failed++; }
     }
   }
-  return new Response(JSON.stringify({ sent, failed }));
+  return new Response(JSON.stringify({ sent, failed, skipped }));
 });

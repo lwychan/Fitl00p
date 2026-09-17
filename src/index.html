@@ -1564,6 +1564,24 @@
       </div>
 
       <div class="settings-section">
+        <div class="settings-section__title">Notifications</div>
+        <p style="font-size:13px;color:var(--ink-3);line-height:1.6">
+          Turn individual reminders on or off below. A few (marked with a time) fire once a day at that London time — change it to whenever suits you.
+        </p>
+        <div id="notificationsSimpleList"></div>
+
+        <div class="settings-section__title" style="margin-top:22px">Custom metric alerts</div>
+        <p style="font-size:13px;color:var(--ink-3);line-height:1.6">
+          Pick any tracked metric, a target, how far off it needs to be (as a %) before you're told, a time to check, and your own wording. "Under" and "over" are separate — set either, both, or neither.
+        </p>
+        <div id="metricAlertRulesList"></div>
+        <div class="settings-actions">
+          <button class="btn btn--primary btn--small" id="btnSaveMetricAlerts">Save metric alerts</button>
+          <span class="save-status" id="metricAlertsStatus"></span>
+        </div>
+      </div>
+
+      <div class="settings-section">
         <div class="settings-section__title">
           Diabetes tracking
           <span class="field-hint" style="text-transform:none;letter-spacing:0;font-weight:400">Nightscout — NOT medical software</span>

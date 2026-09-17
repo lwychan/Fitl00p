@@ -116,6 +116,10 @@ Deno.serve(async () => {
   const byUser: Record<string, any[]> = {};
   (subs as any[]).forEach(s => { (byUser[s.user_id] = byUser[s.user_id] || []).push(s); });
 
+  const { data: prefsRows } = await sbFetch(`/rest/v1/notification_prefs?notif_key=eq.glucose_forecast&select=user_id,enabled`);
+  const prefsByUser: Record<string, any> = {};
+  ((prefsRows as any[]) || []).forEach(p => { prefsByUser[p.user_id] = p; });
+
   const { data: profiles } = await sbFetch(
     '/rest/v1/profiles?diabetes_enabled=eq.true&diabetes_ns_url=not.is.null' +
     '&select=id,diabetes_ns_url,diabetes_ns_token,diabetes_ns_secret,diabetes_target_low,diabetes_target_high,diabetes_ideal_target,diabetes_carb_ratio,diabetes_correction_factor,diabetes_insulin_peak_min,diabetes_insulin_duration_min'
@@ -128,6 +132,7 @@ Deno.serve(async () => {
   for (const profile of profiles as any[]) {
     const userId = profile.id;
     if (userId === GEMMA_USER_ID) continue; // doesn't use diabetes tracking
+    if (prefsByUser[userId]?.enabled === false) { skipped++; continue; }
     const userSubs = byUser[userId];
     if (!userSubs?.length) continue;
 

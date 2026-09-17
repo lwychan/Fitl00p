@@ -265,7 +265,6 @@ export { mondayOfWeek, buildWeekSummary, buildContextSections, buildPrompt, fetc
 
 Deno.serve(async () => {
   const now = londonNow();
-  if (now.hour !== 8) return new Response('not 08:00 London — skipping');
   if (!SB_URL || !SB_SERVICE) return new Response('Supabase env vars missing', { status: 500 });
   if (!ANTHROPIC_API_KEY) return new Response('ANTHROPIC_API_KEY not configured', { status: 500 });
 
@@ -283,10 +282,18 @@ Deno.serve(async () => {
   const subsByUser: Record<string, any[]> = {};
   ((subs as any[]) || []).forEach(s => { (subsByUser[s.user_id] = subsByUser[s.user_id] || []).push(s); });
 
-  let generated = 0, sent = 0, failed = 0, errors = 0;
+  // notif_key 'ai_coach' — per-user hour, default 08:00 London.
+  const { data: prefsRows } = await sbFetch(`/rest/v1/notification_prefs?notif_key=eq.ai_coach&select=user_id,enabled,check_hour`);
+  const prefsByUser: Record<string, any> = {};
+  ((prefsRows as any[]) || []).forEach(p => { prefsByUser[p.user_id] = p; });
+
+  let generated = 0, sent = 0, failed = 0, errors = 0, skipped = 0;
 
   for (const profile of profiles as any[]) {
     const userId = profile.id;
+    const prefs = prefsByUser[userId];
+    if (prefs?.enabled === false) { skipped++; continue; }
+    if (now.hour !== (prefs?.check_hour ?? 8)) { skipped++; continue; }
     try {
       const [healthRes, dailyLogsRes, foodLogRes, sessionsRes] = await Promise.all([
         sbFetch(`/rest/v1/health_daily?user_id=eq.${userId}&log_date=gte.${windowStart}&log_date=lte.${todayStr}&select=log_date,hrv_ms,resting_hr,sleep_total_hrs,sleep_deep_hrs,sleep_rem_hrs,sleep_start,active_energy_kcal,resting_energy_kcal,dietary_energy_kcal,exercise_mins,workout_hr_avg,steps,weight_kg&order=log_date.asc`),
@@ -354,5 +361,5 @@ Deno.serve(async () => {
     }
   }
 
-  return new Response(JSON.stringify({ generated, sent, failed, errors }));
+  return new Response(JSON.stringify({ generated, sent, failed, errors, skipped }));
 });

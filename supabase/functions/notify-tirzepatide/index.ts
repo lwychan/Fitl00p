@@ -106,9 +106,14 @@ Deno.serve(async () => {
   const byUser: Record<string, any[]> = {};
   subs.forEach((s: any) => { (byUser[s.user_id] = byUser[s.user_id] || []).push(s); });
 
+  const { data: prefsRows } = await sbFetch(`/rest/v1/notification_prefs?notif_key=eq.tirzepatide&select=user_id,enabled`);
+  const prefsByUser: Record<string, any> = {};
+  ((prefsRows as any[]) || []).forEach(p => { prefsByUser[p.user_id] = p; });
+
   let sent = 0, failed = 0, skipped = 0;
   for (const [userId, userSubs] of Object.entries(byUser)) {
     if (userId === GEMMA_USER_ID) { skipped++; continue; } // doesn't use Tirzepatide
+    if (prefsByUser[userId]?.enabled === false) { skipped++; continue; }
     const body = await buildReminder(userId, now.dateStr);
     if (!body) { skipped++; continue; }
     const payload = { title: '💉', body, url: '/', tag: 'tirzepatide-reminder' };
