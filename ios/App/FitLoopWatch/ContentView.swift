@@ -30,6 +30,12 @@ func loadWatchScoreData() -> WatchScoreData? {
 // use the platform Gauge/.accessoryCircularCapacity style instead, see
 // FitLoopWatchWidgets/ComplicationWidget.swift, since watch faces often
 // re-tint or force monochrome on third-party complications).
+//
+// Text is sized proportionally to the gauge's own rendered diameter
+// (via GeometryReader) rather than a fixed point size — a fixed size
+// looked lost/tiny inside the large gauge circles on the iOS systemLarge
+// widget while being fine on the small watch screen, since the circles
+// themselves scale with their container but fixed-size text doesn't.
 struct LiquidGaugeView: View {
     let fillPct: Double
     let color: Color
@@ -37,25 +43,37 @@ struct LiquidGaugeView: View {
     let label: String
 
     var body: some View {
-        ZStack {
-            Circle().fill(Color.white.opacity(0.06))
-            GeometryReader { geo in
-                VStack {
+        GeometryReader { geo in
+            let size = min(geo.size.width, geo.size.height)
+            ZStack {
+                Circle().fill(Color.white.opacity(0.06))
+                VStack(spacing: 0) {
                     Spacer(minLength: 0)
                     LinearGradient(colors: [color.opacity(0.85), color], startPoint: .top, endPoint: .bottom)
-                        .frame(height: geo.size.height * fillPct)
+                        .frame(height: size * fillPct)
                 }
+                .clipShape(Circle())
+                Circle()
+                    .fill(Color.white.opacity(0.35))
+                    .frame(width: size * 0.14, height: size * 0.1)
+                    .blur(radius: size * 0.02)
+                    .offset(x: -size * 0.14, y: -size * 0.18)
+                VStack(spacing: size * 0.02) {
+                    Text(value)
+                        .font(.system(size: size * 0.26, weight: .bold))
+                        .minimumScaleFactor(0.5)
+                        .lineLimit(1)
+                        .foregroundStyle(.white)
+                    Text(label)
+                        .font(.system(size: size * 0.13, weight: .medium))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.5)
+                        .foregroundStyle(.white.opacity(0.75))
+                }
+                .padding(.horizontal, size * 0.06)
             }
-            .clipShape(Circle())
-            Circle()
-                .fill(Color.white.opacity(0.35))
-                .frame(width: 8, height: 6)
-                .blur(radius: 1.2)
-                .offset(x: -6, y: -8)
-            VStack(spacing: 0) {
-                Text(value).font(.callout).bold().foregroundStyle(.white)
-                Text(label).font(.system(size: 8)).foregroundStyle(.white.opacity(0.7))
-            }
+            .frame(width: size, height: size)
+            .position(x: geo.size.width / 2, y: geo.size.height / 2)
         }
     }
 }
@@ -87,9 +105,13 @@ func metricRows(for s: WatchScoreData?) -> [MetricRow] {
         MetricRow(id: "steps", fillPct: fillFraction(s?.steps.map(Double.init), Double(s?.stepsGoal ?? 10000)),
                   color: Color(red: 1.0, green: 0.84, blue: 0.04),
                   value: s?.steps.map { "\($0)" } ?? "—", label: "Steps"),
+        // Labelled "Cal %" (not "Calories") and shown with a % sign — this
+        // is computeNutritionScore's 0-100 "how close to your eat target"
+        // score, not a raw kcal count, and a bare number like "68" under
+        // "Calories" reads as an actual calorie amount, which it isn't.
         MetricRow(id: "calories", fillPct: fillFraction(s?.nutritionScore.map(Double.init), 100),
                   color: Color(red: 0.20, green: 0.82, blue: 0.60),
-                  value: s?.nutritionScore.map { "\($0)" } ?? "—", label: "Calories"),
+                  value: s?.nutritionScore.map { "\($0)%" } ?? "—", label: "Cal %"),
     ]
 }
 
@@ -106,12 +128,17 @@ struct ContentView: View {
                     }
                 }
                 .padding(.horizontal, 4)
+                // The watch's system time is drawn over the top of every
+                // app screen — a bare ScrollView doesn't reserve room for
+                // it, so the first row's gauges scrolled up underneath it.
+                .padding(.top, 20)
             } else {
                 VStack(spacing: 4) {
                     Text("FitLoop").font(.headline)
                     Text("Open the iPhone app to sync").font(.caption2).foregroundStyle(.secondary)
                 }
                 .padding()
+                .padding(.top, 20)
             }
         }
         .onAppear { scores = loadWatchScoreData() }

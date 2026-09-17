@@ -54,6 +54,12 @@ struct ScoreProvider: TimelineProvider {
 // src/app.css) ported to SwiftUI: a dark orb that fills bottom-up with a
 // colored gradient as the metric approaches its target, plus a glassy
 // specular highlight. fillPct is pre-clamped by the caller.
+//
+// Text is sized proportionally to the gauge's own rendered diameter (via
+// GeometryReader) rather than a fixed point size — a fixed size looked
+// lost/tiny inside the much bigger circles on the systemLarge widget
+// while being fine at systemMedium, since the circles scale with their
+// container but fixed-size text doesn't.
 struct LiquidGaugeView: View {
     let fillPct: Double
     let color: Color
@@ -61,25 +67,37 @@ struct LiquidGaugeView: View {
     let label: String
 
     var body: some View {
-        ZStack {
-            Circle().fill(Color.white.opacity(0.06))
-            GeometryReader { geo in
-                VStack {
+        GeometryReader { geo in
+            let size = min(geo.size.width, geo.size.height)
+            ZStack {
+                Circle().fill(Color.white.opacity(0.06))
+                VStack(spacing: 0) {
                     Spacer(minLength: 0)
                     LinearGradient(colors: [color.opacity(0.85), color], startPoint: .top, endPoint: .bottom)
-                        .frame(height: geo.size.height * fillPct)
+                        .frame(height: size * fillPct)
                 }
+                .clipShape(Circle())
+                Circle()
+                    .fill(Color.white.opacity(0.35))
+                    .frame(width: size * 0.14, height: size * 0.1)
+                    .blur(radius: size * 0.02)
+                    .offset(x: -size * 0.14, y: -size * 0.18)
+                VStack(spacing: size * 0.02) {
+                    Text(value)
+                        .font(.system(size: size * 0.26, weight: .bold))
+                        .minimumScaleFactor(0.5)
+                        .lineLimit(1)
+                        .foregroundStyle(.white)
+                    Text(label)
+                        .font(.system(size: size * 0.13, weight: .medium))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.5)
+                        .foregroundStyle(.white.opacity(0.75))
+                }
+                .padding(.horizontal, size * 0.06)
             }
-            .clipShape(Circle())
-            Circle()
-                .fill(Color.white.opacity(0.35))
-                .frame(width: 10, height: 8)
-                .blur(radius: 1.5)
-                .offset(x: -8, y: -10)
-            VStack(spacing: 1) {
-                Text(value).font(.headline).bold().foregroundStyle(.white)
-                Text(label).font(.system(size: 9)).foregroundStyle(.white.opacity(0.7))
-            }
+            .frame(width: size, height: size)
+            .position(x: geo.size.width / 2, y: geo.size.height / 2)
         }
     }
 }
@@ -116,9 +134,13 @@ func gaugeSpecs(for s: ScoreData?) -> [GaugeSpec] {
         GaugeSpec(id: "steps", value: s?.steps.map(Double.init), target: Double(s?.stepsGoal ?? 10000),
                    color: Color(red: 1.0, green: 0.84, blue: 0.04), label: "Steps",
                    displayValue: s?.steps.map { "\($0)" } ?? "—"),
+        // Labelled "Cal %" (not "Calories") and shown with a % sign — this
+        // is computeNutritionScore's 0-100 "how close to your eat target"
+        // score, not a raw kcal count, and a bare number like "68" under
+        // "Calories" reads as an actual calorie amount, which it isn't.
         GaugeSpec(id: "calories", value: s?.nutritionScore.map(Double.init), target: 100,
-                   color: Color(red: 0.20, green: 0.82, blue: 0.60), label: "Calories",
-                   displayValue: s?.nutritionScore.map { "\($0)" } ?? "—"),
+                   color: Color(red: 0.20, green: 0.82, blue: 0.60), label: "Cal %",
+                   displayValue: s?.nutritionScore.map { "\($0)%" } ?? "—"),
     ]
 }
 
