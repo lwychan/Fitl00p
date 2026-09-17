@@ -704,10 +704,26 @@ function nearestReading(readings, targetMs, toleranceMinutes = 15) {
   return best;
 }
 
-function hourOfDay(ms) { return new Date(ms).getUTCHours(); }
-function minutesSinceMidnight(ms) {
-  const d = new Date(ms);
-  return d.getUTCHours() * 60 + d.getUTCMinutes();
+// r.ms/b._ms/etc are true epoch instants (see toMs() in nightscout-adapter.js),
+// so getUTCHours() here would read the wrong "hour of day" for roughly seven
+// months a year — Europe/London runs an hour ahead of UTC during BST, so a
+// dose/reading/workout logged at 8pm local was landing in every time-of-day
+// bucket below (hourly patterns, 4h correction buckets, meal-time buckets,
+// the >=17:00 "evening workout" check, similar-hour hypo lookback) as if it
+// happened at 7pm. Explicit Europe/London formatting is correct regardless
+// of the runtime's own timezone (browser device or Deno server) and matches
+// londonNow()/londonHourMinute() elsewhere in the app.
+function londonHM(ms: number) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(new Date(ms));
+  const get = (t: string) => parts.find(p => p.type === t)!.value;
+  return { hour: parseInt(get('hour'), 10), minute: parseInt(get('minute'), 10) };
+}
+function hourOfDay(ms: number) { return londonHM(ms).hour; }
+function minutesSinceMidnight(ms: number) {
+  const { hour, minute } = londonHM(ms);
+  return hour * 60 + minute;
 }
 
 function insight(id, category, title, summary, n, extra = {}) {
