@@ -1917,7 +1917,10 @@ async function _loadDashboardInner(signal) {
     circleEl.style.strokeDashoffset = CIRCUMFERENCE * (1 - pct);
     labelEl.textContent = Math.round(pct * 100) + '%';
   }
-  setRing(el.rSteps, el.rStepsPct, log?.steps, profile?.steps_goal || 10000);
+  // Same log-then-health precedence el.dTodaySteps already displays —
+  // the ring was only reading log?.steps, so it stayed stuck at 0% for
+  // anyone whose steps come from HealthKit sync rather than manual entry.
+  setRing(el.rSteps, el.rStepsPct, log?.steps ?? health?.steps, profile?.steps_goal || 10000);
   setRing(el.rCal,   el.rCalPct,   displayCals, activePlan ? parseInt(el.dCalTarget?.textContent?.replace(/[^\d]/g,'')) || 2000 : 2000);
 
   // ── Smart eat target — computed from real Apple Health data ──
