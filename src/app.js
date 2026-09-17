@@ -10620,10 +10620,29 @@ async function writeWeightToHealthKit(weightKg, logDateStr) {
 function hkRound1(n) { return Math.round(n * 10) / 10; }
 function hkRound2(n) { return Math.round(n * 100) / 100; }
 
+// HealthKit's own 'day' bucketing (and every sample's own startDate) is
+// anchored to the device's LOCAL calendar day, not UTC — bucket-start for
+// local midnight 16 Sep BST is "2026-09-15T23:00:00.000Z", so slicing
+// that string's first 10 characters silently gives back the 15th, not
+// the 16th, for the whole 1-hour-per-year (well, per DST transition)
+// this app is ever running in BST. new Date(input) preserves the exact
+// instant regardless of what string form HealthKit handed back; the
+// non-UTC getters below then read it out in the RUNTIME's own local
+// timezone — the device's — which is exactly the calendar HealthKit
+// itself used to decide which day this sample/bucket belongs to.
+// Confirmed live: this was shifting every aggregated metric (steps,
+// active energy, dietary energy, heart rate, resting HR, weight) one
+// day early for the whole BST half of the year.
+function hkLocalDateStr(input) {
+  const d = new Date(input);
+  if (Number.isNaN(d.getTime())) return null;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 function hkByDay(samples) {
   const byDate = {};
   for (const s of samples) {
-    const d = (s.startDate || '').slice(0, 10);
+    const d = hkLocalDateStr(s.startDate);
     if (!d) continue;
     (byDate[d] = byDate[d] || []).push(s);
   }
@@ -10636,7 +10655,7 @@ async function hkAggregatedByDay(dataType, startISO, endISO, aggregation) {
   const { samples } = await getHealthPlugin().queryAggregated({ dataType, startDate: startISO, endDate: endISO, bucket: 'day', aggregation });
   const out = {};
   for (const s of samples || []) {
-    const d = (s.startDate || '').slice(0, 10);
+    const d = hkLocalDateStr(s.startDate);
     if (d) out[d] = s.value;
   }
   return out;
@@ -10680,7 +10699,7 @@ function hkSleepSessionsByWakeDate(samples) {
     const segs = session.segments;
     const asleepSegs = segs.filter(s => s.sleepState && s.sleepState !== 'inBed' && s.sleepState !== 'awake');
     if (!asleepSegs.length) continue;
-    const wakeDate = new Date(Math.max(...segs.map(s => new Date(s.endDate || s.startDate).getTime()))).toISOString().slice(0, 10);
+    const wakeDate = hkLocalDateStr(Math.max(...segs.map(s => new Date(s.endDate || s.startDate).getTime())));
     const hrsOf = state => asleepSegs.filter(s => s.sleepState === state).reduce((a, s) => a + (Number(s.value) || 0), 0) / 60;
     byWakeDate[wakeDate] = {
       sleep_total_hrs: hkRound2(asleepSegs.reduce((a, s) => a + (Number(s.value) || 0), 0) / 60),
