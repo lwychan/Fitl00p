@@ -40,5 +40,15 @@ class WatchDelegate: NSObject, WKApplicationDelegate, WCSessionDelegate {
               let data = try? JSONSerialization.data(withJSONObject: context) else { return }
         defaults.set(data, forKey: "fitloop.todayScores")
         WidgetCenter.shared.reloadAllTimelines()
+        // WCSessionDelegate callbacks can arrive off the main thread; the
+        // notification drives a SwiftUI @State update in ContentView, which
+        // needs to happen on main.
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: .fitLoopScoresUpdated, object: nil)
+        }
     }
+}
+
+extension Notification.Name {
+    static let fitLoopScoresUpdated = Notification.Name("fitLoopScoresUpdated")
 }

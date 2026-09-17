@@ -1974,17 +1974,23 @@ async function _loadDashboardInner(signal) {
   const tonightSleepNeed = computeSleepNeed(healthHistory, todayDateStr, todayStrainResult.score);
 
   const sleepResult = computeSleepScore(health, healthHistory, sleepNeedResult, tonightSleepNeed);
+  const nutritionResult = computeNutritionScore(health, log, smartTarget);
   renderScoreGauges({
     recovery:  recoveryResult,
     sleep:     sleepResult,
     strain:    todayStrainResult,
-    nutrition: computeNutritionScore(health, log, smartTarget),
+    nutrition: nutritionResult,
   });
   renderHealthTiles(health, healthHistory);
   const netCaloriesResult = renderNetCalories(health, healthHistory, log, estimatedBmr);
   // Same log-then-health precedence el.dTodaySteps already displays.
   const todayStepsForWidgets = log?.steps || health?.steps || null;
-  pushScoresToWidgets({ recovery: recoveryResult, sleep: sleepResult, strain: todayStrainResult, netCalories: netCaloriesResult, steps: todayStepsForWidgets });
+  pushScoresToWidgets({
+    recovery: recoveryResult, sleep: sleepResult, strain: todayStrainResult, netCalories: netCaloriesResult,
+    steps: todayStepsForWidgets, stepsGoal: profile?.steps_goal || 10000,
+    sleepHours: health?.sleep_total_hrs ?? null, sleepNeedHours: sleepNeedResult?.needHours ?? null,
+    nutritionScore: nutritionResult?.score ?? null,
+  });
 
   // ── Last workout ────────────────────────────────────────────
   // "Last workout" should reflect whichever actually happened more
@@ -3898,7 +3904,7 @@ function renderNetCalories(today, history, log, bmrFallback) {
 // logic on the native side, just a mirror of whatever the dashboard just
 // showed. A no-op on web/no native bridge, and inert until the widget
 // extension target exists.
-function pushScoresToWidgets({ recovery, sleep, strain, netCalories, steps }) {
+function pushScoresToWidgets({ recovery, sleep, strain, netCalories, steps, stepsGoal, sleepHours, sleepNeedHours, nutritionScore }) {
   const Bridge = window.Capacitor?.Plugins?.ScoreWidgetBridge;
   if (!Bridge) return;
   Bridge.writeScores({
@@ -3910,6 +3916,10 @@ function pushScoresToWidgets({ recovery, sleep, strain, netCalories, steps }) {
     netCaloriesIsDeficit: (netCalories?.consumed != null && netCalories?.burned != null)
       ? (netCalories.consumed - netCalories.burned) < 0 : null,
     steps: steps ?? null,
+    stepsGoal: stepsGoal ?? null,
+    sleepHours: sleepHours ?? null,
+    sleepNeedHours: sleepNeedHours ?? null,
+    nutritionScore: nutritionScore ?? null,
     updatedAt: new Date().toISOString(),
   }).catch(err => console.warn('pushScoresToWidgets failed:', err));
 }

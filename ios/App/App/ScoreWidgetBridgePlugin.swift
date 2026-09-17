@@ -37,10 +37,16 @@ public class ScoreWidgetBridgePlugin: CAPPlugin, CAPBridgedPlugin, WCSessionDele
         ]
         if let v = call.getInt("recovery") { scores["recovery"] = v }
         if let v = call.getInt("sleep") { scores["sleep"] = v }
-        if let v = call.getInt("strain") { scores["strain"] = v }
+        // Strain is a real 0-21 scale with one decimal (e.g. 14.2), not an
+        // integer — getInt would silently drop it.
+        if let v = call.getDouble("strain") { scores["strain"] = v }
         if let v = call.getInt("netCaloriesKcal") { scores["netCaloriesKcal"] = v }
         if let v = call.getBool("netCaloriesIsDeficit") { scores["netCaloriesIsDeficit"] = v }
         if let v = call.getInt("steps") { scores["steps"] = v }
+        if let v = call.getInt("stepsGoal") { scores["stepsGoal"] = v }
+        if let v = call.getDouble("sleepHours") { scores["sleepHours"] = v }
+        if let v = call.getDouble("sleepNeedHours") { scores["sleepNeedHours"] = v }
+        if let v = call.getInt("nutritionScore") { scores["nutritionScore"] = v }
 
         if let data = try? JSONSerialization.data(withJSONObject: scores) {
             defaults.set(data, forKey: Self.scoresKey)
