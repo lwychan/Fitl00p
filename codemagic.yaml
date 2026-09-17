@@ -50,6 +50,11 @@ workflows:
         XCODE_SCHEME: "App"
         APP_STORE_APPLE_ID: 6811922097
         BUNDLE_ID: com.lwychan.fitl00p
+        # FitLoopWidgetsExtension target (Home/Lock Screen widgets) — needs
+        # its own App ID + provisioning profile, registered with the App
+        # Groups capability enabled and group.com.lwychan.fitl00p assigned
+        # (see App.entitlements / FitLoopWidgets.entitlements).
+        WIDGET_BUNDLE_ID: com.lwychan.fitl00p.widgets
         # Node 22 only loads capacitor.config.ts natively with this flag
         # (Node 23.6+ does it unflagged, but 23.x isn't an LTS release).
         NODE_OPTIONS: --experimental-strip-types
@@ -77,6 +82,9 @@ workflows:
       - name: Fetch signing files
         script: |
           app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --type IOS_APP_STORE \
+            --create
+          app-store-connect fetch-signing-files "$WIDGET_BUNDLE_ID" \
             --type IOS_APP_STORE \
             --create
 

@@ -18,6 +18,9 @@
 		9582B6832FE993A70072D4E8 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9582B6822FE993A50072D4E8 /* SceneDelegate.swift */; };
 		DE4802F65374A27A2D88169E /* ScoreWidgetBridgePlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 792495F96A97F1DB4DF0A09A /* ScoreWidgetBridgePlugin.swift */; };
 		ECBEC2DB4804D30FFB80E279 /* MainViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5739B3EA0322481FD4B56C93 /* MainViewController.swift */; };
+		35DCFF7A6504DEF0E6359457 /* FitLoopWidgetsBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2708ECB370B61E11380E1F31 /* FitLoopWidgetsBundle.swift */; };
+		88EDBBC2A7542CD757792DD0 /* ScoreWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = E134D43ADCA584E7129F57FC /* ScoreWidget.swift */; };
+		400E2EA0574A4362916B669B /* FitLoopWidgetsExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 877E6BB30DBC058E0523AAC9 /* FitLoopWidgetsExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -35,6 +38,11 @@
 		958DCC722DB07C7200EA8C5F /* debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = debug.xcconfig; path = ../debug.xcconfig; sourceTree = SOURCE_ROOT; };
 		792495F96A97F1DB4DF0A09A /* ScoreWidgetBridgePlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScoreWidgetBridgePlugin.swift; sourceTree = "<group>"; };
 		5739B3EA0322481FD4B56C93 /* MainViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainViewController.swift; sourceTree = "<group>"; };
+		877E6BB30DBC058E0523AAC9 /* FitLoopWidgetsExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = FitLoopWidgetsExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		2708ECB370B61E11380E1F31 /* FitLoopWidgetsBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FitLoopWidgetsBundle.swift; sourceTree = "<group>"; };
+		E134D43ADCA584E7129F57FC /* ScoreWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScoreWidget.swift; sourceTree = "<group>"; };
+		0F8FA1969349C9B2814F21CA /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		FB7555C90427BB8BE30C59E9 /* FitLoopWidgets.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FitLoopWidgets.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -46,6 +54,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		0C7207E77AAA73031B9C24D8 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -54,6 +69,7 @@
 			children = (
 				958DCC722DB07C7200EA8C5F /* debug.xcconfig */,
 				504EC3061FED79650016851F /* App */,
+				051CAD0BDB73F94CE0360186 /* FitLoopWidgets */,
 				504EC3051FED79650016851F /* Products */,
 			);
 			sourceTree = "<group>";
@@ -62,8 +78,20 @@
 			isa = PBXGroup;
 			children = (
 				504EC3041FED79650016851F /* App.app */,
+				877E6BB30DBC058E0523AAC9 /* FitLoopWidgetsExtension.appex */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		051CAD0BDB73F94CE0360186 /* FitLoopWidgets */ = {
+			isa = PBXGroup;
+			children = (
+				2708ECB370B61E11380E1F31 /* FitLoopWidgetsBundle.swift */,
+				E134D43ADCA584E7129F57FC /* ScoreWidget.swift */,
+				0F8FA1969349C9B2814F21CA /* Info.plist */,
+				FB7555C90427BB8BE30C59E9 /* FitLoopWidgets.entitlements */,
+			);
+			path = FitLoopWidgets;
 			sourceTree = "<group>";
 		};
 		504EC3061FED79650016851F /* App */ = {
@@ -95,10 +123,12 @@
 				504EC3001FED79650016851F /* Sources */,
 				504EC3011FED79650016851F /* Frameworks */,
 				504EC3021FED79650016851F /* Resources */,
+				EE4C42F976C46E2A71939941 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				9EEE53AB8B9ADA1D2843598D /* PBXTargetDependency */,
 			);
 			name = App;
 			packageProductDependencies = (
@@ -107,6 +137,23 @@
 			productName = App;
 			productReference = 504EC3041FED79650016851F /* App.app */;
 			productType = "com.apple.product-type.application";
+		};
+		7EE93CDA666444F29D33EF11 /* FitLoopWidgetsExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E216055F01DF2B6AF00EFCEF /* Build configuration list for PBXNativeTarget "FitLoopWidgetsExtension" */;
+			buildPhases = (
+				2ED9F13263F222ABC070B5CF /* Sources */,
+				0C7207E77AAA73031B9C24D8 /* Frameworks */,
+				C4C7096D3899644D3AFD2B38 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = FitLoopWidgetsExtension;
+			productName = FitLoopWidgetsExtension;
+			productReference = 877E6BB30DBC058E0523AAC9 /* FitLoopWidgetsExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -120,6 +167,10 @@
 					504EC3031FED79650016851F = {
 						CreatedOnToolsVersion = 9.2;
 						LastSwiftMigration = 1100;
+						ProvisioningStyle = Automatic;
+					};
+					7EE93CDA666444F29D33EF11 = {
+						CreatedOnToolsVersion = 9.2;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -141,6 +192,7 @@
 			projectRoot = "";
 			targets = (
 				504EC3031FED79650016851F /* App */,
+				7EE93CDA666444F29D33EF11 /* FitLoopWidgetsExtension */,
 			);
 		};
 /* End PBXProject section */
@@ -159,6 +211,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		C4C7096D3899644D3AFD2B38 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -173,7 +232,48 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		2ED9F13263F222ABC070B5CF /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				35DCFF7A6504DEF0E6359457 /* FitLoopWidgetsBundle.swift in Sources */,
+				88EDBBC2A7542CD757792DD0 /* ScoreWidget.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		EE4C42F976C46E2A71939941 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				400E2EA0574A4362916B669B /* FitLoopWidgetsExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXContainerItemProxy section */
+		E62CB667D99CD8518153E0A3 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 504EC2FC1FED79650016851F /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 7EE93CDA666444F29D33EF11;
+			remoteInfo = FitLoopWidgetsExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXTargetDependency section */
+		9EEE53AB8B9ADA1D2843598D /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 7EE93CDA666444F29D33EF11 /* FitLoopWidgetsExtension */;
+			targetProxy = E62CB667D99CD8518153E0A3 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin PBXVariantGroup section */
 		504EC30B1FED79650016851F /* Main.storyboard */ = {
@@ -352,6 +452,54 @@
 			};
 			name = Release;
 		};
+		9515AE9FB0C2AD8E932B44FF /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = FitLoopWidgets/FitLoopWidgets.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				INFOPLIST_FILE = FitLoopWidgets/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lwychan.fitl00p.widgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VERSIONING_SYSTEM = "apple-generic";
+			};
+			name = Debug;
+		};
+		5C6238A0C9F5E76E67E6709C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = FitLoopWidgets/FitLoopWidgets.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				INFOPLIST_FILE = FitLoopWidgets/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lwychan.fitl00p.widgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VERSIONING_SYSTEM = "apple-generic";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -369,6 +517,15 @@
 			buildConfigurations = (
 				504EC3171FED79650016851F /* Debug */,
 				504EC3181FED79650016851F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E216055F01DF2B6AF00EFCEF /* Build configuration list for PBXNativeTarget "FitLoopWidgetsExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				9515AE9FB0C2AD8E932B44FF /* Debug */,
+				5C6238A0C9F5E76E67E6709C /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
