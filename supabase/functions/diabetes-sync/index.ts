@@ -25,8 +25,16 @@
 import NightscoutAdapter from '../_shared/nightscout-adapter.ts';
 const { adaptNightscoutData, adaptProfileSwitches } = NightscoutAdapter;
 
+// Missing Access-Control-Allow-Headers meant the browser's CORS preflight
+// (OPTIONS) got a 204 back but didn't see Authorization allow-listed, so
+// it silently refused to ever send the real request — the app's own fetch
+// call always sends Authorization: Bearer <anon key>. This surfaced to the
+// user as a generic "Load failed" with nothing but repeated OPTIONS/204
+// requests in the function's logs, no GET ever reaching this code at all.
 const HEADERS = {
   'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
   'Content-Type': 'application/json',
 };
 
