@@ -115,17 +115,32 @@
 // they're two views of the same keypair, not independent settings.
 const VAPID_PUBLIC = 'BOUj3c5wS_5htviclNYyinBVVxCkz0HfJOZVcVrEoxIwBFqPqxljCg7l5mQ1hGjQKWz_NvhGlvoEeRSMuDI7m98';
 
-// Netlify Functions live at fitl00p.netlify.app regardless of how this
-// page itself got loaded. On the web (PWA/browser) that's simply the
-// current origin, so this is a no-op there. Inside the native app the
-// HTML/CSS/JS are bundled directly into the ipa — there's no server
-// behind a relative path — so every Functions call below needs the
-// real, absolute origin instead. window.Capacitor is injected
-// automatically by the native runtime; it's simply absent on the web.
-const NETLIFY_ORIGIN = window.Capacitor?.isNativePlatform?.() ? 'https://fitl00p.netlify.app' : '';
+// Supabase project — public by design. The anon key is meant to be
+// embedded in client code (same as it was previously served to the
+// client at boot by Netlify's config.js); Row Level Security, not
+// secrecy of this key, is what actually protects data. Hardcoded
+// directly now instead of fetched over the network at boot, since the
+// native app doesn't need a bootstrap round-trip just to learn its own
+// backend's address — see the client-init block below.
+const SUPABASE_URL = 'https://nxawnkpzjixishcerxcv.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im54YXdua3B6aml4aXNoY2VyeGN2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI0MzE5MDYsImV4cCI6MjA5ODAwNzkwNn0.JpZQw0NaCAmur7lX0axzVro9yhfhj8eQjcVppUrNgsk';
+
+// Supabase Edge Functions live at the project's own domain — an absolute
+// URL works identically whether this page is served from the web or
+// bundled straight into the native ipa, so (unlike the old NETLIFY_ORIGIN
+// this replaces) there's no native-vs-web branch needed here.
+const FUNCTIONS_ORIGIN = `${SUPABASE_URL}/functions/v1`;
+
+// Every Edge Function requires a valid JWT in Authorization (verify_jwt
+// is on for all of them). Calls that already carry the signed-in user's
+// own session token satisfy that for free; the handful of proxy-style
+// calls below that don't represent a particular user send the anon key
+// instead — it's a valid signed JWT, so it clears the gateway check even
+// though the function itself never treats it as a real user identity.
+const FUNCTIONS_ANON_HEADERS = { Authorization: `Bearer ${SUPABASE_ANON_KEY}` };
 
 const { createClient } = window.supabase;
-let db = null; // initialised after config loads
+let db = null; // initialised just below — no network round-trip needed first
 
 // supabase-js guards auth calls (signInWithPassword, refreshSession, etc.)
 // with a cross-tab mutex built on navigator.locks. If a lock is ever
@@ -956,9 +971,11 @@ let resolveFirstAuthEvent;
 const firstAuthEventPromise = new Promise(resolve => { resolveFirstAuthEvent = resolve; });
 
 // Reads supabase-js's own persisted session straight out of localStorage
-// under its default key pattern (sb-<project-ref>-auth-token), without
-// needing cfg.url first. Used only as a same-boot fallback if the real
-// client's first auth event doesn't show up promptly — see the boot IIFE.
+// under its default key pattern (sb-<project-ref>-auth-token), scanning
+// for the key rather than building it from SUPABASE_URL so this has no
+// ordering dependency on anything else at boot. Used only as a
+// same-boot fallback if the real client's first auth event doesn't show
+// up promptly — see the boot IIFE.
 function readRawCachedSession() {
   try {
     for (const key of Object.keys(localStorage)) {
@@ -2758,9 +2775,9 @@ async function sendChecklistCompleteNotification(streak) {
 
   for (const s of subs) {
     try {
-      await fetch(`${NETLIFY_ORIGIN}/.netlify/functions/push-send`, {
+      await fetch(`${FUNCTIONS_ORIGIN}/push-send`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...FUNCTIONS_ANON_HEADERS },
         body: JSON.stringify({
           subscription: { endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth_key } },
           notification: { title: '🔥 Streak alert!', body, url: '/', tag: 'habit-checklist-streak' },
@@ -5614,9 +5631,9 @@ async function fetchExerciseGif(ei, excludeId = null) {
   if (gifEl) { gifEl.innerHTML = `<span class="exercise-info-drawer__gif--loading">⏳</span>`; }
 
   try {
-    const url = `${NETLIFY_ORIGIN}/.netlify/functions/exercise-media?name=${encodeURIComponent(ex.media.search_name)}`
+    const url = `${FUNCTIONS_ORIGIN}/exercise-media?name=${encodeURIComponent(ex.media.search_name)}`
       + (excludeId ? `&exclude=${encodeURIComponent(excludeId)}` : '');
-    const res  = await fetch(url);
+    const res  = await fetch(url, { headers: FUNCTIONS_ANON_HEADERS });
     const data = await res.json();
     if (data.gifUrl) {
       ex.media.gif_url      = data.gifUrl;
@@ -7784,7 +7801,7 @@ async function fetchDiabetesData(force = false) {
   if (profile.diabetes_ns_token)  qs.set('token', profile.diabetes_ns_token);
   if (profile.diabetes_ns_secret) qs.set('secret', profile.diabetes_ns_secret);
 
-  const res = await fetch(`${NETLIFY_ORIGIN}/.netlify/functions/diabetes-sync?${qs.toString()}`);
+  const res = await fetch(`${FUNCTIONS_ORIGIN}/diabetes-sync?${qs.toString()}`, { headers: FUNCTIONS_ANON_HEADERS });
   const body = await res.json();
   if (!res.ok) throw new Error(body?.error || `Sync failed (${res.status})`);
 
@@ -7813,7 +7830,7 @@ async function fetchDiabetesDataWide(force = false) {
   if (profile.diabetes_ns_token)  qs.set('token', profile.diabetes_ns_token);
   if (profile.diabetes_ns_secret) qs.set('secret', profile.diabetes_ns_secret);
 
-  const res = await fetch(`${NETLIFY_ORIGIN}/.netlify/functions/diabetes-sync?${qs.toString()}`);
+  const res = await fetch(`${FUNCTIONS_ORIGIN}/diabetes-sync?${qs.toString()}`, { headers: FUNCTIONS_ANON_HEADERS });
   const body = await res.json();
   if (!res.ok) throw new Error(body?.error || `Sync failed (${res.status})`);
 
@@ -11361,7 +11378,7 @@ async function loadIamData() {
       btn.textContent = action === 'approve' ? 'Approving…' : 'Rejecting…';
 
       const session = (await db.auth.getSession()).data.session;
-      const res = await fetch(`${NETLIFY_ORIGIN}/.netlify/functions/admin-approve`, {
+      const res = await fetch(`${FUNCTIONS_ORIGIN}/admin-approve`, {
         method: 'POST',
         headers: {
           'Content-Type':  'application/json',
@@ -12141,7 +12158,7 @@ async function runLfSearch(query) {
       .or(`name.ilike.%${query}%,brand.ilike.%${query}%`)
       .order('name', { ascending: true })
       .limit(20),
-    fetch(`${NETLIFY_ORIGIN}/.netlify/functions/food-search?q=${encodeURIComponent(query)}`)
+    fetch(`${FUNCTIONS_ORIGIN}/food-search?q=${encodeURIComponent(query)}`, { headers: FUNCTIONS_ANON_HEADERS })
       .then(r => (r.ok ? r.json() : { results: [] }))
       .catch(() => ({ results: [] })),
   ]);
@@ -12413,7 +12430,7 @@ el.btnLfEstimate?.addEventListener('click', async () => {
   if (el.lfEstimateStatus) el.lfEstimateStatus.textContent = '';
   try {
     const session = (await db.auth.getSession()).data.session;
-    const res = await fetch(`${NETLIFY_ORIGIN}/.netlify/functions/food-photo-estimate`, {
+    const res = await fetch(`${FUNCTIONS_ORIGIN}/food-photo-estimate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
       body: JSON.stringify({
@@ -12474,7 +12491,7 @@ el.btnLfTextEstimate?.addEventListener('click', async () => {
   if (el.lfTextEstimateStatus) el.lfTextEstimateStatus.textContent = '';
   try {
     const session = (await db.auth.getSession()).data.session;
-    const res = await fetch(`${NETLIFY_ORIGIN}/.netlify/functions/food-text-estimate`, {
+    const res = await fetch(`${FUNCTIONS_ORIGIN}/food-text-estimate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
       body: JSON.stringify({ text }),
@@ -12650,7 +12667,7 @@ el.btnLfTextSave?.addEventListener('click', async () => {
       try {
         const session = (await db.auth.getSession()).data.session;
         for (const row of rows) {
-          const shareRes = await fetch(`${NETLIFY_ORIGIN}/.netlify/functions/share-food-log`, {
+          const shareRes = await fetch(`${FUNCTIONS_ORIGIN}/share-food-log`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token}` },
             body: JSON.stringify({
@@ -12865,7 +12882,7 @@ el.btnLfSave?.addEventListener('click', async () => {
     if (wantsShare) {
       try {
         const session = (await db.auth.getSession()).data.session;
-        const shareRes = await fetch(`${NETLIFY_ORIGIN}/.netlify/functions/share-food-log`, {
+        const shareRes = await fetch(`${FUNCTIONS_ORIGIN}/share-food-log`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token}` },
           body: JSON.stringify({
@@ -13578,49 +13595,18 @@ const bootWatchdog = setTimeout(() => {
   if (!bootResolved) showBootConnectivityError();
 }, 90000);
 
-// Fetches url with its own bounded timeout per attempt, retrying a
-// couple of times with a short backoff before finally giving up —
-// nothing else on the boot path can proceed without this one succeeding
-// (see the config fetch below), and a single stalled attempt right
-// after a cold PWA launch (service worker waking from iOS suspension,
-// see sw.js) very often recovers within a few seconds on its own. The
-// boot spinner stays up for the entire retry sequence; only exhausting
-// every attempt falls through to the error screen.
-async function fetchWithRetries(url, { attempts = 3, attemptTimeoutMs = 7000, backoffMs = 1500 } = {}) {
-  let lastErr;
-  for (let i = 0; i < attempts; i++) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), attemptTimeoutMs);
-    try {
-      const res = await fetch(url, { signal: controller.signal });
-      clearTimeout(timer);
-      return res;
-    } catch (err) {
-      clearTimeout(timer);
-      lastErr = err;
-      if (i < attempts - 1) await new Promise(r => setTimeout(r, backoffMs * (i + 1)));
-    }
-  }
-  lastErr.isConnectivity = true; // distinguishes "never got a response" from a real config/HTTP error below
-  throw lastErr;
-}
-
-// Fetch Supabase credentials from Netlify Function, then start the app.
-// No separate loading indicator needed here — screenBoot (index.html) is
-// already visible from the very first paint and stays up on top of
-// whatever showScreen('auth') reveals underneath, all the way through
-// config load, auth resolution, and (for the main app case) the initial
-// view's own data fetch. See hideBootScreen()'s call sites in initApp().
+// Starts the app. No separate loading indicator needed here — screenBoot
+// (index.html) is already visible from the very first paint and stays up
+// on top of whatever showScreen('auth') reveals underneath, all the way
+// through auth resolution and (for the main app case) the initial view's
+// own data fetch. See hideBootScreen()'s call sites in initApp(). This
+// used to start with a network round-trip to a Netlify Function just to
+// learn SUPABASE_URL/SUPABASE_ANON_KEY (see the retrying fetchWithRetries
+// helper this replaced) — now that those are hardcoded constants above,
+// the client can init synchronously and there's nothing left here that
+// can fail on connectivity grounds specifically.
 (async () => {
   try {
-    // Worst case ~3 attempts × 7s + backoff ≈ 25s, still entirely behind
-    // the spinner — see fetchWithRetries above for why this retries
-    // instead of just bounding a single attempt like before.
-    const cfgRes = await fetchWithRetries(`${NETLIFY_ORIGIN}/.netlify/functions/config`, { attempts: 3, attemptTimeoutMs: 7000, backoffMs: 1500 });
-    if (!cfgRes.ok) throw new Error(`Config HTTP ${cfgRes.status}`);
-    const cfg = await cfgRes.json();
-    if (!cfg.url || !cfg.key) throw new Error('Missing url or key in config response');
-
     // ── Defensive session storage check ──────────────────────
     // Supabase's JS client stores the current session as JSON under a
     // predictable key: sb-<project-ref>-auth-token. If a previous write to
@@ -13637,7 +13623,7 @@ async function fetchWithRetries(url, { attempts = 3, attemptTimeoutMs = 7000, ba
     // forcing a fresh password login constantly instead of the silent
     // renewal this was supposed to enable. Removed.
     try {
-      const projectRef = new URL(cfg.url).hostname.split('.')[0];
+      const projectRef = new URL(SUPABASE_URL).hostname.split('.')[0];
       const authStorageKey = `sb-${projectRef}-auth-token`;
       const stored = localStorage.getItem(authStorageKey);
       if (stored) {
@@ -13658,7 +13644,7 @@ async function fetchWithRetries(url, { attempts = 3, attemptTimeoutMs = 7000, ba
       console.warn('Session storage pre-check failed (non-fatal):', storageCheckErr);
     }
 
-    db = createClient(cfg.url, cfg.key, {
+    db = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
       auth: {
         // These three settings together mean: never sign the user out on
         // page refresh or app reopen, and always attempt to silently renew
@@ -13680,15 +13666,10 @@ async function fetchWithRetries(url, { attempts = 3, attemptTimeoutMs = 7000, ba
   } catch (err) {
     // No hideBootScreen() call needed — this replaces all of document.body,
     // screenBoot included, so the error message beneath is what appears.
-    //
-    // Timeouts/network failures get a distinct, retryable message —
-    // "config missing" implies a deployment problem, which would be a
-    // misleading (and unactionable, for the user) thing to show for
-    // what's usually just a stalled first request on cold PWA launch.
-    if (err?.isConnectivity === true) {
-      showBootConnectivityError(); // calls markBootResolved() itself
-      return;
-    }
+    // Genuinely unexpected at this point (e.g. window.supabase itself
+    // failed to load) — SUPABASE_URL/SUPABASE_ANON_KEY are hardcoded
+    // constants, not fetched, so there's no connectivity-specific case
+    // to distinguish here anymore.
     markBootResolved();
     document.body.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:center;min-height:100dvh;
@@ -13697,8 +13678,7 @@ async function fetchWithRetries(url, { attempts = 3, attemptTimeoutMs = 7000, ba
           <div style="font-size:32px;margin-bottom:12px">⚠️</div>
           <p style="font-size:17px;font-weight:600;margin-bottom:8px">fitl00p couldn't start</p>
           <p style="font-size:14px;color:#888;max-width:320px;line-height:1.5">
-            Configuration missing — check that <strong>SUPABASE_URL</strong> and
-            <strong>SUPABASE_ANON_KEY</strong> are set in Netlify environment variables.
+            Something went wrong before the app could even sign you in. Try reloading — if it keeps happening, this needs a real fix, not just a retry.
           </p>
           <p style="font-size:12px;color:#666;margin-top:8px">${err.message}</p>
         </div>
