@@ -27,6 +27,7 @@
 		BB11E11E73C5DF9760665998 /* ComplicationWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B96094B1C0200C90016D39F /* ComplicationWidget.swift */; };
 		7F6885C0D807714D31F15822 /* FitLoopWatchWidgetsExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 50EE59A92A17856FEEE9C770 /* FitLoopWatchWidgetsExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		6B36E5AFDDEF41F0236A2B2D /* FitLoopWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = 0BE0C731F919A784F296096B /* FitLoopWatch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		417B851D9CCFE012CC50AB2C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 31348F4014E83056CDF68510 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -59,6 +60,7 @@
 		1B96094B1C0200C90016D39F /* ComplicationWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComplicationWidget.swift; sourceTree = "<group>"; };
 		EB9BA3110C30116311B917BE /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		906776A57974FE5FAEA3121D /* FitLoopWatchWidgets.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FitLoopWatchWidgets.entitlements; sourceTree = "<group>"; };
+		31348F4014E83056CDF68510 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -133,6 +135,7 @@
 			children = (
 				9CD2BEB9173F436B6F9FC0FF /* FitLoopWatchApp.swift */,
 				D0B94CEF174575E5D79CB8C4 /* ContentView.swift */,
+				31348F4014E83056CDF68510 /* Assets.xcassets */,
 				21FC8481554E41055EE7A9BB /* Info.plist */,
 				E43546F6F981223CB8AD5D3D /* FitLoopWatch.entitlements */,
 			);
@@ -326,6 +329,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				417B851D9CCFE012CC50AB2C /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -685,6 +689,7 @@
 		A7DE53D00E2D3A14F9A5EEA3 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = FitLoopWatch/FitLoopWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -710,6 +715,7 @@
 		B89B15A755377A2956B86E16 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = FitLoopWatch/FitLoopWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
