@@ -55,6 +55,11 @@ workflows:
         # Groups capability enabled and group.com.lwychan.fitl00p assigned
         # (see App.entitlements / FitLoopWidgets.entitlements).
         WIDGET_BUNDLE_ID: com.lwychan.fitl00p.widgets
+        # FitLoopWatch (watchOS companion app) and FitLoopWatchWidgetsExtension
+        # (its complications) — same App Groups requirement as above, each
+        # with its own App ID registered in the Apple Developer Portal.
+        WATCH_APP_BUNDLE_ID: com.lwychan.fitl00p.watchapp
+        WATCH_WIDGET_BUNDLE_ID: com.lwychan.fitl00p.watchapp.widgets
         # Node 22 only loads capacitor.config.ts natively with this flag
         # (Node 23.6+ does it unflagged, but 23.x isn't an LTS release).
         NODE_OPTIONS: --experimental-strip-types
@@ -85,6 +90,12 @@ workflows:
             --type IOS_APP_STORE \
             --create
           app-store-connect fetch-signing-files "$WIDGET_BUNDLE_ID" \
+            --type IOS_APP_STORE \
+            --create
+          app-store-connect fetch-signing-files "$WATCH_APP_BUNDLE_ID" \
+            --type IOS_APP_STORE \
+            --create
+          app-store-connect fetch-signing-files "$WATCH_WIDGET_BUNDLE_ID" \
             --type IOS_APP_STORE \
             --create
 

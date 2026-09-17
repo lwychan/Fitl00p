@@ -21,6 +21,12 @@
 		35DCFF7A6504DEF0E6359457 /* FitLoopWidgetsBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2708ECB370B61E11380E1F31 /* FitLoopWidgetsBundle.swift */; };
 		88EDBBC2A7542CD757792DD0 /* ScoreWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = E134D43ADCA584E7129F57FC /* ScoreWidget.swift */; };
 		400E2EA0574A4362916B669B /* FitLoopWidgetsExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 877E6BB30DBC058E0523AAC9 /* FitLoopWidgetsExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		9AB6C2FB27974B0161831516 /* FitLoopWatchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CD2BEB9173F436B6F9FC0FF /* FitLoopWatchApp.swift */; };
+		1B0F55FDA84DF8CC101839B7 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0B94CEF174575E5D79CB8C4 /* ContentView.swift */; };
+		82908800648FEDC5DDDAF0E8 /* FitLoopWatchWidgetsBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C36AD6A2140E00FEC89B49F /* FitLoopWatchWidgetsBundle.swift */; };
+		BB11E11E73C5DF9760665998 /* ComplicationWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B96094B1C0200C90016D39F /* ComplicationWidget.swift */; };
+		7F6885C0D807714D31F15822 /* FitLoopWatchWidgetsExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 50EE59A92A17856FEEE9C770 /* FitLoopWatchWidgetsExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		6B36E5AFDDEF41F0236A2B2D /* FitLoopWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = 0BE0C731F919A784F296096B /* FitLoopWatch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -43,6 +49,16 @@
 		E134D43ADCA584E7129F57FC /* ScoreWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScoreWidget.swift; sourceTree = "<group>"; };
 		0F8FA1969349C9B2814F21CA /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		FB7555C90427BB8BE30C59E9 /* FitLoopWidgets.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FitLoopWidgets.entitlements; sourceTree = "<group>"; };
+		0BE0C731F919A784F296096B /* FitLoopWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FitLoopWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		9CD2BEB9173F436B6F9FC0FF /* FitLoopWatchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FitLoopWatchApp.swift; sourceTree = "<group>"; };
+		D0B94CEF174575E5D79CB8C4 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		21FC8481554E41055EE7A9BB /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		E43546F6F981223CB8AD5D3D /* FitLoopWatch.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FitLoopWatch.entitlements; sourceTree = "<group>"; };
+		50EE59A92A17856FEEE9C770 /* FitLoopWatchWidgetsExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = FitLoopWatchWidgetsExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		5C36AD6A2140E00FEC89B49F /* FitLoopWatchWidgetsBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FitLoopWatchWidgetsBundle.swift; sourceTree = "<group>"; };
+		1B96094B1C0200C90016D39F /* ComplicationWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComplicationWidget.swift; sourceTree = "<group>"; };
+		EB9BA3110C30116311B917BE /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		906776A57974FE5FAEA3121D /* FitLoopWatchWidgets.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FitLoopWatchWidgets.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -61,6 +77,20 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A747145BBB8B95B13115A638 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		08A483F86C3A3E807B1B2CC3 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -70,6 +100,8 @@
 				958DCC722DB07C7200EA8C5F /* debug.xcconfig */,
 				504EC3061FED79650016851F /* App */,
 				051CAD0BDB73F94CE0360186 /* FitLoopWidgets */,
+				8236F571A0F5C7FA110797C0 /* FitLoopWatch */,
+				F787663599263FC0C90D2996 /* FitLoopWatchWidgets */,
 				504EC3051FED79650016851F /* Products */,
 			);
 			sourceTree = "<group>";
@@ -79,6 +111,8 @@
 			children = (
 				504EC3041FED79650016851F /* App.app */,
 				877E6BB30DBC058E0523AAC9 /* FitLoopWidgetsExtension.appex */,
+				0BE0C731F919A784F296096B /* FitLoopWatch.app */,
+				50EE59A92A17856FEEE9C770 /* FitLoopWatchWidgetsExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -92,6 +126,28 @@
 				FB7555C90427BB8BE30C59E9 /* FitLoopWidgets.entitlements */,
 			);
 			path = FitLoopWidgets;
+			sourceTree = "<group>";
+		};
+		8236F571A0F5C7FA110797C0 /* FitLoopWatch */ = {
+			isa = PBXGroup;
+			children = (
+				9CD2BEB9173F436B6F9FC0FF /* FitLoopWatchApp.swift */,
+				D0B94CEF174575E5D79CB8C4 /* ContentView.swift */,
+				21FC8481554E41055EE7A9BB /* Info.plist */,
+				E43546F6F981223CB8AD5D3D /* FitLoopWatch.entitlements */,
+			);
+			path = FitLoopWatch;
+			sourceTree = "<group>";
+		};
+		F787663599263FC0C90D2996 /* FitLoopWatchWidgets */ = {
+			isa = PBXGroup;
+			children = (
+				5C36AD6A2140E00FEC89B49F /* FitLoopWatchWidgetsBundle.swift */,
+				1B96094B1C0200C90016D39F /* ComplicationWidget.swift */,
+				EB9BA3110C30116311B917BE /* Info.plist */,
+				906776A57974FE5FAEA3121D /* FitLoopWatchWidgets.entitlements */,
+			);
+			path = FitLoopWatchWidgets;
 			sourceTree = "<group>";
 		};
 		504EC3061FED79650016851F /* App */ = {
@@ -124,11 +180,13 @@
 				504EC3011FED79650016851F /* Frameworks */,
 				504EC3021FED79650016851F /* Resources */,
 				EE4C42F976C46E2A71939941 /* Embed Foundation Extensions */,
+				181DD7EF00632A332ED1B0F1 /* Embed Watch Content */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 				9EEE53AB8B9ADA1D2843598D /* PBXTargetDependency */,
+				B7A8AE63E67649CC57B4C42F /* PBXTargetDependency */,
 			);
 			name = App;
 			packageProductDependencies = (
@@ -155,6 +213,42 @@
 			productReference = 877E6BB30DBC058E0523AAC9 /* FitLoopWidgetsExtension.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		2EE9A51D51E0694C551A1D5B /* FitLoopWatch */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = EBB8B986FF29ECB9261187FC /* Build configuration list for PBXNativeTarget "FitLoopWatch" */;
+			buildPhases = (
+				D4763FF34F7638967F527764 /* Sources */,
+				A747145BBB8B95B13115A638 /* Frameworks */,
+				3877EE2C0E957D2843A8A0CA /* Resources */,
+				148A3505EABA28BFB3F8DA5B /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				107F8DABC9A79AF24F2044F6 /* PBXTargetDependency */,
+			);
+			name = FitLoopWatch;
+			productName = FitLoopWatch;
+			productReference = 0BE0C731F919A784F296096B /* FitLoopWatch.app */;
+			productType = "com.apple.product-type.application";
+		};
+		8C76B02ADEFA523592EA068E /* FitLoopWatchWidgetsExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 99CC74DEAB34FBA34B7D7F41 /* Build configuration list for PBXNativeTarget "FitLoopWatchWidgetsExtension" */;
+			buildPhases = (
+				91966F9CF5390611ACFA9C77 /* Sources */,
+				08A483F86C3A3E807B1B2CC3 /* Frameworks */,
+				2F0ED010251FCE983CB753E9 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = FitLoopWatchWidgetsExtension;
+			productName = FitLoopWatchWidgetsExtension;
+			productReference = 50EE59A92A17856FEEE9C770 /* FitLoopWatchWidgetsExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -170,6 +264,14 @@
 						ProvisioningStyle = Automatic;
 					};
 					7EE93CDA666444F29D33EF11 = {
+						CreatedOnToolsVersion = 9.2;
+						ProvisioningStyle = Automatic;
+					};
+					2EE9A51D51E0694C551A1D5B = {
+						CreatedOnToolsVersion = 9.2;
+						ProvisioningStyle = Automatic;
+					};
+					8C76B02ADEFA523592EA068E = {
 						CreatedOnToolsVersion = 9.2;
 						ProvisioningStyle = Automatic;
 					};
@@ -193,6 +295,8 @@
 			targets = (
 				504EC3031FED79650016851F /* App */,
 				7EE93CDA666444F29D33EF11 /* FitLoopWidgetsExtension */,
+				2EE9A51D51E0694C551A1D5B /* FitLoopWatch */,
+				8C76B02ADEFA523592EA068E /* FitLoopWatchWidgetsExtension */,
 			);
 		};
 /* End PBXProject section */
@@ -212,6 +316,20 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		C4C7096D3899644D3AFD2B38 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		3877EE2C0E957D2843A8A0CA /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		2F0ED010251FCE983CB753E9 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -241,6 +359,24 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		D4763FF34F7638967F527764 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9AB6C2FB27974B0161831516 /* FitLoopWatchApp.swift in Sources */,
+				1B0F55FDA84DF8CC101839B7 /* ContentView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		91966F9CF5390611ACFA9C77 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				82908800648FEDC5DDDAF0E8 /* FitLoopWatchWidgetsBundle.swift in Sources */,
+				BB11E11E73C5DF9760665998 /* ComplicationWidget.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -255,6 +391,28 @@
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		148A3505EABA28BFB3F8DA5B /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				7F6885C0D807714D31F15822 /* FitLoopWatchWidgetsExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		181DD7EF00632A332ED1B0F1 /* Embed Watch Content */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(CONTENTS_FOLDER_PATH)/Watch";
+			dstSubfolderSpec = 16;
+			files = (
+				6B36E5AFDDEF41F0236A2B2D /* FitLoopWatch.app in Embed Watch Content */,
+			);
+			name = "Embed Watch Content";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXContainerItemProxy section */
@@ -265,6 +423,20 @@
 			remoteGlobalIDString = 7EE93CDA666444F29D33EF11;
 			remoteInfo = FitLoopWidgetsExtension;
 		};
+		65CBB370B873D30333EF11F1 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 504EC2FC1FED79650016851F /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 8C76B02ADEFA523592EA068E;
+			remoteInfo = FitLoopWatchWidgetsExtension;
+		};
+		CA6E7C8A320814906EFF1228 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 504EC2FC1FED79650016851F /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 2EE9A51D51E0694C551A1D5B;
+			remoteInfo = FitLoopWatch;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXTargetDependency section */
@@ -272,6 +444,16 @@
 			isa = PBXTargetDependency;
 			target = 7EE93CDA666444F29D33EF11 /* FitLoopWidgetsExtension */;
 			targetProxy = E62CB667D99CD8518153E0A3 /* PBXContainerItemProxy */;
+		};
+		107F8DABC9A79AF24F2044F6 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 8C76B02ADEFA523592EA068E /* FitLoopWatchWidgetsExtension */;
+			targetProxy = 65CBB370B873D30333EF11F1 /* PBXContainerItemProxy */;
+		};
+		B7A8AE63E67649CC57B4C42F /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 2EE9A51D51E0694C551A1D5B /* FitLoopWatch */;
+			targetProxy = CA6E7C8A320814906EFF1228 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -500,6 +682,110 @@
 			};
 			name = Release;
 		};
+		A7DE53D00E2D3A14F9A5EEA3 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = FitLoopWatch/FitLoopWatch.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				INFOPLIST_FILE = FitLoopWatch/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lwychan.fitl00p.watchapp;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "watchsimulator watchos";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				VERSIONING_SYSTEM = "apple-generic";
+				WATCHOS_DEPLOYMENT_TARGET = 10.0;
+			};
+			name = Debug;
+		};
+		B89B15A755377A2956B86E16 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = FitLoopWatch/FitLoopWatch.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				INFOPLIST_FILE = FitLoopWatch/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lwychan.fitl00p.watchapp;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "watchsimulator watchos";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				VALIDATE_PRODUCT = YES;
+				VERSIONING_SYSTEM = "apple-generic";
+				WATCHOS_DEPLOYMENT_TARGET = 10.0;
+			};
+			name = Release;
+		};
+		E6D3750F19BCB6953A59965E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = FitLoopWatchWidgets/FitLoopWatchWidgets.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				INFOPLIST_FILE = FitLoopWatchWidgets/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lwychan.fitl00p.watchapp.widgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "watchsimulator watchos";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				VERSIONING_SYSTEM = "apple-generic";
+				WATCHOS_DEPLOYMENT_TARGET = 10.0;
+			};
+			name = Debug;
+		};
+		8DC85BF7AC8C38E9AD4D6760 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = FitLoopWatchWidgets/FitLoopWatchWidgets.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				INFOPLIST_FILE = FitLoopWatchWidgets/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lwychan.fitl00p.watchapp.widgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "watchsimulator watchos";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				VALIDATE_PRODUCT = YES;
+				VERSIONING_SYSTEM = "apple-generic";
+				WATCHOS_DEPLOYMENT_TARGET = 10.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -526,6 +812,24 @@
 			buildConfigurations = (
 				9515AE9FB0C2AD8E932B44FF /* Debug */,
 				5C6238A0C9F5E76E67E6709C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		EBB8B986FF29ECB9261187FC /* Build configuration list for PBXNativeTarget "FitLoopWatch" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A7DE53D00E2D3A14F9A5EEA3 /* Debug */,
+				B89B15A755377A2956B86E16 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		99CC74DEAB34FBA34B7D7F41 /* Build configuration list for PBXNativeTarget "FitLoopWatchWidgetsExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E6D3750F19BCB6953A59965E /* Debug */,
+				8DC85BF7AC8C38E9AD4D6760 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
