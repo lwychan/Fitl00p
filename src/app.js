@@ -108,6 +108,28 @@
   };
 })();
 
+/* Auth trace — small localStorage ring buffer of auth-related events
+   (sign-in errors, Face ID failures, sign-outs) that happen while no
+   user is signed in, when error_logs can't be written. Flushed to
+   error_logs (via console.warn) after the next successful login. Never
+   records passwords or tokens. */
+const AUTH_TRACE_KEY = 'fitl00p:authTrace';
+function authTrace(msg) {
+  try {
+    const arr = JSON.parse(localStorage.getItem(AUTH_TRACE_KEY) || '[]');
+    arr.push(`${new Date().toISOString()} ${String(msg).slice(0, 300)}`);
+    localStorage.setItem(AUTH_TRACE_KEY, JSON.stringify(arr.slice(-20)));
+  } catch {}
+}
+function flushAuthTrace() {
+  try {
+    const arr = JSON.parse(localStorage.getItem(AUTH_TRACE_KEY) || '[]');
+    if (!arr.length) return;
+    localStorage.removeItem(AUTH_TRACE_KEY);
+    console.warn('Auth trace before this login:', arr.join(' | '));
+  } catch {}
+}
+
 // Regenerated 2026-07-24 — the previous key here didn't match Netlify's
 // VAPID_PRIVATE, so every push got silently rejected by the push service
 // with VapidPkHashMismatch regardless of encryption being correct.
@@ -1036,6 +1058,7 @@ function initApp() {
     const { error } = await db.auth.signInWithPassword({ email, password });
 
     if (error) {
+      authTrace('password sign-in failed: ' + error.message);
       setBtn(el.btnSignin, false, 'Unlock');
       el.msgSignin.textContent = error.message;
       return;
@@ -1077,6 +1100,7 @@ function initApp() {
       const { username, password } = await Bio.getCredentials({ server: BIOMETRIC_SERVER });
       const { error } = await db.auth.signInWithPassword({ email: username, password });
       if (error) {
+        authTrace('Face ID sign-in rejected, saved credentials cleared: ' + error.message);
         // Stored credentials are stale (password changed elsewhere) —
         // clear them so this doesn't keep silently failing, and fall
         // back to the manual form with the real error visible.
@@ -1089,6 +1113,7 @@ function initApp() {
     } catch (err) {
       // Face ID cancelled/failed, or a real device error — not a login
       // failure, just quietly fall back to the manual form below.
+      authTrace('Face ID login failed: ' + (err.message || err));
       console.error('Biometric login failed:', err.message || err);
     }
     setBtn(btn, false, '🔓 Log in with Face ID');
@@ -1123,12 +1148,14 @@ function initApp() {
   //      determines "am I signed in" on next load is this local storage
   //      key, not whether the server-side revoke succeeded.
   async function handleSignOut() {
+    authTrace('manual sign-out');
     try {
       await Promise.race([
         db.auth.signOut(),
         new Promise((_, reject) => setTimeout(() => reject(new Error('signOut timed out')), 5000)),
       ]);
     } catch (err) {
+      authTrace('manual sign-out call failed: ' + (err?.message || err));
       console.error('Sign out call failed or timed out — clearing session locally anyway:', err?.message || err);
     }
     try {
@@ -1225,6 +1252,7 @@ async function handleAuthStateChange(event, session) {
       authHandling = true;
 
       currentUser = session.user;
+      flushAuthTrace();
 
       // Outer safety net: whatever happens below — a thrown error in
       // applyTheme, an unhandled rejection anywhere in the role-branch
@@ -1362,6 +1390,7 @@ async function handleAuthStateChange(event, session) {
       }
 
     } else if (event === 'SIGNED_OUT' || (event === 'INITIAL_SESSION' && !session)) {
+      authTrace(`${event} — currentUser was ${currentUser ? 'set' : 'unset'}`);
       authHandling  = false;
       authCompleted = false;
       currentUser   = null;
@@ -10805,8 +10834,30 @@ function hkSafe(promise, fallback) {
   });
 }
 
-async function runHealthKitSync({ days }) {
+let hkAutoAuthDone = false;
+
+async function runHealthKitSync({ days, interactive = false }) {
   if (!currentUser || !healthKitAvailable()) return;
+
+  // Automatic (app-open) syncs must not fire the permission request while
+  // the app isn't foregrounded — iOS fails it with "FrontBoard failed to
+  // launch com.apple.HealthPrivacyService", leaving every scope
+  // undetermined so all ~16 reads then fail too (seen in error_logs).
+  // Interactive callers (toggle, "Sync Health Now") are user gestures, so
+  // the app is by definition active and always get the full path.
+  if (!interactive) {
+    if (document.visibilityState !== 'visible') return;
+    if (!hkAutoAuthDone) {
+      try {
+        await requestHealthKitAuth();
+        hkAutoAuthDone = true;
+      } catch (err) {
+        // One log line, no reads — retried on the next app-open.
+        console.warn('HealthKit auto-sync skipped, authorization request failed:', err.message);
+        return;
+      }
+    }
+  }
 
   // Re-requesting on every sync (not just when the toggle first flips
   // on) is deliberate and safe: HealthKit only re-prompts for scopes
@@ -10817,7 +10868,9 @@ async function runHealthKitSync({ days }) {
   // requested for someone whose toggle was already on from before that
   // update shipped — confirmed live: exactly this caused every sync to
   // fail outright with "Authorization not determined" until this fix.
-  await requestHealthKitAuth().catch(err => console.error('HealthKit re-auth failed:', err.message));
+  if (interactive) {
+    await requestHealthKitAuth().catch(err => console.error('HealthKit re-auth failed:', err.message));
+  }
 
   const endDate = new Date();
   const startDate = new Date(endDate.getTime() - days * 86400000);
@@ -10928,7 +10981,7 @@ $('setHealthKitSyncEnabled')?.addEventListener('change', async (e) => {
       const { error } = await saveNsProfileFields({ healthkit_sync_enabled: true });
       if (error) throw error;
       showToast('Health sync enabled — backfilling the last 30 days…');
-      await runHealthKitSync({ days: 30 });
+      await runHealthKitSync({ days: 30, interactive: true });
       showToast('Health sync backfill complete.');
     } else {
       const { error } = await saveNsProfileFields({ healthkit_sync_enabled: false });
@@ -10947,7 +11000,7 @@ $('btnHealthKitSyncNow')?.addEventListener('click', async () => {
   const btn = $('btnHealthKitSyncNow');
   setBtn(btn, true, 'Sync Health Now', 'Syncing…');
   try {
-    await runHealthKitSync({ days: 7 });
+    await runHealthKitSync({ days: 7, interactive: true });
     showToast('Health synced.');
   } catch (err) {
     console.error('HealthKit manual sync failed:', err); // mirrored to error_logs — see installErrorLogging()
