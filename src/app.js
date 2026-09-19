@@ -8079,6 +8079,44 @@ async function fetchLatestWeightKg() {
 }
 const DIABETES_CACHE_MS = 4 * 60000; // avoid re-hitting Nightscout on every tab switch
 
+// Last successful Nightscout fetch, persisted so the Diabetes tab can paint
+// the latest known reading instantly on open (and after a reload) instead
+// of showing blanks while the network request runs — then update in place
+// once fresh data arrives. Per-user key so a shared device never shows one
+// account's readings to another.
+const DX_CACHE_KEY = 'fitl00p:dxCache:';
+function saveDxCache(body) {
+  try {
+    if (currentUser) localStorage.setItem(DX_CACHE_KEY + currentUser.id, JSON.stringify({ at: Date.now(), body }));
+  } catch { /* quota/private mode — the cache is only an optimisation */ }
+}
+function readDxCache() {
+  try {
+    const raw = currentUser && localStorage.getItem(DX_CACHE_KEY + currentUser.id);
+    const parsed = raw && JSON.parse(raw);
+    return parsed?.body && parsed?.at ? parsed : null;
+  } catch { return null; }
+}
+const dxClock = ms => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+// Instant paint from the saved data: only the Now card and glucose chart
+// (the display-only parts). The dose suggestion and forecast are NOT drawn
+// from saved data — an old reading must never drive a dosing suggestion —
+// and wait for the fresh fetch. The timestamp says plainly how old it is.
+function paintDxFromCache(cached) {
+  try {
+    const data = cached.body;
+    const settings = dxSettings();
+    const now = Date.now();
+    const input = { ...data, settings, activities: { workouts: [] }, macroMealLog: [] };
+    renderDxNow(DiabetesEngine.dosingContext(input, now), settings);
+    drawDxGlucoseChart(el.dxGlucoseChart, el.dxGlucoseChartEmpty, input, settings, now, [], []);
+    el.dxLastSync.textContent = `Saved reading from ${dxClock(cached.at)} — updating…`;
+  } catch (err) {
+    console.warn('Painting saved diabetes data failed:', err?.message || err);
+  }
+}
+
 async function fetchDiabetesData(force = false) {
   if (!profile?.diabetes_ns_url) return null;
 
@@ -8096,6 +8134,7 @@ async function fetchDiabetesData(force = false) {
 
   diabetesData = body;
   diabetesFetchedAt = Date.now();
+  saveDxCache(body);
   return body;
 }
 
@@ -8159,7 +8198,15 @@ async function loadDiabetes() {
   // synchronously, and the Weekly Insulin Health Check card has no
   // other trigger to re-render once a fire-and-forget fetch resolved
   // after the first paint.
-  dxLatestWeightKg = await fetchLatestWeightKg();
+  // Saved reading first, before any awaited network call below.
+  const cachedDx = diabetesData ? null : readDxCache();
+  if (cachedDx) paintDxFromCache(cachedDx);
+
+  // Bounded so a hung weight query can't hold up the glucose fetch behind it.
+  dxLatestWeightKg = await Promise.race([
+    fetchLatestWeightKg().catch(() => null),
+    new Promise(resolve => setTimeout(() => resolve(dxLatestWeightKg), 8000)),
+  ]);
 
   fetchMealPresets().then(presets => {
     dxMealPresets = presets;
@@ -8180,6 +8227,11 @@ async function loadDiabetes() {
     startDxAutoRefresh();
   } catch (err) {
     console.error('Diabetes sync error:', err);
+    if (cachedDx) {
+      // Keep the saved reading on screen rather than replacing it with an error.
+      el.dxLastSync.textContent = `Couldn't update — showing saved reading from ${dxClock(cachedDx.at)}`;
+      return;
+    }
     el.dxCorrectionBody.innerHTML = `<p class="empty-state" style="color:var(--red)">Couldn't reach Nightscout: ${escapeHtml(err.message)}</p>`;
     [el.dxForecastBody, el.dxPatternsBody, el.dxHealthBody, el.dxSensitivityBody].forEach(n => { if (n) n.innerHTML = ''; });
   }
