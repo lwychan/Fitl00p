@@ -1166,6 +1166,7 @@ function initApp() {
   async function handleSignOut() {
     disableHealthBackgroundDelivery(); // stop uploads for a signed-out user
     authTrace('manual sign-out');
+    try { localStorage.setItem(MANUAL_SIGNOUT_KEY, '1'); } catch {} // suppresses the automatic re-login
     try {
       await Promise.race([
         db.auth.signOut(),
@@ -1238,6 +1239,35 @@ function initApp() {
   });
 }
 
+// Stay logged in: if the session has gone missing (iOS cleared web storage,
+// a refresh token was invalidated, ...) but the user has saved their login
+// for Face ID, sign back in from the Keychain without showing the login
+// screen. Skipped after a deliberate sign-out, tried once per page load so
+// a stale saved password can't loop, and bounded so it can't hang boot.
+const MANUAL_SIGNOUT_KEY = 'fitl00p:manualSignOut';
+let autoReloginTried = false;
+async function tryAutoRelogin(event) {
+  if (autoReloginTried || !window.Capacitor?.isNativePlatform?.()) return false;
+  try { if (localStorage.getItem(MANUAL_SIGNOUT_KEY)) return false; } catch {}
+  autoReloginTried = true;
+  try {
+    const Bio = getBiometricPlugin();
+    const saved = await Bio.isCredentialsSaved({ server: BIOMETRIC_SERVER });
+    if (!saved.isSaved) return false;
+    const { username, password } = await Bio.getCredentials({ server: BIOMETRIC_SERVER });
+    authTrace(`session missing (${event}) — signing in again from saved credentials`);
+    const { error } = await Promise.race([
+      db.auth.signInWithPassword({ email: username, password }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timed out')), 15000)),
+    ]);
+    if (error) { authTrace('automatic re-login rejected: ' + error.message); return false; }
+    return true; // SIGNED_IN follows and takes it from here
+  } catch (err) {
+    authTrace('automatic re-login failed: ' + (err?.message || err));
+    return false;
+  }
+}
+
 async function handleAuthStateChange(event, session) {
     if ((event === 'SIGNED_IN' || event === 'INITIAL_SESSION') && session?.user) {
 
@@ -1269,6 +1299,7 @@ async function handleAuthStateChange(event, session) {
       authHandling = true;
 
       currentUser = session.user;
+      try { localStorage.removeItem(MANUAL_SIGNOUT_KEY); } catch {}
       flushAuthTrace();
 
       // Outer safety net: whatever happens below — a thrown error in
@@ -1408,6 +1439,7 @@ async function handleAuthStateChange(event, session) {
 
     } else if (event === 'SIGNED_OUT' || (event === 'INITIAL_SESSION' && !session)) {
       authTrace(`${event} — currentUser was ${currentUser ? 'set' : 'unset'}`);
+      if (await tryAutoRelogin(event)) return; // boot screen stays up until SIGNED_IN lands
       authHandling  = false;
       authCompleted = false;
       currentUser   = null;
