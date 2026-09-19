@@ -326,6 +326,10 @@ public class HealthBackgroundPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func status(_ call: CAPPluginCall) {
-        call.resolve(["enabled": HealthBackgroundSync.shared.isEnabled, "lastUpload": HealthBackgroundSync.shared.lastUpload])
+        // Also hands over (and clears) the native lifecycle log — see
+        // MainViewController.note — for the web app to forward to error_logs.
+        let lifecycle = UserDefaults.standard.stringArray(forKey: MainViewController.lifecycleKey) ?? []
+        UserDefaults.standard.removeObject(forKey: MainViewController.lifecycleKey)
+        call.resolve(["enabled": HealthBackgroundSync.shared.isEnabled, "lastUpload": HealthBackgroundSync.shared.lastUpload, "lifecycle": lifecycle])
     }
 }

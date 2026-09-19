@@ -122,6 +122,13 @@ function authTrace(msg) {
   } catch {}
 }
 function flushAuthTrace() {
+  // Native side's own event log (background/foreground, page probes) rides
+  // along, so a blank-screen report shows what iOS did.
+  try {
+    window.Capacitor?.Plugins?.HealthBackground?.status?.().then(st => {
+      if (st?.lifecycle?.length) console.warn('Native lifecycle:', st.lifecycle.join(' | '));
+    }).catch(() => {});
+  } catch {}
   try {
     const arr = JSON.parse(localStorage.getItem(AUTH_TRACE_KEY) || '[]');
     if (!arr.length) return;
@@ -14122,6 +14129,33 @@ document.addEventListener('visibilitychange', () => {
     return;
   }
   hiddenSince = null;
+});
+
+// Blank-screen guard: the page can end up with every screen hidden (nothing
+// to see but the black background). If that's still true a few seconds
+// after boot or after coming back to the app, reload — at most once per 30s
+// so it can never loop.
+function anyScreenVisible() {
+  return ['screenBoot', 'screenAuth', 'screenApp', 'screenOnboard', 'screenPending', 'screenRejected'].some(id => {
+    const node = document.getElementById(id);
+    return node && !node.hidden && getComputedStyle(node).display !== 'none';
+  });
+}
+function blankGuard(reason) {
+  setTimeout(() => {
+    if (document.visibilityState !== 'visible' || anyScreenVisible()) return;
+    try {
+      const last = Number(sessionStorage.getItem('fitl00p:blankReload') || 0);
+      if (Date.now() - last < 30000) return;
+      sessionStorage.setItem('fitl00p:blankReload', String(Date.now()));
+    } catch {}
+    authTrace('blank screen detected (' + reason + ') — reloading');
+    window.location.reload();
+  }, 3000);
+}
+blankGuard('boot');
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') blankGuard('resume');
 });
 
 const bootWatchdog = setTimeout(() => {
