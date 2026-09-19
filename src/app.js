@@ -14040,7 +14040,17 @@ const bootWatchdog = setTimeout(() => {
   ]).then(timedOut => {
     if (!timedOut) return;
     const cachedSession = readRawCachedSession();
-    if (!cachedSession) return; // nothing to fall back to — real event or bootWatchdog still covers this
+    if (!cachedSession) {
+      // No stored session at all, yet the client's first event is still
+      // pending (seen: a 10s+ spinner on a fresh install before the login
+      // screen). Nothing to render from cache, so show the sign-in form
+      // now rather than leave the spinner up — if the real event later
+      // turns out to carry a session, handleAuthStateChange still takes
+      // over normally since authCompleted is untouched here.
+      authTrace('no first auth event after 3s and no cached session — showing sign-in');
+      if (!authCompleted && !authHandling) { showScreen('auth'); hideBootScreen(); }
+      return;
+    }
     console.warn('Initial session check is slow — rendering from cached session/profile while it resolves.');
     handleAuthStateChange('INITIAL_SESSION', cachedSession);
   });
