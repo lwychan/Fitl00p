@@ -8167,6 +8167,9 @@ function paintDxFromCache(cached) {
     const input = { ...data, settings, activities: { workouts: [] }, macroMealLog: [] };
     renderDxNow(DiabetesEngine.dosingContext(input, now), settings);
     drawDxGlucoseChart(el.dxGlucoseChart, el.dxGlucoseChartEmpty, input, settings, now, [], []);
+    // The insulin-gap banner is only filled by the full render; until then
+    // keep it hidden rather than show an empty red bar.
+    if (el.dxGapBanner) el.dxGapBanner.hidden = true;
     el.dxLastSync.textContent = `Saved reading from ${dxClock(cached.at)} — updating…`;
   } catch (err) {
     console.warn('Painting saved diabetes data failed:', err?.message || err);
@@ -8901,9 +8904,26 @@ function closeDxMarkerDetail() {
 el.dxMarkerModalClose?.addEventListener('click', closeDxMarkerDetail);
 el.dxMarkerModal?.addEventListener('click', (e) => { if (e.target === el.dxMarkerModal) closeDxMarkerDetail(); });
 
+// Resolves to `fallback` if the promise rejects OR takes longer than `ms`,
+// so one slow/hung query can't hold up everything rendered after it.
+function withFallback(promise, ms, fallback) {
+  return Promise.race([
+    Promise.resolve(promise).catch(err => { console.warn('Diabetes tab fetch failed, using fallback:', err?.message || err); return fallback; }),
+    new Promise(resolve => setTimeout(() => resolve(fallback), ms)),
+  ]);
+}
+
 async function renderDiabetesTab(data) {
   const settings = dxSettings();
-  const [macroMealLog, workouts, wideData, insulinGaps] = await Promise.all([fetchMacroMealLog(), fetchDxWorkouts(), fetchDiabetesDataWide(), fetchInsulinGaps()]);
+  // The 31-day wide fetch is only needed by the regimen review at the very
+  // end, so it's no longer awaited here — it used to gate the whole tab, so
+  // a slow one left forecast/correction/patterns blank. Each of the rest is
+  // bounded too, falling back to empty rather than blocking the render.
+  const [macroMealLog, workouts, insulinGaps] = await Promise.all([
+    withFallback(fetchMacroMealLog(), 12000, []),
+    withFallback(fetchDxWorkouts(), 12000, []),
+    withFallback(fetchInsulinGaps(), 12000, []),
+  ]);
   // Tandem's Control-IQ can reduce or withhold a bolus entirely when
   // current BG is low, so Nightscout's own carbs figure for that meal
   // can be missing or wrong — the MFP-logged entry's own timestamp
@@ -8941,7 +8961,7 @@ async function renderDiabetesTab(data) {
   const accuracy = DiabetesEngine.forecastAccuracy(input, now);
   renderDxForecastAccuracy(accuracy);
 
-  const todaysMeals = await fetchTodaysDxMeals();
+  const todaysMeals = await withFallback(fetchTodaysDxMeals(), 12000, []);
   renderDxTodaysMeals(todaysMeals, data.boluses || []);
 
   // Two separate prescribed-profile tables at two different granularities
@@ -8972,6 +8992,7 @@ async function renderDiabetesTab(data) {
   // was starving it even when the person is simply active most days.
   // Falls back to the regular window if the wide fetch didn't return
   // anything (e.g. rate-limited) rather than showing nothing at all.
+  const wideData = await withFallback(fetchDiabetesDataWide(), 25000, null);
   const regimenSource = wideData || data;
   const wideCarbBoluses = DiabetesEngine.mergeMealCarbsIntoBoluses(regimenSource.boluses, macroMealLog);
   // pumpProfile lets the correction-factor comparison use each block's
@@ -8983,7 +9004,7 @@ async function renderDiabetesTab(data) {
 
   el.dxLastSync.textContent = `Last synced ${new Date(diabetesFetchedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
 
-  const activities = await fetchManualActivities();
+  const activities = await withFallback(fetchManualActivities(), 12000, []);
   renderDxActivityLog(activities);
 }
 
@@ -9354,7 +9375,12 @@ function stopDxAutoRefresh() {
 async function refreshDxLive() {
   if (!profile?.diabetes_ns_url) return;
   try {
-    const [data, macroMealLog, workouts, insulinGaps] = await Promise.all([fetchDiabetesData(true), fetchMacroMealLog(), fetchDxWorkouts(), fetchInsulinGaps()]);
+    const [data, macroMealLog, workouts, insulinGaps] = await Promise.all([
+      fetchDiabetesData(true),
+      withFallback(fetchMacroMealLog(), 12000, []),
+      withFallback(fetchDxWorkouts(), 12000, []),
+      withFallback(fetchInsulinGaps(), 12000, []),
+    ]);
     const settings = dxSettings();
     const now = Date.now();
     // Same MFP-supersedes-Nightscout-carbs correction as renderDiabetesTab
