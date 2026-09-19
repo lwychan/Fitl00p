@@ -17,6 +17,7 @@
 		50B271D11FEDC1A000F3C39B /* public in Resources */ = {isa = PBXBuildFile; fileRef = 50B271D01FEDC1A000F3C39B /* public */; };
 		9582B6832FE993A70072D4E8 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9582B6822FE993A50072D4E8 /* SceneDelegate.swift */; };
 		DE4802F65374A27A2D88169E /* ScoreWidgetBridgePlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 792495F96A97F1DB4DF0A09A /* ScoreWidgetBridgePlugin.swift */; };
+		B7C1D2E30A1B4C5D6E7F8091 /* HealthBackgroundSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6B0C1D20918A3B4C5D6E7F8 /* HealthBackgroundSync.swift */; };
 		ECBEC2DB4804D30FFB80E279 /* MainViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5739B3EA0322481FD4B56C93 /* MainViewController.swift */; };
 		35DCFF7A6504DEF0E6359457 /* FitLoopWidgetsBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2708ECB370B61E11380E1F31 /* FitLoopWidgetsBundle.swift */; };
 		88EDBBC2A7542CD757792DD0 /* ScoreWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = E134D43ADCA584E7129F57FC /* ScoreWidget.swift */; };
@@ -44,6 +45,7 @@
 		9582B6822FE993A50072D4E8 /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = "<group>"; };
 		958DCC722DB07C7200EA8C5F /* debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = debug.xcconfig; path = ../debug.xcconfig; sourceTree = SOURCE_ROOT; };
 		792495F96A97F1DB4DF0A09A /* ScoreWidgetBridgePlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScoreWidgetBridgePlugin.swift; sourceTree = "<group>"; };
+		A6B0C1D20918A3B4C5D6E7F8 /* HealthBackgroundSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthBackgroundSync.swift; sourceTree = "<group>"; };
 		5739B3EA0322481FD4B56C93 /* MainViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainViewController.swift; sourceTree = "<group>"; };
 		877E6BB30DBC058E0523AAC9 /* FitLoopWidgetsExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = FitLoopWidgetsExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		2708ECB370B61E11380E1F31 /* FitLoopWidgetsBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FitLoopWidgetsBundle.swift; sourceTree = "<group>"; };
@@ -161,6 +163,7 @@
 				504EC3071FED79650016851F /* AppDelegate.swift */,
 				792495F96A97F1DB4DF0A09A /* ScoreWidgetBridgePlugin.swift */,
 				5739B3EA0322481FD4B56C93 /* MainViewController.swift */,
+				A6B0C1D20918A3B4C5D6E7F8 /* HealthBackgroundSync.swift */,
 				504EC30B1FED79650016851F /* Main.storyboard */,
 				504EC30E1FED79650016851F /* Assets.xcassets */,
 				504EC3101FED79650016851F /* LaunchScreen.storyboard */,
@@ -351,6 +354,7 @@
 				9582B6832FE993A70072D4E8 /* SceneDelegate.swift in Sources */,
 				DE4802F65374A27A2D88169E /* ScoreWidgetBridgePlugin.swift in Sources */,
 				ECBEC2DB4804D30FFB80E279 /* MainViewController.swift in Sources */,
+				B7C1D2E30A1B4C5D6E7F8091 /* HealthBackgroundSync.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

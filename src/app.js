@@ -1148,6 +1148,7 @@ function initApp() {
   //      determines "am I signed in" on next load is this local storage
   //      key, not whether the server-side revoke succeeded.
   async function handleSignOut() {
+    disableHealthBackgroundDelivery(); // stop uploads for a signed-out user
     authTrace('manual sign-out');
     try {
       await Promise.race([
@@ -10836,6 +10837,37 @@ function hkSafe(promise, fallback) {
 
 let hkAutoAuthDone = false;
 
+// Background delivery (native HealthBackgroundSync.swift): iOS wakes the
+// app when new Health data lands and it uploads daily totals itself via
+// the health-ingest edge function. The native side can't use this web
+// view's Supabase session, so it gets a random per-user ingest token —
+// raw token stays on-device (localStorage + native), only its SHA-256
+// hash is stored server-side (health_ingest_tokens, own-row RLS).
+async function enableHealthBackgroundDelivery() {
+  const Plugin = window.Capacitor?.Plugins?.HealthBackground;
+  if (!Plugin || !currentUser) return;
+  try {
+    const storeKey = 'fitl00p:hkIngestToken:' + currentUser.id;
+    let token = null;
+    try { token = localStorage.getItem(storeKey); } catch {}
+    if (!token) {
+      token = Array.from(crypto.getRandomValues(new Uint8Array(32))).map(b => b.toString(16).padStart(2, '0')).join('');
+      const hashBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
+      const token_hash = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
+      const { error } = await db.from('health_ingest_tokens').upsert({ user_id: currentUser.id, token_hash }, { onConflict: 'user_id' });
+      if (error) throw error;
+      try { localStorage.setItem(storeKey, token); } catch {}
+    }
+    await Plugin.configure({ userId: currentUser.id, token, url: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY });
+  } catch (err) {
+    console.error('Enabling background Health delivery failed:', err?.message || err);
+  }
+}
+
+function disableHealthBackgroundDelivery() {
+  window.Capacitor?.Plugins?.HealthBackground?.disable?.().catch(() => {});
+}
+
 async function runHealthKitSync({ days, interactive = false }) {
   if (!currentUser || !healthKitAvailable()) return;
 
@@ -10871,6 +10903,10 @@ async function runHealthKitSync({ days, interactive = false }) {
   if (interactive) {
     await requestHealthKitAuth().catch(err => console.error('HealthKit re-auth failed:', err.message));
   }
+
+  // Sync running at all means the toggle is on — (re)register background
+  // delivery so it survives reinstalls and token/session changes.
+  enableHealthBackgroundDelivery();
 
   const endDate = new Date();
   const startDate = new Date(endDate.getTime() - days * 86400000);
@@ -10986,6 +11022,7 @@ $('setHealthKitSyncEnabled')?.addEventListener('change', async (e) => {
     } else {
       const { error } = await saveNsProfileFields({ healthkit_sync_enabled: false });
       if (error) throw error;
+      disableHealthBackgroundDelivery();
     }
   } catch (err) {
     console.error('HealthKit sync toggle failed:', err); // mirrored to error_logs — see installErrorLogging()

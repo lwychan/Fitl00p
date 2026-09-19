@@ -7,7 +7,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        // Override point for customization after application launch.
+        // Re-register HealthKit observer queries so background delivery
+        // works when iOS launches the app just to deliver new Health data.
+        HealthBackgroundSync.shared.start()
         return true
     }
 
