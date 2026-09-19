@@ -4703,3 +4703,5 @@ body { font-size: 15px; }
   background: var(--surface-2);
   color: var(--ink-1);
 }
+
+.tab-btn[hidden] { display: none; }

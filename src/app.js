@@ -1509,13 +1509,12 @@ function loadUIState() {
   } catch { return null; }
 }
 
-// Diabetes no longer has its own tab/view — its whole section (el.viewDiabetes)
-// now lives nested inside viewDashboard's DOM (see index.html) and is shown
-// or hidden as a unit by applyDiabetesTabVisibility() below, independent of
-// which top-level view is active. It's deliberately NOT listed here, so the
-// "hide every view" sweep at the top of navigateTo() never touches it.
+// Diabetes is its own tab again (it briefly lived nested inside the
+// dashboard, which made its heavy load run on every app open). Its tab
+// button is shown/hidden by applyDiabetesTabVisibility() below.
 const views = {
   dashboard:    el.viewDashboard,
+  diabetes:     el.viewDiabetes,
   workout:      el.viewWorkout,
   history:      el.viewHistory,
   settings:     el.viewSettings,
@@ -1525,6 +1524,7 @@ const views = {
 
 const viewLoaders = {
   dashboard:    loadDashboard,
+  diabetes:     loadDiabetes,
   workout:      loadWorkout,
   history:      loadHistory,
   settings:     loadSettings,
@@ -1532,28 +1532,25 @@ const viewLoaders = {
   logFood:      loadLogFood,
 };
 
-// Shows/hides the whole nested Diabetes section on the dashboard whenever
-// profile.diabetes_enabled is explicitly false — off by default only ever
-// means "never asked" (NOT NULL column defaulting true), so nobody currently
-// using it loses access silently. Gemma's profile has this off, so her
-// dashboard never renders the diabetes section (or the Workout tab's
-// glucose-impact card) at all.
+// Shows/hides the Diabetes tab button whenever profile.diabetes_enabled is
+// explicitly false — off by default only ever means "never asked" (NOT NULL
+// column defaulting true), so nobody currently using it loses access
+// silently. Gemma's profile has this off, so she never sees the tab (or the
+// Workout tab's glucose-impact card) at all.
 function applyDiabetesTabVisibility() {
   const enabled = profile?.diabetes_enabled !== false;
-  if (el.viewDiabetes) el.viewDiabetes.hidden = !enabled;
+  const tabBtn = $('tabDiabetes');
+  if (tabBtn) tabBtn.hidden = !enabled;
   if (el.dxWorkoutImpactCard) el.dxWorkoutImpactCard.hidden = !enabled;
 }
 
 async function navigateTo(name) {
-  // Diabetes is no longer its own destination — it's a section nested
-  // inside the dashboard now (see applyDiabetesTabVisibility). Any old
-  // caller still asking for it just lands on the dashboard instead.
-  if (name === 'diabetes') name = 'dashboard';
-  // Live auto-refresh and Simple view only make sense while the dashboard
-  // (which the diabetes section now lives inside) is actually on screen —
-  // leaving it stops the poll and force-closes the overlay so it can never
-  // linger on top of whichever tab is opened next.
-  if (name !== 'dashboard') {
+  // Someone without diabetes tracking enabled has no such tab.
+  if (name === 'diabetes' && profile?.diabetes_enabled === false) name = 'dashboard';
+  // Live auto-refresh and Simple view only make sense while the diabetes tab
+  // is actually on screen — leaving it stops the poll and force-closes the
+  // overlay so it can never linger on top of whichever tab is opened next.
+  if (name !== 'diabetes') {
     stopDxAutoRefresh();
     closeDxSimpleMode();
   }
@@ -1564,7 +1561,7 @@ async function navigateTo(name) {
   // Hide all views including the admin screen
   Object.values(views).forEach(v => { if (v) v.hidden = true; });
   // Only update tab bar for main tabs — admin screen has no tab
-  const mainTabs = ['dashboard','workout','history','settings'];
+  const mainTabs = ['dashboard','diabetes','workout','history','settings'];
   document.querySelectorAll('.tab-btn').forEach(b => {
     b.classList.toggle('tab-btn--active', b.dataset.view === name);
   });
@@ -1578,17 +1575,6 @@ async function navigateTo(name) {
       await viewLoaders[name]();
     } catch (loaderErr) {
       console.error(`Loader error for view "${name}":`, loaderErr?.message || loaderErr);
-    }
-  }
-  // The diabetes section is nested inside the dashboard's DOM (not a
-  // separate view), so it needs its own load call alongside loadDashboard()
-  // above rather than going through viewLoaders. applyDiabetesTabVisibility()
-  // already hid it entirely for Gemma (diabetes_enabled === false).
-  if (name === 'dashboard' && profile?.diabetes_enabled !== false) {
-    try {
-      await loadDiabetes();
-    } catch (loaderErr) {
-      console.error('Loader error for diabetes section:', loaderErr?.message || loaderErr);
     }
   }
   saveUIState(name);
@@ -8916,6 +8902,72 @@ function closeDxMarkerDetail() {
 el.dxMarkerModalClose?.addEventListener('click', closeDxMarkerDetail);
 el.dxMarkerModal?.addEventListener('click', (e) => { if (e.target === el.dxMarkerModal) closeDxMarkerDetail(); });
 
+/* Heavy diabetes-engine calls run in a Web Worker (dx-worker.js) so they
+   can't freeze the UI. If workers aren't available or one errors, each call
+   falls back to running on the main thread, deferred a tick, so nothing
+   breaks — it's just no longer off-thread. */
+let dxWorker = null;
+let dxWorkerBroken = false;
+let dxCallSeq = 0;
+const dxPendingCalls = new Map();
+
+function dxWorkerInit() {
+  if (dxWorker || dxWorkerBroken || typeof Worker === 'undefined') return dxWorker;
+  try {
+    dxWorker = new Worker('dx-worker.js');
+    dxWorker.onmessage = (e) => {
+      const { id, result, error } = e.data || {};
+      const call = dxPendingCalls.get(id);
+      if (!call) return;
+      dxPendingCalls.delete(id);
+      if (error) call.reject(new Error(error)); else call.resolve(result);
+    };
+    dxWorker.onerror = (e) => {
+      console.warn('Diabetes worker failed, falling back to main thread:', e?.message || 'error');
+      dxWorkerBroken = true;
+      dxWorker = null;
+      dxPendingCalls.forEach(call => call.fallback());
+      dxPendingCalls.clear();
+    };
+  } catch (err) {
+    console.warn('Diabetes worker unavailable:', err?.message || err);
+    dxWorkerBroken = true;
+    dxWorker = null;
+  }
+  return dxWorker;
+}
+
+function engineAsync(fn, ...args) {
+  const runHere = () => new Promise((resolve, reject) => {
+    setTimeout(() => { try { resolve(DiabetesEngine[fn](...args)); } catch (e) { reject(e); } }, 0);
+  });
+  const worker = dxWorkerInit();
+  if (!worker) return runHere();
+  return new Promise((resolve, reject) => {
+    const id = ++dxCallSeq;
+    dxPendingCalls.set(id, { resolve, reject, fallback: () => runHere().then(resolve, reject) });
+    try { worker.postMessage({ id, fn, args }); }
+    catch (err) { dxPendingCalls.delete(id); runHere().then(resolve, reject); }
+  });
+}
+
+// Forecast accuracy replays the forecast hundreds of times — tens of seconds
+// of CPU even off-thread — so the result is kept for 12 hours instead of
+// recomputed on every render.
+const DX_ACCURACY_KEY = 'fitl00p:dxAccuracy:';
+const DX_ACCURACY_TTL_MS = 12 * 3600000;
+function readDxAccuracyCache() {
+  try {
+    const raw = currentUser && localStorage.getItem(DX_ACCURACY_KEY + currentUser.id);
+    const parsed = raw && JSON.parse(raw);
+    return parsed?.result && Date.now() - parsed.at < DX_ACCURACY_TTL_MS ? parsed.result : null;
+  } catch { return null; }
+}
+function saveDxAccuracyCache(result) {
+  try { if (currentUser) localStorage.setItem(DX_ACCURACY_KEY + currentUser.id, JSON.stringify({ at: Date.now(), result })); } catch {}
+}
+let dxAccuracyRunning = false;
+
 // Resolves to `fallback` if the promise rejects OR takes longer than `ms`,
 // so one slow/hung query can't hold up everything rendered after it.
 function withFallback(promise, ms, fallback) {
@@ -8955,23 +9007,30 @@ async function renderDiabetesTab(data) {
   const ctx = DiabetesEngine.dosingContext(input, now);
   renderDxNow(ctx, settings);
 
-  const forecast = DiabetesEngine.hypoForecast2h(input, now);
+  const forecast = await engineAsync('hypoForecast2h', input, now);
   renderDxForecast(forecast, settings);
 
   const resolved = DiabetesEngine.resolveCorrections(data.corrections, data.glucoseHistory, carbBoluses, now);
   const factor = DiabetesEngine.personalCorrectionFactor(resolved);
-  const retrospective = DiabetesEngine.retrospectiveCorrection(input, now);
+  const retrospective = await engineAsync('retrospectiveCorrection', input, now);
   const suggestion = DiabetesEngine.suggestCorrectionDose(ctx, factor, carbBoluses, data.corrections, now, retrospective.discrepancy, input);
   renderDxCorrection(suggestion);
 
-  const patterns = DiabetesEngine.analyzePatterns(input, now);
-  renderDxPatterns(patterns);
+  renderDxPatterns(await engineAsync('analyzePatterns', input, now));
+  renderDxHealth(await engineAsync('insulinHealthCheck', input, now));
 
-  const health = DiabetesEngine.insulinHealthCheck(input, now);
-  renderDxHealth(health);
-
-  const accuracy = DiabetesEngine.forecastAccuracy(input, now);
-  renderDxForecastAccuracy(accuracy);
+  // Accuracy is the expensive one: show the cached result immediately if
+  // there is one, and (re)compute in the background only when it's stale.
+  const cachedAccuracy = readDxAccuracyCache();
+  if (cachedAccuracy) {
+    renderDxForecastAccuracy(cachedAccuracy);
+  } else if (!dxAccuracyRunning) {
+    dxAccuracyRunning = true;
+    engineAsync('forecastAccuracy', input, now)
+      .then(result => { saveDxAccuracyCache(result); renderDxForecastAccuracy(result); })
+      .catch(err => console.warn('Forecast accuracy failed:', err?.message || err))
+      .finally(() => { dxAccuracyRunning = false; });
+  }
 
   const todaysMeals = await withFallback(fetchTodaysDxMeals(), 12000, []);
   renderDxTodaysMeals(todaysMeals, data.boluses || []);
@@ -8987,7 +9046,7 @@ async function renderDiabetesTab(data) {
   const prescribed = DiabetesEngine.prescribedRegimenTable(profile?.diabetes_pump_profile);
   const hasThuProfile = !!profile?.diabetes_pump_profile?.thu;
 
-  const sensitivity = DiabetesEngine.sensitivityMap(input, now);
+  const sensitivity = await engineAsync('sensitivityMap', input, now);
   renderDxSensitivity(sensitivity, prescribedSensitivity);
 
   // Reviewed per actually-active pump profile (Nightscout's own switch
@@ -9011,7 +9070,7 @@ async function renderDiabetesTab(data) {
   // REAL per-time-of-day programmed factor instead of one flat setting —
   // see correctionFactorByWindowReview's comment for why that matters.
   const regimenInput = { ...regimenSource, boluses: wideCarbBoluses, settings, activities: { workouts }, macroMealLog, pumpProfile: profile?.diabetes_pump_profile };
-  const regimenByProfile = DiabetesEngine.regimenReviewByProfile(regimenInput, now);
+  const regimenByProfile = await engineAsync('regimenReviewByProfile', regimenInput, now);
   renderDxRegimen(regimenByProfile, profile?.diabetes_pump_profile, hasThuProfile);
 
   el.dxLastSync.textContent = `Last synced ${new Date(diabetesFetchedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
@@ -9409,11 +9468,11 @@ async function refreshDxLive() {
 
     const resolved = DiabetesEngine.resolveCorrections(data.corrections, data.glucoseHistory, carbBoluses, now);
     const factor = DiabetesEngine.personalCorrectionFactor(resolved);
-    const retrospective = DiabetesEngine.retrospectiveCorrection(input, now);
+    const retrospective = await engineAsync('retrospectiveCorrection', input, now);
     const suggestion = DiabetesEngine.suggestCorrectionDose(ctx, factor, carbBoluses, data.corrections, now, retrospective.discrepancy, input);
     renderDxCorrection(suggestion);
 
-    const forecast = DiabetesEngine.hypoForecast2h(input, now);
+    const forecast = await engineAsync('hypoForecast2h', input, now);
     renderDxForecast(forecast, settings);
 
     if (el.screenDxSimple && !el.screenDxSimple.hidden) {
@@ -9439,7 +9498,7 @@ document.addEventListener('visibilitychange', () => {
   // diabetes tracking is enabled at all (applyDiabetesTabVisibility),
   // not whether the dashboard (its ancestor) is the tab actually on
   // screen right now.
-  } else if (el.viewDashboard && !el.viewDashboard.hidden && el.viewDiabetes && !el.viewDiabetes.hidden) {
+  } else if (el.viewDiabetes && !el.viewDiabetes.hidden) {
     startDxAutoRefresh();
     refreshDxLive();
   }
