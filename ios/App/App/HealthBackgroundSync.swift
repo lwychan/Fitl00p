@@ -195,6 +195,10 @@ final class HealthBackgroundSync {
     // Same grouping rules as hkSleepSessionsByWakeDate in app.js: segments
     // less than 90 min apart form one session, attributed to the local date
     // of its last segment; only asleep stages count (not inBed/awake).
+    // Raw values of HKCategoryValueSleepAnalysis.asleepCore/Deep/REM — those
+    // constants are iOS 16+ only and this app still supports iOS 15.
+    private enum Stage { static let core = 3, deep = 4, rem = 5 }
+
     private static func sleepByWakeDate(_ samples: [HKCategorySample], fmt: DateFormatter) -> [String: [String: Any]] {
         let sorted = samples.sorted { $0.startDate < $1.startDate }
         var sessions: [[HKCategorySample]] = []
@@ -223,9 +227,9 @@ final class HealthBackgroundSync {
             guard let wake = segs.map({ $0.endDate }).max(), let begin = segs.map({ $0.startDate }).min() else { continue }
             out[fmt.string(from: wake)] = [
                 "sleep_total_hrs": round2(hours(nil)),
-                "sleep_deep_hrs": round2(hours(HKCategoryValueSleepAnalysis.asleepDeep.rawValue)),
-                "sleep_rem_hrs": round2(hours(HKCategoryValueSleepAnalysis.asleepREM.rawValue)),
-                "sleep_core_hrs": round2(hours(HKCategoryValueSleepAnalysis.asleepCore.rawValue)),
+                "sleep_deep_hrs": round2(hours(Stage.deep)),
+                "sleep_rem_hrs": round2(hours(Stage.rem)),
+                "sleep_core_hrs": round2(hours(Stage.core)),
                 "sleep_start": iso.string(from: begin),
                 "sleep_end": iso.string(from: wake),
             ]
