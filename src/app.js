@@ -13943,6 +13943,30 @@ function showBootConnectivityError() {
 // reset button on the boot screen is available the whole time
 // regardless, for anyone who doesn't want to wait that long.
 let bootResolved = false;
+
+// HealthKit background delivery makes iOS launch the app process in the
+// background; the page then boots there and iOS freezes it mid-load
+// (network calls die with it), leaving a half-loaded page the next time
+// the user actually opens the app. If this page started hidden, do one
+// clean reload the first time it becomes visible. Also leaves a trace of
+// long-hidden resumes for diagnosing blank-page reports.
+let reloadOnFirstVisible = document.visibilityState !== 'visible';
+let hiddenSince = null;
+authTrace('page boot, visibilityState=' + document.visibilityState);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') { hiddenSince = Date.now(); return; }
+  if (reloadOnFirstVisible) {
+    reloadOnFirstVisible = false;
+    authTrace('page booted in background — reloading on first visible');
+    window.location.reload();
+    return;
+  }
+  if (hiddenSince && Date.now() - hiddenSince > 5 * 60000) {
+    authTrace('resumed after ' + Math.round((Date.now() - hiddenSince) / 60000) + ' min hidden');
+  }
+  hiddenSince = null;
+});
+
 const bootWatchdog = setTimeout(() => {
   if (!bootResolved) showBootConnectivityError();
 }, 90000);
