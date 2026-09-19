@@ -1080,6 +1080,8 @@ function initApp() {
       return;
     }
 
+    markVerified();
+
     // Offer biometric login for next time — best-effort, never blocks
     // the actual sign-in. Only asks when biometrics are available AND
     // nothing's already saved (re-asking every login would be annoying;
@@ -1126,6 +1128,7 @@ function initApp() {
       }
       // Success: onAuthStateChange fires SIGNED_IN and handles the
       // screen transition, same as the manual-password path above.
+      if (!error) markVerified();
     } catch (err) {
       // Face ID cancelled/failed, or a real device error — not a login
       // failure, just quietly fall back to the manual form below.
@@ -1251,10 +1254,25 @@ function initApp() {
 // screen. Skipped after a deliberate sign-out, tried once per page load so
 // a stale saved password can't loop, and bounded so it can't hang boot.
 const MANUAL_SIGNOUT_KEY = 'fitl00p:manualSignOut';
+// Monthly recertification: silent sign-in from the Keychain is allowed for
+// 30 days after the last time the user themself signed in (password or
+// Face ID tap). After that the login screen shows, and a single Face ID tap
+// there recertifies for another 30 days.
+const LAST_VERIFIED_KEY = 'fitl00p:lastVerified';
+const RECERTIFY_AFTER_MS = 30 * 86400000;
+function markVerified() { try { localStorage.setItem(LAST_VERIFIED_KEY, String(Date.now())); } catch {} }
+function recertificationDue() {
+  try {
+    const raw = localStorage.getItem(LAST_VERIFIED_KEY);
+    if (!raw) { markVerified(); return false; } // existing installs start their 30 days now
+    return Date.now() - Number(raw) > RECERTIFY_AFTER_MS;
+  } catch { return false; }
+}
 let autoReloginTried = false;
 async function tryAutoRelogin(event) {
   if (autoReloginTried || !window.Capacitor?.isNativePlatform?.()) return false;
   try { if (localStorage.getItem(MANUAL_SIGNOUT_KEY)) return false; } catch {}
+  if (recertificationDue()) { authTrace('30-day recertification due — showing sign-in'); return false; }
   autoReloginTried = true;
   try {
     const Bio = getBiometricPlugin();
@@ -14207,7 +14225,12 @@ const bootWatchdog = setTimeout(() => {
   // SIGNED_OUT (the cached tokens were actually dead, not just slow to
   // check), the existing SIGNED_OUT branch bounces back to the sign-in
   // screen exactly as it already does today.
-  const FIRST_AUTH_EVENT_FALLBACK_MS = 3000;
+  // Short on purpose: with a saved session the app should open straight into
+  // the last known screen (rendered from the cached profile) rather than sit
+  // on a spinner while the auth client checks/refreshes the token over the
+  // network — the real event, whenever it lands, just confirms it quietly
+  // (or bounces to sign-in / silent re-login if the session turned out dead).
+  const FIRST_AUTH_EVENT_FALLBACK_MS = 350;
   Promise.race([
     firstAuthEventPromise.then(() => false),
     new Promise(resolve => setTimeout(() => resolve(true), FIRST_AUTH_EVENT_FALLBACK_MS)),
@@ -14221,8 +14244,14 @@ const bootWatchdog = setTimeout(() => {
       // now rather than leave the spinner up — if the real event later
       // turns out to carry a session, handleAuthStateChange still takes
       // over normally since authCompleted is untouched here.
-      authTrace('no first auth event after 3s and no cached session — showing sign-in');
-      if (!authCompleted && !authHandling) { showScreen('auth'); hideBootScreen(); }
+      // The short fallback above is for the cached-session case; with nothing
+      // cached, give the real event (and the silent re-login it can trigger)
+      // the original ~3s before falling back to the sign-in form.
+      setTimeout(() => {
+        if (authCompleted || authHandling || resolveFirstAuthEvent === null) return; // event arrived / handled
+        authTrace('no first auth event after 3s and no cached session — showing sign-in');
+        showScreen('auth'); hideBootScreen();
+      }, 2650);
       return;
     }
     console.warn('Initial session check is slow — rendering from cached session/profile while it resolves.');
