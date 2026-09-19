@@ -49,34 +49,36 @@ class MainViewController: CAPBridgeViewController {
         probe(wv, attemptsLeft: 2)
     }
 
+    // Two plain evaluateJavaScript calls (the async-function API misfired on
+    // a healthy page): one confirms the DOM has content and schedules a
+    // requestAnimationFrame, a second, shortly after, confirms that frame
+    // actually ran — i.e. the page is painting. A failure gets one retry
+    // before any reload, since a reload of a working page costs more than
+    // waiting a few seconds.
     private func probe(_ wv: WKWebView, attemptsLeft: Int) {
-        var answered = false
-        let js = "return await new Promise(r => requestAnimationFrame(() => r(document.body ? document.body.childElementCount : 0)));"
-        wv.callAsyncJavaScript(js, arguments: [:], in: nil, in: .page) { [weak self] result in
-            answered = true
-            switch result {
-            case .failure(let error):
-                Self.note("probe failed (\(error.localizedDescription)) — reloading")
+        let retry = { [weak self] (why: String) in
+            if attemptsLeft > 1 {
+                Self.note("probe: (why), re-checking")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { self?.probe(wv, attemptsLeft: attemptsLeft - 1) }
+            } else {
+                Self.note("probe: (why) — reloading")
                 DispatchQueue.main.async { wv.reload() }
-            case .success(let value):
-                if (value as? Int ?? 0) == 0 {
-                    if attemptsLeft > 1 {
-                        Self.note("probe: empty page, re-checking")
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { self?.probe(wv, attemptsLeft: attemptsLeft - 1) }
-                    } else {
-                        Self.note("probe: page still empty — reloading")
-                        DispatchQueue.main.async { wv.reload() }
-                    }
-                } else {
-                    Self.note("probe ok")
+            }
+        }
+        var answered = false
+        let js = "window.__flRaf = false; requestAnimationFrame(function () { window.__flRaf = true; }); document.body ? document.body.childElementCount : 0"
+        wv.evaluateJavaScript(js) { result, error in
+            answered = true
+            if let error = error { retry("script error ((error.localizedDescription))"); return }
+            if (result as? Int ?? 0) == 0 { retry("empty page"); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                wv.evaluateJavaScript("window.__flRaf === true") { painted, _ in
+                    if (painted as? Bool) == true { Self.note("probe ok") } else { retry("page not painting") }
                 }
             }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 6) {
-            if !answered {
-                Self.note("probe timed out (page not rendering) — reloading")
-                wv.reload()
-            }
+            if !answered { retry("no answer from page") }
         }
     }
 }

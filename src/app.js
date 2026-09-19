@@ -1424,7 +1424,12 @@ async function handleAuthStateChange(event, session) {
               elW.picker.hidden = true;
               elW.active.hidden = false;
             } else {
-              await navigateTo(targetTab);
+              // Don't hold the spinner for the whole first-tab data load — on
+              // a slow connection that was 10+ seconds of loading screen. Give
+              // it up to 1.5s (usually enough when cached data exists), then
+              // reveal the shell and let the load finish in place.
+              const firstLoad = navigateTo(targetTab).catch(err => console.error('Initial view load failed:', err?.message || err));
+              await Promise.race([firstLoad, new Promise(r => setTimeout(r, 1500))]);
             }
             hideBootScreen();
 
