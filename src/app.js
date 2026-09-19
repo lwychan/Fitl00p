@@ -1169,7 +1169,9 @@ function initApp() {
     try { localStorage.setItem(MANUAL_SIGNOUT_KEY, '1'); } catch {} // suppresses the automatic re-login
     try {
       await Promise.race([
-        db.auth.signOut(),
+        // scope 'local': the default ('global') revokes every session this
+        // account has on any device, not just this one.
+        db.auth.signOut({ scope: 'local' }),
         new Promise((_, reject) => setTimeout(() => reject(new Error('signOut timed out')), 5000)),
       ]);
     } catch (err) {
@@ -1185,7 +1187,11 @@ function initApp() {
   }
 
   el.btnSignout.addEventListener('click', handleSignOut);
-  el.btnSignoutHeader?.addEventListener('click', handleSignOut);
+  // The header icon sits right next to the refresh icon and used to sign
+  // out on a single tap — a mis-tap meant a login screen. Ask first.
+  el.btnSignoutHeader?.addEventListener('click', () => {
+    if (confirm('Sign out of fitl00p?')) handleSignOut();
+  });
   $('btnForgetBiometric')?.addEventListener('click', async () => {
     if (!confirm("Forget your saved Face ID login? You'll need to type your password next time.")) return;
     try {
