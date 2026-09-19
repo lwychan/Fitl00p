@@ -130,6 +130,22 @@ function flushAuthTrace() {
   } catch {}
 }
 
+/* Global fetch timeout. iOS freezes the page when the app is backgrounded;
+   a request in flight at that moment never settles — no response, no
+   error — so anything awaiting it (a tab's data load, the meal list) sits
+   half-rendered forever. Every request without its own abort signal now
+   fails after 45s instead, which lands in the existing catch handlers.
+   Installed before the Supabase client is created so its fetches get it. */
+(function installFetchTimeout() {
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = (input, init = {}) => {
+    if (init.signal || (typeof Request !== 'undefined' && input instanceof Request)) return nativeFetch(input, init);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 45000);
+    return nativeFetch(input, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer));
+  };
+})();
+
 // Regenerated 2026-07-24 — the previous key here didn't match Netlify's
 // VAPID_PRIVATE, so every push got silently rejected by the push service
 // with VapidPkHashMismatch regardless of encryption being correct.
@@ -13961,8 +13977,15 @@ document.addEventListener('visibilitychange', () => {
     window.location.reload();
     return;
   }
+  // Away a while: whatever was loading when iOS froze the page is dead
+  // and the data is stale anyway — a clean reload is the reliable reset.
+  // The session is in localStorage, the last tab is restored from
+  // fitl00p:ui_state, and an in-progress workout is persisted separately.
   if (hiddenSince && Date.now() - hiddenSince > 5 * 60000) {
-    authTrace('resumed after ' + Math.round((Date.now() - hiddenSince) / 60000) + ' min hidden');
+    authTrace('resumed after ' + Math.round((Date.now() - hiddenSince) / 60000) + ' min hidden — reloading');
+    hiddenSince = null;
+    window.location.reload();
+    return;
   }
   hiddenSince = null;
 });
