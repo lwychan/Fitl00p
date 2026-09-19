@@ -10858,7 +10858,7 @@ async function enableHealthBackgroundDelivery() {
       if (error) throw error;
       try { localStorage.setItem(storeKey, token); } catch {}
     }
-    await Plugin.configure({ userId: currentUser.id, token, url: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY });
+    await Plugin.configure({ userId: currentUser.id, token, url: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY, ignoreWeight: !!profile?.manual_weight_logging });
   } catch (err) {
     console.error('Enabling background Health delivery failed:', err?.message || err);
   }

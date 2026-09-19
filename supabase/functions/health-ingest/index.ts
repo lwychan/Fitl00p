@@ -26,8 +26,12 @@ const HEADERS = {
 
 const ALLOWED = new Set([
   'steps', 'distance_km', 'active_energy_kcal', 'heart_rate_avg', 'resting_hr',
-  'hrv_ms', 'exercise_mins', 'resting_energy_kcal',
+  'hrv_ms', 'exercise_mins', 'resting_energy_kcal', 'weight_kg',
+  'sleep_total_hrs', 'sleep_deep_hrs', 'sleep_rem_hrs', 'sleep_core_hrs',
 ]);
+const ALLOWED_TS = new Set(['sleep_start', 'sleep_end']);
+const WORKOUT_NUM = ['duration_min', 'active_energy_kcal', 'distance_km'];
+const ISO_TS = /^\d{4}-\d{2}-\d{2}T[\d:.]+(Z|[+-]\d{2}:?\d{2})$/;
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: HEADERS });
@@ -43,7 +47,7 @@ Deno.serve(async (req: Request) => {
   if (!SB_URL || !SB_SERVICE) return json({ error: 'Server not configured' }, 500);
 
   const token = req.headers.get('x-ingest-token') || '';
-  let body: { userId?: string; rows?: Record<string, unknown>[] };
+  let body: { userId?: string; rows?: Record<string, unknown>[]; workouts?: Record<string, unknown>[] };
   try { body = await req.json(); } catch { return json({ error: 'Bad JSON' }, 400); }
   const userId = body.userId;
   if (!token || !userId || !/^[0-9a-f-]{36}$/i.test(userId) || !Array.isArray(body.rows)) {
@@ -67,10 +71,22 @@ Deno.serve(async (req: Request) => {
     const out: Record<string, unknown> = { user_id: userId, log_date: date, synced_at: now };
     for (const [k, v] of Object.entries(r)) {
       if (ALLOWED.has(k) && typeof v === 'number' && Number.isFinite(v)) out[k] = v;
+      else if (ALLOWED_TS.has(k) && typeof v === 'string' && ISO_TS.test(v)) out[k] = v;
     }
     return [out];
   });
-  if (!rows.length) return json({ upserted: 0 });
+
+  const workouts = (Array.isArray(body.workouts) ? body.workouts : []).slice(0, 50).flatMap(w => {
+    const ext = String(w.external_id ?? '');
+    if (!ext || ext.length > 100 || !ISO_TS.test(String(w.started_at)) || !ISO_TS.test(String(w.ended_at))) return [];
+    const out: Record<string, unknown> = {
+      user_id: userId, external_id: ext, workout_type: String(w.workout_type ?? 'other').slice(0, 50),
+      started_at: w.started_at, ended_at: w.ended_at, synced_at: now,
+    };
+    for (const k of WORKOUT_NUM) { const v = w[k]; if (typeof v === 'number' && Number.isFinite(v)) out[k] = v; }
+    return [out];
+  });
+  if (!rows.length && !workouts.length) return json({ upserted: 0 });
 
   // One request per row, not a bulk array: PostgREST fills a key that's
   // missing from some rows of a bulk upsert with NULL, which would wipe
@@ -83,5 +99,13 @@ Deno.serve(async (req: Request) => {
     });
     if (!up.ok) return json({ error: 'Upsert failed', detail: (await up.text()).slice(0, 300) }, 500);
   }
-  return json({ upserted: rows.length });
+  for (const w of workouts) {
+    const up = await fetch(`${SB_URL}/rest/v1/apple_health_workouts?on_conflict=user_id,external_id`, {
+      method: 'POST',
+      headers: { ...svc, 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify(w),
+    });
+    if (!up.ok) return json({ error: 'Workout upsert failed', detail: (await up.text()).slice(0, 300) }, 500);
+  }
+  return json({ upserted: rows.length, workouts: workouts.length });
 });
