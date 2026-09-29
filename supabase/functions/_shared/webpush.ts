@@ -154,11 +154,81 @@ async function encryptPayload(payloadBytes: Uint8Array<ArrayBuffer>, p256dhB64: 
   return concatBytes(header, ciphertext);
 }
 
+// ── Native iOS push (APNs) ─────────────────────────────────────────
+// The TestFlight app runs in a WKWebView, which has no PushManager, so it
+// can never hold a Web Push subscription. Instead app.js registers through
+// @capacitor/push-notifications and stores the APNs device token in
+// push_subscriptions as endpoint `apns:<hex token>` (p256dh/auth_key are
+// NOT NULL, so they hold the placeholder 'apns'). sendWebPush() below
+// routes those rows here, so every notify-* caller works unchanged.
+//
+// Secrets: APNS_KEY_ID, APNS_TEAM_ID, APNS_P8 (full .p8 file contents,
+// PEM armour included), APNS_TOPIC (bundle id). TestFlight/App Store
+// builds are distribution-signed (aps-environment=production), so the
+// default host is production; APNS_HOST overrides for a dev build.
+const APNS_KEY_ID  = Deno.env.get('APNS_KEY_ID');
+const APNS_TEAM_ID = Deno.env.get('APNS_TEAM_ID');
+const APNS_P8      = Deno.env.get('APNS_P8');
+const APNS_TOPIC   = Deno.env.get('APNS_TOPIC') || 'com.lwychan.fitl00p';
+const APNS_HOST    = Deno.env.get('APNS_HOST') || 'https://api.push.apple.com';
+
+// APNs rejects provider tokens refreshed more than once per 20 min and
+// expires them after 60 — reuse one per isolate for 50 min.
+let apnsJwt: { token: string; issuedAt: number } | null = null;
+
+async function getApnsJwt(): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  if (apnsJwt && now - apnsJwt.issuedAt < 50 * 60) return apnsJwt.token;
+
+  const pem = APNS_P8!.replace(/-----[^-]+-----/g, '').replace(/\s+/g, '');
+  const der = base64urlToBytes(pem); // accepts standard base64 too
+  const key = await crypto.subtle.importKey(
+    'pkcs8', der, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']
+  );
+  const enc = new TextEncoder();
+  const header  = bytesToBase64url(enc.encode(JSON.stringify({ alg: 'ES256', kid: APNS_KEY_ID })));
+  const claims  = bytesToBase64url(enc.encode(JSON.stringify({ iss: APNS_TEAM_ID, iat: now })));
+  const sigInput = `${header}.${claims}`;
+  const sig = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key, enc.encode(sigInput));
+  const token = `${sigInput}.${bytesToBase64url(new Uint8Array(sig))}`;
+  apnsJwt = { token, issuedAt: now };
+  return token;
+}
+
+async function sendApns(
+  deviceToken: string,
+  payload: { title?: string; body?: string; url?: string; tag?: string }
+): Promise<{ status: number; body: string }> {
+  if (!APNS_KEY_ID || !APNS_TEAM_ID || !APNS_P8) {
+    throw new Error('APNs keys not configured');
+  }
+  const res = await fetch(`${APNS_HOST}/3/device/${deviceToken}`, {
+    method: 'POST',
+    headers: {
+      authorization: `bearer ${await getApnsJwt()}`,
+      'apns-topic': APNS_TOPIC,
+      'apns-push-type': 'alert',
+      'apns-priority': '10',
+      ...(payload.tag ? { 'apns-collapse-id': payload.tag.slice(0, 64) } : {}),
+    },
+    body: JSON.stringify({
+      aps: { alert: { title: payload.title || 'fitl00p', body: payload.body || '' }, sound: 'default' },
+      url: payload.url || '/',
+    }),
+  });
+  const text = await res.text();
+  if (!res.ok) console.error(`APNs ${res.status} for token ${deviceToken.slice(0, 8)}…: ${text}`);
+  return { status: res.status, body: text };
+}
+
 // subscription: { endpoint, keys: { p256dh, auth } }
 async function sendWebPush(
   subscription: { endpoint: string; keys: { p256dh: string; auth: string } },
   payload: unknown
 ): Promise<{ status: number; body: string }> {
+  if (subscription.endpoint.startsWith('apns:')) {
+    return sendApns(subscription.endpoint.slice(5), payload as any);
+  }
   if (!VAPID_PUBLIC || !VAPID_PRIVATE) {
     throw new Error('VAPID keys not configured');
   }

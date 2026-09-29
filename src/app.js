@@ -10545,8 +10545,49 @@ async function subscribeToPush() {
   }
 }
 
+// Native iOS: WKWebView has no PushManager, so Web Push can never work
+// inside the TestFlight app. Register with APNs through
+// @capacitor/push-notifications instead and store the device token as an
+// `apns:<token>` row — _shared/webpush.ts's sendWebPush() routes those to
+// APNs, so every notify-* function reaches the native app unchanged.
+// p256dh/auth_key are NOT NULL Web Push fields; 'apns' is a placeholder.
+let nativePushListenersAdded = false;
+async function registerNativePush() {
+  const Push = window.Capacitor?.Plugins?.PushNotifications;
+  if (!Push || !currentUser) return;
+  try {
+    if (!nativePushListenersAdded) {
+      nativePushListenersAdded = true;
+      await Push.addListener('registration', async ({ value }) => {
+        if (!currentUser || !value) return;
+        const { error } = await db.from('push_subscriptions').upsert({
+          user_id:    currentUser.id,
+          endpoint:   'apns:' + value,
+          p256dh:     'apns',
+          auth_key:   'apns',
+          user_agent: navigator.userAgent.slice(0, 200),
+        }, { onConflict: 'user_id,endpoint' });
+        if (error) console.error('APNs token save failed:', error.message);
+        else console.log('APNs token saved');
+      });
+      await Push.addListener('registrationError', err => {
+        console.error('APNs registration failed:', err?.error || JSON.stringify(err));
+      });
+    }
+    let perm = await Push.checkPermissions();
+    if (perm.receive === 'prompt' || perm.receive === 'prompt-with-rationale') {
+      perm = await Push.requestPermissions();
+    }
+    if (perm.receive !== 'granted') return;
+    await Push.register(); // token arrives via the 'registration' listener
+  } catch (err) {
+    console.error('Native push setup failed:', err.message);
+  }
+}
+
 // Ask for notification permission after login (with a small delay so UI is settled)
 async function requestNotificationPermission() {
+  if (window.Capacitor?.isNativePlatform?.()) return registerNativePush();
   if (!('Notification' in window)) return;
   if (Notification.permission === 'granted') {
     await subscribeToPush();
