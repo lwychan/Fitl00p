@@ -33,3 +33,12 @@ alter table public.hevy_sync_state enable row level security; -- service role on
 
 -- Schedule (run after deploying hevy-sync):
 -- select cron.schedule('hevy-sync', '*/15 * * * *', $$select private.invoke_edge_fn('hevy-sync')$$);
+
+-- Applied 2026-09-29. API key stored in Vault as 'hevy_api_key' (value not
+-- recorded here), read by hevy-sync through this service-role-only RPC:
+create or replace function public.get_hevy_api_key()
+returns text language sql security definer set search_path = ''
+as $$ select decrypted_secret from vault.decrypted_secrets where name = 'hevy_api_key' limit 1 $$;
+revoke execute on function public.get_hevy_api_key() from public, anon, authenticated;
+grant execute on function public.get_hevy_api_key() to service_role;
+-- Cron scheduled 2026-09-29 (job 'hevy-sync', */15).

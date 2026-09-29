@@ -4,14 +4,18 @@
 // hevy_workouts (deletes too). Summary only — duration, exercise/set
 // counts, volume — for the workout history list; Hevy keeps set detail.
 //
-// Single linked account for now: HEVY_API_KEY (Hevy Pro key) belongs to
-// HEVY_USER_ID. The cursor lives in hevy_sync_state; with no row yet the
-// first run backfills the whole Hevy history.
+// Single linked account for now: the Hevy Pro API key belongs to Lewis —
+// user id hardcoded like GEMMA_USER_ID in _shared/webpush.ts, overridable
+// with HEVY_USER_ID. The key lives in Supabase Vault ('hevy_api_key'),
+// read through the service-role-only RPC get_hevy_api_key(); a
+// HEVY_API_KEY function secret takes precedence if ever set. The cursor
+// lives in hevy_sync_state; with no row yet the first run backfills the
+// whole Hevy history.
 
 const SB_URL       = Deno.env.get('SUPABASE_URL');
 const SB_SERVICE   = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
-const HEVY_API_KEY = Deno.env.get('HEVY_API_KEY');
-const HEVY_USER_ID = Deno.env.get('HEVY_USER_ID');
+let   HEVY_API_KEY = Deno.env.get('HEVY_API_KEY');
+const HEVY_USER_ID = Deno.env.get('HEVY_USER_ID') || 'cae63d3e-df60-4415-8a43-64748b6591c3';
 
 const HEVY_BASE = 'https://api.hevyapp.com/v1';
 
@@ -65,6 +69,9 @@ function summarise(w: any, userId: string) {
 
 Deno.serve(async () => {
   if (!SB_URL || !SB_SERVICE) return new Response('Supabase env vars missing', { status: 500 });
+  if (!HEVY_API_KEY) {
+    HEVY_API_KEY = await sb('/rest/v1/rpc/get_hevy_api_key', { method: 'POST', body: '{}' }).catch(() => null) || undefined;
+  }
   if (!HEVY_API_KEY || !HEVY_USER_ID) return new Response('Hevy not configured — skipping');
 
   const runStartedAt = new Date().toISOString();
