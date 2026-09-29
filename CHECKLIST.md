@@ -1,37 +1,43 @@
 # FitLoop iOS (Capacitor) — manual steps
 
-## ⏸ Where this was left off (Sep 15, 2026)
+## Current state (Sep 29, 2026)
 
-All pushed to GitHub (`main`), nothing built or deployed yet:
+- **Netlify-independent.** The app bundles `src/` locally (no
+  `server.url` in `capacitor.config.ts`) and every backend call goes to
+  **Supabase Edge Functions** (18 deployed from `supabase/functions/`).
+  `src/netlify/` is legacy — only the web PWA and `privacy.html` still
+  live on `fitl00p.netlify.app`.
+- **Scheduled notifications** run from Supabase `pg_cron` + `pg_net`
+  (10 jobs calling `private.invoke_edge_fn`). Verified Sep 29: 0 failed
+  runs in 3 days, all HTTP 200. Per-user timing/toggles live in
+  `notification_prefs` / `metric_alert_rules` (Settings tab).
+- **Native extras:** HealthKit sync + background delivery
+  (`health-ingest`), Face ID login + Keychain silent re-login, offline
+  write queue, Home/Lock Screen widgets, watchOS app + complications.
+- **Remote logging:** client errors land in the `error_logs` table.
+- Builds: Codemagic "FitLoop iOS - TestFlight", manual start on `main`,
+  auto-distributes to the internal "Family" group.
 
-- **Native app independence**: `capacitor.config.ts` no longer points at
-  `fitl00p.netlify.app` — the app now bundles `src/` directly, so a bad
-  Netlify deploy/outage can't stop it from launching. `app.js`'s Netlify
-  Functions calls now use an absolute `NETLIFY_ORIGIN` (native-only) so
-  they still reach the backend.
-- **CORS fix**: 6 functions (`push-send`, `health-apikey`,
-  `admin-approve`, `food-photo-estimate`, `food-text-estimate`,
-  `share-food-log`) were missing headers needed for cross-origin POST —
-  fixed, but **needs a Netlify deploy to take effect** (blocked on your
-  Netlify credits resetting).
-- **Boot-hang fix**: `getSession()` could deadlock forever on a valid
-  cached session — confirmed live on the real site, confirmed fixed via
-  a local test harness. Also needs a Netlify deploy to reach the current
-  build; will also be included once you rebuild natively.
-- **Onboarding bug fix**: skipping the "optional" weight goal in
-  onboarding was silently impossible — fixed.
-- **Still pending, once you're back**: deploy `src/` to Netlify (all the
-  above), then trigger a new Codemagic build so the *native* app also
-  gets these fixes (the version currently on your phone still points at
-  the live site). A leftover Supabase test user
-  (`fitl00p.qa.test@example.com`) exists from testing — fine to leave or
-  ask to delete.
+## Open items
 
+- [ ] **Anthropic API credit balance is empty** — `notify-ai-coach`
+      failed for both users on Sep 29 with "credit balance is too low";
+      food photo/text estimates will fail the same way. Top up at
+      console.anthropic.com → Plans & Billing. (`ANTHROPIC_API_KEY`
+      itself is set.)
+- [ ] Delete orphan Edge Function **`notify-steps-check`** (dashboard →
+      Edge Functions, or `supabase functions delete notify-steps-check`).
+      Retired by `notify-metric-check` in d4f22ca; no cron job or code
+      calls it.
+- [ ] Delete leftover QA user `fitl00p.qa.test@example.com` (Auth →
+      Users). Only test rows attached; all cascade on delete.
+- [ ] Confirm Gemma accepted her App Store Connect invite, then add her
+      to the "Family" TestFlight group (see section 3).
+- [ ] Native APNs push (section 2) — still only Web Push/VAPID.
+- [ ] Sharper 1024px app icon before any public release (section 4).
 
-Everything Claude Code can do from a Windows machine without Xcode/macOS is
-done (see "What's already set up" below). Everything below requires either
-macOS/Xcode, the Apple Developer Portal web UI, a paid account, or a decision
-only you can make — none of it was attempted.
+Sections below are the original setup log (Sep 14–15) — kept for
+reference; the "Current state" above supersedes anything that conflicts.
 
 ## 1. Apple Developer Program
 
@@ -71,7 +77,11 @@ only you can make — none of it was attempted.
       (Name, Email, Health, Fitness, Photos or Videos, User ID, Device ID),
       each marked "Used for App Functionality" + "Linked to the user's
       identity", none used for tracking.
-- [ ] **Privacy Policy URL** — drafted at `src/privacy.html`, not live yet
+- [ ] **Privacy Policy URL** — now live (HTTP 200 at
+      `https://fitl00p.netlify.app/privacy.html`, checked Sep 29); only
+      needs entering in App Store Connect + Publish on the privacy label.
+      Only matters for external testing / App Store release.
+      Original note: drafted at `src/privacy.html`, not live yet
       (needs including in your next manual Netlify deploy). Once live at
       `https://fitl00p.netlify.app/privacy.html`, tell me and I'll enter the
       URL in App Store Connect and click **Publish** on the App Privacy
