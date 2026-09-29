@@ -5932,6 +5932,31 @@ function renderStrengthHistoryCard(s, appleMatch) {
   </div>`;
 }
 
+// A workout logged in Hevy (synced by the hevy-sync Edge Function) —
+// same one-card summary shape as a fitl00p strength session. Hevy stores
+// weights in kg regardless of the app's display unit.
+function renderHevyHistoryCard(h, appleMatch) {
+  const dateStr = fmtDate(String(h.started_at).slice(0, 10));
+  const timeStr = new Date(h.started_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const parts = appleMatch ? workoutStatParts(appleMatch) : [];
+  if (!appleMatch && h.duration_min) parts.push(`<span class="last-workout-stat">⏱️ ${h.duration_min} min</span>`);
+  if (h.exercise_count) parts.push(`<span class="last-workout-stat">🏋️ ${h.exercise_count} exercise${h.exercise_count === 1 ? '' : 's'}</span>`);
+  if (h.set_count) parts.push(`<span class="last-workout-stat">🔢 ${h.set_count} set${h.set_count === 1 ? '' : 's'}</span>`);
+  if (Number(h.volume_kg) > 0) parts.push(`<span class="last-workout-stat">📦 ${Math.round(h.volume_kg).toLocaleString()} kg volume</span>`);
+  const names = (h.exercises || []).map(e => e.title).filter(Boolean);
+  return `<div class="wh-card">
+    <div class="wh-card__head">
+      <span class="wh-card__date">${dateStr} · ${timeStr}</span>
+      <span class="split-tag split-tag--Other">${escapeHtml('🏋️ ' + (h.title || 'Hevy workout'))}</span>
+    </div>
+    <div class="wh-card__body">
+      ${parts.length ? `<div class="last-workout-stats">${parts.join('')}</div>` : '<p class="empty-state">No stats recorded</p>'}
+      ${names.length ? `<p class="wh-card__sub">${escapeHtml(names.join(' · '))}</p>` : ''}
+      <p class="wh-card__sub">via Hevy</p>
+    </div>
+  </div>`;
+}
+
 // A non-strength (or Watch-only, never logged as a fitl00p routine)
 // activity — an Apple Health workout or a manual_activities row (e.g. a
 // walk Apple never recorded at all). Both use the same card shape as a
@@ -5978,7 +6003,7 @@ async function loadWorkoutHistory() {
   const splitFilterActive = !!elW.historyFilterSplit.value;
   if (splitFilterActive) sessionsQ = sessionsQ.eq('split_type', elW.historyFilterSplit.value);
 
-  const [sessionsRes, appleRes, manualRes] = await Promise.all([
+  const [sessionsRes, appleRes, manualRes, hevyRes] = await Promise.all([
     sessionsQ,
     splitFilterActive ? Promise.resolve({ data: [] }) : db.from('apple_health_workouts')
       .select('id, workout_type, started_at, ended_at, active_energy_kcal, total_energy_kcal, avg_heart_rate, max_heart_rate, distance_km')
@@ -5990,14 +6015,24 @@ async function loadWorkoutHistory() {
       .eq('user_id', currentUser.id)
       .order('started_at', { ascending: false })
       .limit(60),
+    // Summaries synced from Hevy by the hevy-sync Edge Function. Hevy has
+    // no fitl00p split types, so like Apple workouts they drop out of a
+    // split-filtered view.
+    splitFilterActive ? Promise.resolve({ data: [] }) : db.from('hevy_workouts')
+      .select('id, title, started_at, ended_at, duration_min, exercise_count, set_count, volume_kg, exercises')
+      .eq('user_id', currentUser.id)
+      .order('started_at', { ascending: false })
+      .limit(40),
   ]);
 
   if (sessionsRes.error) console.error('loadWorkoutHistory (workout_sessions) error:', sessionsRes.error.message);
+  if (hevyRes.error) console.error('loadWorkoutHistory (hevy_workouts) error:', hevyRes.error.message);
   const sessions = sessionsRes.data || [];
   const appleWorkouts = appleRes.data || [];
   const manualActivities = manualRes.data || [];
+  const hevyWorkouts = hevyRes.data || [];
 
-  if (!sessions.length && !appleWorkouts.length && !manualActivities.length) {
+  if (!sessions.length && !appleWorkouts.length && !manualActivities.length && !hevyWorkouts.length) {
     elW.workoutHistoryList.innerHTML = '<p class="empty-state">No activity logged yet.</p>';
     renderStrengthProgress([]);
     return;
@@ -6011,6 +6046,18 @@ async function loadWorkoutHistory() {
       sortTime: new Date(s.started_at || `${s.session_date}T12:00:00`).getTime(),
       html: renderStrengthHistoryCard(s, matched),
     };
+  });
+
+  // Hevy also writes each workout to Apple Health, so the same session
+  // arrives twice — pair it with the overlapping Apple workout (for the
+  // Watch's kcal/HR) and show one card.
+  hevyWorkouts.forEach(h => {
+    const hs = new Date(h.started_at).getTime();
+    const he = h.ended_at ? new Date(h.ended_at).getTime() : hs + (h.duration_min || 60) * 60000;
+    const matched = appleWorkouts.find(w => !consumedAppleIds.has(w.id) &&
+      new Date(w.started_at).getTime() < he && new Date(w.ended_at).getTime() > hs);
+    if (matched) consumedAppleIds.add(matched.id);
+    items.push({ sortTime: hs, html: renderHevyHistoryCard(h, matched) });
   });
 
   appleWorkouts
