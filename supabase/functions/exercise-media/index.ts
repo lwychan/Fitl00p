@@ -7,6 +7,9 @@
 Deno.serve(async (req: Request) => {
   const headers = {
     'Access-Control-Allow-Origin': '*',
+    // Needed for the app's preflighted, Authorization-bearing request.
+    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Content-Type': 'application/json',
     'Cache-Control': 'public, max-age=86400',
   };

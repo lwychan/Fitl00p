@@ -17,6 +17,11 @@
 
 const HEADERS = {
   'Access-Control-Allow-Origin': '*',
+  // The app sends Authorization (anon key) from its bundled origin, which
+  // makes the request preflighted — without these the preflight returned
+  // 204 but the browser never sent the real GET (same bug as diabetes-sync).
+  'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
   'Content-Type': 'application/json',
   'Cache-Control': 'public, max-age=300',
 };

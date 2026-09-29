@@ -18,7 +18,7 @@ const CORS_HEADERS = {
   // browser rejects the OPTIONS preflight for any POST carrying a
   // Content-Type header, and the real request never sends.
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
   'Content-Type': 'application/json',
 };
 
