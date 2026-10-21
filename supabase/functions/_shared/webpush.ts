@@ -221,8 +221,45 @@ async function sendApns(
   return { status: res.status, body: text };
 }
 
+// A push service saying a subscription is permanently gone: Web Push 404/410,
+// or APNs 410 / 400 BadDeviceToken. Such rows can never succeed again, so
+// they're deleted rather than retried (and counted as failures) forever.
+function isGone(endpoint: string, r: { status: number; body: string }) {
+  if (endpoint.startsWith('apns:')) {
+    return r.status === 410 || (r.status === 400 && r.body.includes('BadDeviceToken'));
+  }
+  return r.status === 404 || r.status === 410;
+}
+
+async function pruneSubscription(endpoint: string) {
+  const url = Deno.env.get('SUPABASE_URL');
+  const key = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+  if (!url || !key) return;
+  try {
+    await fetch(`${url}/rest/v1/push_subscriptions?endpoint=eq.${encodeURIComponent(endpoint)}`, {
+      method: 'DELETE',
+      headers: { apikey: key, authorization: `Bearer ${key}` },
+    });
+  } catch (e) {
+    console.error('prune failed:', (e as Error).message);
+  }
+}
+
 // subscription: { endpoint, keys: { p256dh, auth } }
 async function sendWebPush(
+  subscription: { endpoint: string; keys: { p256dh: string; auth: string } },
+  payload: unknown
+): Promise<{ status: number; body: string }> {
+  const r = await sendOne(subscription, payload);
+  if (r.status < 200 || r.status >= 300) {
+    const kind = subscription.endpoint.startsWith('apns:') ? 'apns' : new URL(subscription.endpoint).host;
+    console.error(`push ${r.status} via ${kind}: ${r.body.slice(0, 200)}`);
+    if (isGone(subscription.endpoint, r)) await pruneSubscription(subscription.endpoint);
+  }
+  return r;
+}
+
+async function sendOne(
   subscription: { endpoint: string; keys: { p256dh: string; auth: string } },
   payload: unknown
 ): Promise<{ status: number; body: string }> {
