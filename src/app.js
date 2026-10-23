@@ -259,8 +259,6 @@ const el = {
   viewSettings:     $('viewSettings'),
   viewWorkoutAdmin: $('viewWorkoutAdmin'),
   viewLogFood:      $('viewLogFood'),
-  btnOpenLogFood:   $('btnOpenLogFood'),
-  btnLogFoodBack:   $('btnLogFoodBack'),
   mtCals:           $('mtCals'),
   mtProtein:        $('mtProtein'),
   mtCarbs:          $('mtCarbs'),
@@ -1529,6 +1527,8 @@ async function navigateTo(name) {
     stopDxAutoRefresh();
     closeDxSimpleMode();
   }
+  // The Food tab's barcode scanner holds the camera; release it on leaving.
+  if (name !== 'logFood') stopBarcodeScan();
   // Re-checked on every navigation, not just at login — profile can change
   // underneath an already-open session (e.g. the background refresh below
   // for a returning device with a stale cached profile, or a settings save).
@@ -1536,7 +1536,7 @@ async function navigateTo(name) {
   // Hide all views including the admin screen
   Object.values(views).forEach(v => { if (v) v.hidden = true; });
   // Only update tab bar for main tabs — admin screen has no tab
-  const mainTabs = ['dashboard','diabetes','workout','history','settings'];
+  const mainTabs = ['dashboard','logFood','diabetes','workout','history','settings'];
   document.querySelectorAll('.tab-btn').forEach(b => {
     b.classList.toggle('tab-btn--active', b.dataset.view === name);
   });
@@ -12328,11 +12328,6 @@ async function loadLogFood() {
   await Promise.all([renderLfTodayTotals(), renderLfTodayList(), renderLfFavorites()]);
 }
 
-el.btnOpenLogFood?.addEventListener('click', () => navigateTo('logFood'));
-el.btnLogFoodBack?.addEventListener('click', () => {
-  stopBarcodeScan();
-  navigateTo('dashboard');
-});
 
 /* ── Mode switching ──────────────────────────────────────── */
 function selectLfMode(mode) {

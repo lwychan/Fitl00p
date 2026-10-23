@@ -508,7 +508,6 @@
         <div class="card card--today">
           <div class="card-eyebrow">
             <span>Today <span id="dTodayDate" class="card-eyebrow-date"></span></span>
-            <button class="btn btn--primary btn--small" id="btnOpenLogFood" type="button">+ Log food</button>
           </div>
           <div class="today-metrics" id="dTodayMetrics">
             <div class="today-metric">
@@ -1717,8 +1716,7 @@
   <div class="view" id="viewLogFood" hidden>
     <div class="view-inner">
       <div class="view-head">
-        <button type="button" class="btn btn--ghost btn--small" id="btnLogFoodBack">← Back</button>
-        <h1 class="view-title" style="margin:0;font-size:20px">Log food</h1>
+        <h1 class="view-title" style="margin:0;font-size:20px">Food</h1>
       </div>
 
       <div class="card">
@@ -1879,6 +1877,9 @@
   <nav class="tab-bar" id="tabBar">
     <button class="tab-btn tab-btn--active" data-view="dashboard" aria-label="Dashboard" title="Dashboard">
       <span class="tab-btn__pill"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></span>
+    </button>
+    <button class="tab-btn" data-view="logFood" id="tabFood" aria-label="Food" title="Food">
+      <span class="tab-btn__pill"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3v8M5 3v5a2 2 0 0 0 4 0V3M7 11v10"/><path d="M17 21V3c-2 1.5-3 4-3 7v4h3"/></svg></span>
     </button>
     <button class="tab-btn" data-view="diabetes" id="tabDiabetes" aria-label="Diabetes" title="Diabetes" hidden>
       <span class="tab-btn__pill"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3c3.2 4 6 7 6 10.2A6 6 0 0 1 6 13.2C6 10 8.8 7 12 3z"/></svg></span>
