@@ -70,6 +70,9 @@ workflows:
       - name: Install npm dependencies
         script: npm ci
 
+      - name: Run tests (dose maths + shared-copy check)
+        script: npm test
+
       - name: Sync Capacitor (copies src/ into the iOS project, updates Package.swift)
         script: npx cap sync ios
 
