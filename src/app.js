@@ -3948,14 +3948,6 @@ function pushScoresToWidgets({ recovery, sleep, strain, netCalories, steps, step
     updatedAt: new Date().toISOString(),
   }).catch(err => console.warn('pushScoresToWidgets failed:', err));
 }
-async function loadLog() {
-  const unit = BODY_WEIGHT_UNIT;
-  el.logWeightUnit.textContent = unit;
-  el.logDate.value = el.logDate.value || todayISO();
-
-  await fetchAndRenderLog(el.logDate.value);
-}
-
 async function fetchAndRenderLog(date) {
   if (!currentUser) return;
   const { data } = await db
