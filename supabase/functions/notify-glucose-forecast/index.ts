@@ -30,7 +30,7 @@
 // header comment for why importing one function's index.ts from another
 // isn't safe under Deno.serve.
 
-import { sendWebPush, GEMMA_USER_ID } from '../_shared/webpush.ts';
+import { sendToSubscriptions, sbFetch, GEMMA_USER_ID } from '../_shared/webpush.ts';
 import DiabetesEngine from '../_shared/diabetes-engine.js';
 import { fetchNightscoutInput } from '../_shared/nightscout-fetch.ts';
 
@@ -46,13 +46,6 @@ const TIER_ORDER = ['minimal', 'low', 'moderate', 'high'];
 // so it's reserved for the tiers that actually cross the line.
 const NOTIFY_MIN_TIER_INDEX = TIER_ORDER.indexOf('moderate');
 
-async function sbFetch(path: string) {
-  const res = await fetch(`${SB_URL}${path}`, {
-    headers: { apikey: SB_SERVICE!, Authorization: `Bearer ${SB_SERVICE}` },
-  });
-  if (!res.ok) return { ok: false, data: null };
-  return { ok: true, data: await res.json() };
-}
 async function sbUpsert(path: string, body: unknown) {
   await fetch(`${SB_URL}${path}`, {
     method: 'POST',
@@ -160,13 +153,9 @@ Deno.serve(async () => {
 
       const { title, body } = buildMessage(forecast);
       const payload = { title, body, url: '/', tag: `glucose-forecast-${direction}` };
-      let anySent = false;
-      for (const s of userSubs) {
-        try {
-          const r = await sendWebPush({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth_key } }, payload);
-          if (r.status >= 200 && r.status < 300) { sent++; anySent = true; } else failed++;
-        } catch { failed++; }
-      }
+      const pushed = await sendToSubscriptions(userSubs, payload);
+      sent += pushed.sent; failed += pushed.failed;
+      const anySent = pushed.sent > 0;
       if (anySent) {
         await sbUpsert('/rest/v1/glucose_alerts', {
           user_id: userId, direction, tier: forecast.tier,

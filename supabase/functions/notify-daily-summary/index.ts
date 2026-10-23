@@ -9,19 +9,12 @@
 // Ported from src/netlify/functions/notify-daily-summary.js — mechanical
 // translation to Deno.serve; logic unchanged.
 
-import { sendWebPush, londonNow } from '../_shared/webpush.ts';
+import { sendToSubscriptions, sbFetch, londonNow } from '../_shared/webpush.ts';
 import { computeRecoveryScore, computeSleepScore, computeStrainScore, loadSuggestion } from '../_shared/health-scores.ts';
 
 const SB_URL     = Deno.env.get('SUPABASE_URL');
 const SB_SERVICE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 
-async function sbFetch(path: string) {
-  const res = await fetch(`${SB_URL}${path}`, {
-    headers: { apikey: SB_SERVICE!, Authorization: `Bearer ${SB_SERVICE}` },
-  });
-  if (!res.ok) return { ok: false, data: null };
-  return { ok: true, data: await res.json() };
-}
 
 function addDays(dateStr: string, n: number) {
   const d = new Date(dateStr + 'T00:00:00Z');
@@ -88,12 +81,8 @@ Deno.serve(async () => {
     const body = await buildSummary(userId, now.dateStr, yesterday);
     if (!body) continue;
     const payload = { title: '⚡ Today’s Readiness', body, url: '/', tag: 'daily-summary' };
-    for (const s of userSubs) {
-      try {
-        const r = await sendWebPush({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth_key } }, payload);
-        if (r.status >= 200 && r.status < 300) sent++; else failed++;
-      } catch { failed++; }
-    }
+    const pushed = await sendToSubscriptions(userSubs, payload);
+    sent += pushed.sent; failed += pushed.failed;
   }
   return new Response(JSON.stringify({ sent, failed, skipped }));
 });

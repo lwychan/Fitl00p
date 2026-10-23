@@ -12,7 +12,7 @@
 // Ported from src/netlify/functions/notify-tirzepatide.js — mechanical
 // translation to Deno.serve; logic unchanged.
 
-import { sendWebPush, londonNow, londonDateStrOf, GEMMA_USER_ID } from '../_shared/webpush.ts';
+import { sendToSubscriptions, sbFetch, londonNow, londonDateStrOf, GEMMA_USER_ID } from '../_shared/webpush.ts';
 
 const SB_URL     = Deno.env.get('SUPABASE_URL');
 const SB_SERVICE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
@@ -52,13 +52,6 @@ function tzLevelAt(doses: { doseMg: number; injectedMs: number }[], atMs: number
   return total;
 }
 
-async function sbFetch(path: string) {
-  const res = await fetch(`${SB_URL}${path}`, {
-    headers: { apikey: SB_SERVICE!, Authorization: `Bearer ${SB_SERVICE}` },
-  });
-  if (!res.ok) return { ok: false, data: null };
-  return { ok: true, data: await res.json() };
-}
 
 // Plain calendar-date arithmetic (noon UTC avoids any DST-related
 // date-shift at the day boundary) — dueDateStr only ever gets compared
@@ -117,12 +110,8 @@ Deno.serve(async () => {
     const body = await buildReminder(userId, now.dateStr);
     if (!body) { skipped++; continue; }
     const payload = { title: '💉', body, url: '/', tag: 'tirzepatide-reminder' };
-    for (const s of userSubs) {
-      try {
-        const r = await sendWebPush({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth_key } }, payload);
-        if (r.status >= 200 && r.status < 300) sent++; else failed++;
-      } catch { failed++; }
-    }
+    const pushed = await sendToSubscriptions(userSubs, payload);
+    sent += pushed.sent; failed += pushed.failed;
   }
   return new Response(JSON.stringify({ sent, failed, skipped }));
 });

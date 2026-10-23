@@ -6,7 +6,7 @@
 // Ported from src/netlify/functions/notify-weighin.js — mechanical
 // translation to Deno.serve; day/hour made per-user configurable since.
 
-import { sendWebPush, londonNow, GEMMA_USER_ID, kgToLb } from '../_shared/webpush.ts';
+import { sendToSubscriptions, sbFetch, londonNow, GEMMA_USER_ID, kgToLb } from '../_shared/webpush.ts';
 
 const SB_URL     = Deno.env.get('SUPABASE_URL');
 const SB_SERVICE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
@@ -17,13 +17,6 @@ const SB_SERVICE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 // actually runs for their account.
 const WEEKDAY_TO_NUM: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
 
-async function sbFetch(path: string) {
-  const res = await fetch(`${SB_URL}${path}`, {
-    headers: { apikey: SB_SERVICE!, Authorization: `Bearer ${SB_SERVICE}` },
-  });
-  if (!res.ok) return { ok: false, data: null };
-  return { ok: true, data: await res.json() };
-}
 
 async function buildReminder(userId: string, todayDateStr: string) {
   const [{ data: todayHealthRows }, { data: todayLogRows }, { data: planRows }, { data: healthRows }] = await Promise.all([
@@ -80,12 +73,8 @@ Deno.serve(async () => {
     const body = await buildReminder(userId, now.dateStr);
     if (!body) { skipped++; continue; }
     const payload = { title: 'Weigh-in day', body, url: '/', tag: 'weighin-reminder' };
-    for (const s of userSubs) {
-      try {
-        const r = await sendWebPush({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth_key } }, payload);
-        if (r.status >= 200 && r.status < 300) sent++; else failed++;
-      } catch { failed++; }
-    }
+    const pushed = await sendToSubscriptions(userSubs, payload);
+    sent += pushed.sent; failed += pushed.failed;
   }
   return new Response(JSON.stringify({ sent, failed, skipped }));
 });

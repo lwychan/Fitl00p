@@ -340,4 +340,31 @@ const GEMMA_USER_ID = '2c8bf000-b870-4ea1-8a67-ec00ee7d4041';
 const LB_TO_KG = 0.45359237;
 function kgToLb(kg: number) { return kg / LB_TO_KG; }
 
-export { sendWebPush, londonNow, londonDateStrOf, GEMMA_USER_ID, kgToLb };
+// Service-key GET against PostgREST — the read every scheduled notify-*
+// function does (push_subscriptions, prefs, the user's data).
+async function sbFetch(path: string) {
+  const key = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+  const res = await fetch(`${Deno.env.get('SUPABASE_URL')}${path}`, {
+    headers: { apikey: key!, Authorization: `Bearer ${key}` },
+  });
+  if (!res.ok) return { ok: false, data: null };
+  return { ok: true, data: await res.json() };
+}
+
+// Sends one payload to each push_subscriptions row (a user's phones and
+// browsers); a throw counts as a failure for that row only.
+async function sendToSubscriptions(
+  subs: { endpoint: string; p256dh: string; auth_key: string }[],
+  payload: unknown
+): Promise<{ sent: number; failed: number }> {
+  let sent = 0, failed = 0;
+  for (const s of subs) {
+    try {
+      const r = await sendWebPush({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth_key } }, payload);
+      if (r.status >= 200 && r.status < 300) sent++; else failed++;
+    } catch { failed++; }
+  }
+  return { sent, failed };
+}
+
+export { sendWebPush, sendToSubscriptions, sbFetch, londonNow, londonDateStrOf, GEMMA_USER_ID, kgToLb };

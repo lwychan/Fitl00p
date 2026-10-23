@@ -8,18 +8,11 @@
 // Ported from src/netlify/functions/notify-weighin-gemma.js — mechanical
 // translation to Deno.serve; logic unchanged.
 
-import { sendWebPush, londonNow, GEMMA_USER_ID, kgToLb } from '../_shared/webpush.ts';
+import { sendToSubscriptions, sbFetch, londonNow, GEMMA_USER_ID, kgToLb } from '../_shared/webpush.ts';
 
 const SB_URL     = Deno.env.get('SUPABASE_URL');
 const SB_SERVICE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 
-async function sbFetch(path: string) {
-  const res = await fetch(`${SB_URL}${path}`, {
-    headers: { apikey: SB_SERVICE!, Authorization: `Bearer ${SB_SERVICE}` },
-  });
-  if (!res.ok) return { ok: false, data: null };
-  return { ok: true, data: await res.json() };
-}
 
 async function buildReminder(todayDateStr: string) {
   const [{ data: todayHealthRows }, { data: todayLogRows }, { data: planRows }, { data: healthRows }, { data: profileRows }] = await Promise.all([
@@ -74,11 +67,7 @@ Deno.serve(async () => {
 
   const payload = { title: 'Weigh-in day', body, url: '/', tag: 'weighin-reminder' };
   let sent = 0, failed = 0;
-  for (const s of subs) {
-    try {
-      const r = await sendWebPush({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth_key } }, payload);
-      if (r.status >= 200 && r.status < 300) sent++; else failed++;
-    } catch { failed++; }
-  }
+  const pushed = await sendToSubscriptions(subs, payload);
+  sent += pushed.sent; failed += pushed.failed;
   return new Response(JSON.stringify({ sent, failed }));
 });

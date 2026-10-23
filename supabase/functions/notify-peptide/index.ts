@@ -26,7 +26,7 @@
 // Ported from src/netlify/functions/notify-peptide.js — mechanical
 // translation to Deno.serve; logic unchanged.
 
-import { sendWebPush, londonNow, GEMMA_USER_ID } from '../_shared/webpush.ts';
+import { sendToSubscriptions, sbFetch, londonNow, GEMMA_USER_ID } from '../_shared/webpush.ts';
 
 const SB_URL     = Deno.env.get('SUPABASE_URL');
 const SB_SERVICE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
@@ -36,13 +36,6 @@ const DEFAULT_WINDOW_START_MINUTE = 30;
 const WINDOW_END_HOUR   = 21;
 const WINDOW_END_MINUTE = 30;
 
-async function sbFetch(path: string) {
-  const res = await fetch(`${SB_URL}${path}`, {
-    headers: { apikey: SB_SERVICE!, Authorization: `Bearer ${SB_SERVICE}` },
-  });
-  if (!res.ok) return { ok: false, data: null };
-  return { ok: true, data: await res.json() };
-}
 async function sbPatch(path: string, body: unknown) {
   await fetch(`${SB_URL}${path}`, {
     method: 'PATCH',
@@ -129,12 +122,8 @@ Deno.serve(async () => {
 
     const body = `Day ${day} — ${phase.label}. Today's dose: ${phase.dose_mg}mg (${phase.units} units). Log it in fitl00p.`;
     const payload = { title: `💉 ${protocol.name}`, body, url: '/', tag: 'peptide-reminder' };
-    for (const s of userSubs) {
-      try {
-        const r = await sendWebPush({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth_key } }, payload);
-        if (r.status >= 200 && r.status < 300) sent++; else failed++;
-      } catch { failed++; }
-    }
+    const pushed = await sendToSubscriptions(userSubs, payload);
+    sent += pushed.sent; failed += pushed.failed;
   }
 
   return new Response(JSON.stringify({ sent, failed, skipped, completed }));

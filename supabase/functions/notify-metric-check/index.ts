@@ -9,7 +9,7 @@
 // goal, notify if 25% under by 16:00) is just the default `steps` "under"
 // rule here now, generalised rather than lost.
 
-import { sendWebPush, londonNow } from '../_shared/webpush.ts';
+import { sendToSubscriptions, sbFetch, londonNow } from '../_shared/webpush.ts';
 import { computeRecoveryScore, computeSleepScore, computeStrainScoreTrimp } from '../_shared/health-scores.ts';
 
 const SB_URL     = Deno.env.get('SUPABASE_URL');
@@ -28,13 +28,6 @@ const METRIC_UNITS: Record<string, string> = {
   recovery_score: '/100', sleep_score: '/100', strain_score: '/21',
 };
 
-async function sbFetch(path: string) {
-  const res = await fetch(`${SB_URL}${path}`, {
-    headers: { apikey: SB_SERVICE!, Authorization: `Bearer ${SB_SERVICE}` },
-  });
-  if (!res.ok) return { ok: false, data: null };
-  return { ok: true, data: await res.json() };
-}
 async function sbPatch(path: string, body: unknown) {
   await fetch(`${SB_URL}${path}`, {
     method: 'PATCH',
@@ -159,13 +152,9 @@ Deno.serve(async () => {
       triggered++;
       const body = renderMessage(rule, value, pct);
       const payload = { title: '📊 Metric alert', body, url: '/', tag: `metric-alert-${rule.metric_key}-${rule.direction}` };
-      let anySent = false;
-      for (const s of userSubs) {
-        try {
-          const r = await sendWebPush({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth_key } }, payload);
-          if (r.status >= 200 && r.status < 300) { sent++; anySent = true; } else failed++;
-        } catch { failed++; }
-      }
+      const pushed = await sendToSubscriptions(userSubs, payload);
+      sent += pushed.sent; failed += pushed.failed;
+      const anySent = pushed.sent > 0;
       if (anySent) await sbPatch(`/rest/v1/metric_alert_rules?id=eq.${rule.id}`, { last_sent_date: todayStr });
     }
   }
