@@ -851,36 +851,48 @@ async function queuedWrite(table, op, payload, opts) {
     if (!isNetworkError(error)) return { data: null, error, queued: false }; // real rejection — surface normally, don't queue
   }
   const queue = loadOfflineQueue();
-  queue.push({ table, op, payload, opts: opts || null, queuedAt: new Date().toISOString() });
+  queue.push({ id: `${Date.now()}-${Math.random().toString(36).slice(2)}`, table, op, payload, opts: opts || null, queuedAt: new Date().toISOString() });
   saveOfflineQueue(queue);
   updateOfflineSyncBanner();
   return { data: null, error: null, queued: true };
 }
 
+// Boot and the 'online' event can both call this at once on resume — two
+// overlapping flushes would replay the same items twice (duplicate sets).
+let offlineFlushRunning = false;
+
 async function flushOfflineQueue() {
-  if (!navigator.onLine || !currentUser) return;
+  if (offlineFlushRunning || !navigator.onLine || !currentUser) return;
   const queue = loadOfflineQueue();
   if (!queue.length) return;
 
-  const remaining = [];
+  offlineFlushRunning = true;
+  const keyOf = i => i.id || i.queuedAt; // items queued before ids existed only have queuedAt
+  const done = new Set(); // keys of items synced or dropped
   let synced = 0;
-  for (const item of queue) {
-    try {
-      const { error } = await db.from(item.table)[item.op](item.payload, item.opts || undefined);
-      if (error) {
-        if (isNetworkError(error)) { remaining.push(item); continue; } // still no real connection — keep for next attempt
-        // A genuine rejection on retry (e.g. a stale conflict) — drop it
-        // rather than retry forever, but log it so it's not silently lost.
-        console.error(`Offline queue: dropped a queued ${item.table} write after reconnect —`, error.message);
-        continue;
+  try {
+    for (const item of queue) {
+      try {
+        const { error } = await db.from(item.table)[item.op](item.payload, item.opts || undefined);
+        if (error) {
+          if (isNetworkError(error)) continue; // still no real connection — keep for next attempt
+          // A genuine rejection on retry (e.g. a stale conflict) — drop it
+          // rather than retry forever, but log it so it's not silently lost.
+          console.error(`Offline queue: dropped a queued ${item.table} write after reconnect —`, error.message);
+        } else {
+          synced++;
+        }
+        done.add(keyOf(item));
+      } catch (err) {
+        console.error('Offline queue flush error:', err.message);
       }
-      synced++;
-    } catch (err) {
-      remaining.push(item);
-      console.error('Offline queue flush error:', err.message);
     }
+    // Re-read rather than overwrite: a write queued while this flush was
+    // running must survive it.
+    saveOfflineQueue(loadOfflineQueue().filter(i => !done.has(keyOf(i))));
+  } finally {
+    offlineFlushRunning = false;
   }
-  saveOfflineQueue(remaining);
   updateOfflineSyncBanner();
   if (synced) showToast(`Synced ${synced} offline change${synced === 1 ? '' : 's'}.`);
 }
