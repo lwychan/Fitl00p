@@ -31,7 +31,7 @@
 // isn't safe under Deno.serve.
 
 import { sendWebPush, GEMMA_USER_ID } from '../_shared/webpush.ts';
-import DiabetesEngine from '../_shared/diabetes-engine.ts';
+import DiabetesEngine from '../_shared/diabetes-engine.js';
 import { fetchNightscoutInput } from '../_shared/nightscout-fetch.ts';
 
 const SB_URL     = Deno.env.get('SUPABASE_URL');

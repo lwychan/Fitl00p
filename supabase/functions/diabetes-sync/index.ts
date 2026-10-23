@@ -22,7 +22,7 @@
 // compat concern here since SHA1 hex-digest is trivial either way, but
 // Web Crypto keeps this consistent with the rest of the migration).
 
-import NightscoutAdapter from '../_shared/nightscout-adapter.ts';
+import NightscoutAdapter from '../_shared/nightscout-adapter.js';
 const { adaptNightscoutData, adaptProfileSwitches } = NightscoutAdapter;
 
 // Missing Access-Control-Allow-Headers meant the browser's CORS preflight

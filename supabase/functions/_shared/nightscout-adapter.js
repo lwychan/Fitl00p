@@ -1,3 +1,4 @@
+// GENERATED from src/nightscout-adapter.js by scripts/sync-shared.mjs — edit that file, not this one.
 'use strict';
 
 // IIFE-wrapped for the same reason as diabetes-engine.js: loaded as a

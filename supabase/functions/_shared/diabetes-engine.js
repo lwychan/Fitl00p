@@ -1,3 +1,4 @@
+// GENERATED from src/diabetes-engine.js by scripts/sync-shared.mjs — edit that file, not this one.
 'use strict';
 
 // Everything below is wrapped in an IIFE so that, when loaded as a plain
@@ -713,15 +714,15 @@ function nearestReading(readings, targetMs, toleranceMinutes = 15) {
 // happened at 7pm. Explicit Europe/London formatting is correct regardless
 // of the runtime's own timezone (browser device or Deno server) and matches
 // londonNow()/londonHourMinute() elsewhere in the app.
-function londonHM(ms: number) {
+function londonHM(ms) {
   const parts = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
   }).formatToParts(new Date(ms));
-  const get = (t: string) => parts.find(p => p.type === t)!.value;
+  const get = t => parts.find(p => p.type === t).value;
   return { hour: parseInt(get('hour'), 10), minute: parseInt(get('minute'), 10) };
 }
-function hourOfDay(ms: number) { return londonHM(ms).hour; }
-function minutesSinceMidnight(ms: number) {
+function hourOfDay(ms) { return londonHM(ms).hour; }
+function minutesSinceMidnight(ms) {
   const { hour, minute } = londonHM(ms);
   return hour * 60 + minute;
 }

@@ -15,7 +15,7 @@
 // unchanged; Node's crypto.createHash replaced with Web Crypto's
 // crypto.subtle.digest for the SHA1 hash, same as diabetes-sync's port.
 
-import NightscoutAdapter from './nightscout-adapter.ts';
+import NightscoutAdapter from './nightscout-adapter.js';
 
 async function sha1Hex(input: string): Promise<string> {
   const bytes = new TextEncoder().encode(input);
