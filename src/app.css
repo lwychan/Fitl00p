@@ -925,20 +925,7 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
 .lf-search-result__brand { font-size: 11px; font-weight: 500; color: var(--ink-3); }
 .lf-search-result__cals { font-size: 12px; font-weight: 700; color: var(--ink-3); white-space: nowrap; margin-left: 8px; }
 
-/* Log-food favourites — a select of saved foods plus Add/remove buttons
-   (see btnLfFavToggle for how a food gets favourited in the first place). */
-.lf-favorites-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.lf-favorites-row select {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-.lf-favorites-row .btn { flex: 0 0 auto; }
-
-/* Star-toggle "save as favourite" button in the Log food review form —
+/* Star-toggle "also save as a meal" button in the Food review form —
    filled amber once active, same amber both themes since it's a
    semantic star color rather than a themed accent. */
 #btnLfFavToggle.is-active {
@@ -4364,6 +4351,9 @@ body { font-size: 15px; }
   -webkit-tap-highlight-color: transparent;
 }
 .lf-section__add:hover { text-decoration: underline; }
+.lf-section__actions { display: flex; justify-content: space-between; align-items: center; }
+.lf-meal-row { display: flex; align-items: center; gap: 6px; }
+.lf-meal-row .lf-search-result { flex: 1; min-width: 0; }
 
 /* Food tab day switcher: ‹ Today › */
 .lf-datenav { display: flex; align-items: center; gap: 4px; }

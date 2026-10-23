@@ -1757,18 +1757,6 @@
         <p class="lf-remaining-note" id="rtAdjustedNote" hidden></p>
       </div>
 
-      <!-- Personal quick-add shortcuts (see the ⭐ toggle in the review
-           form below) — tap one to pre-fill the review form instead of
-           starting from scratch. -->
-      <div class="card" id="lfFavoritesCard" hidden>
-        <div class="card-eyebrow">Favourites</div>
-        <div class="lf-favorites-row">
-          <select id="lfFavoritesSelect"></select>
-          <button type="button" class="btn btn--small" id="lfFavoritesAdd">Add</button>
-          <button type="button" class="btn btn--small btn--ghost" id="lfFavoritesDelete" title="Remove favourite">✕</button>
-        </div>
-      </div>
-
       <div class="card">
         <div class="card-eyebrow">Diary</div>
         <div id="lfTodayList"><p class="empty-state">Nothing logged yet.</p></div>
@@ -1797,6 +1785,7 @@
 
         <div class="onboard-pills" id="lfModePills">
           <button type="button" class="pill" data-mode="recent">🕘 Recent</button>
+          <button type="button" class="pill" data-mode="meals">⭐ Meals</button>
           <button type="button" class="pill" data-mode="scan">📷 Scan</button>
           <button type="button" class="pill" data-mode="search">🔍 Search</button>
           <button type="button" class="pill" data-mode="manual">✏️ Manual</button>
@@ -1805,6 +1794,11 @@
         <!-- Recent mode — foods you've logged before, newest first -->
         <div id="lfRecentPanel" hidden style="margin-top:12px">
           <div id="lfRecentList"></div>
+        </div>
+
+        <!-- Saved meals mode — tap one to add all its items to this meal -->
+        <div id="lfMealsPanel" hidden style="margin-top:12px">
+          <div id="lfMealsList"></div>
         </div>
 
         <!-- Scan mode -->
@@ -1883,7 +1877,7 @@
             <span>🍽️ Also log this for <span id="lfShareName">—</span></span>
           </label>
           <div style="display:flex;gap:10px;margin-top:10px">
-            <button type="button" class="btn btn--icon" id="btnLfFavToggle" aria-label="Save as favourite" aria-pressed="false" title="Save as a favourite for quick logging next time">⭐</button>
+            <button type="button" class="btn btn--icon" id="btnLfFavToggle" aria-label="Also save as a meal" aria-pressed="false" title="Also save this as a one-item saved meal">⭐</button>
             <button class="btn btn--primary" id="btnLfSave" style="flex:1">Log it</button>
             <button class="btn btn--ghost" id="btnLfCancel" style="flex:1">Cancel</button>
           </div>

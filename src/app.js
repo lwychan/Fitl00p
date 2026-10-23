@@ -306,10 +306,8 @@ const el = {
   lfShareWrap:      $('lfShareWrap'),
   lfShareName:      $('lfShareName'),
   btnLfFavToggle:   $('btnLfFavToggle'),
-  lfFavoritesCard:  $('lfFavoritesCard'),
-  lfFavoritesSelect: $('lfFavoritesSelect'),
-  lfFavoritesAdd:   $('lfFavoritesAdd'),
-  lfFavoritesDelete: $('lfFavoritesDelete'),
+  lfMealsPanel:     $('lfMealsPanel'),
+  lfMealsList:      $('lfMealsList'),
   btnLfSave:        $('btnLfSave'),
   btnLfCancel:      $('btnLfCancel'),
   lfSaveStatus:     $('lfSaveStatus'),
@@ -12324,8 +12322,8 @@ let lfZxingControls = null; // ZXing's IScannerControls — the Safari fallback 
 let lfZxingScanAttempts = 0; // frames checked so far this scan session — diagnostic only, see startBarcodeScan
 let lfSelectedCustomFoodId = null; // set when the review form was populated from an existing custom_foods row (scan/search) — avoids re-saving a duplicate
 let lfPendingBarcode = null; // carries a scanned (found-or-not) barcode into save, so a not-found product is still remembered for next time
-let lfFavToggleActive = false; // ⭐ toggle in the review form — save this entry to favorite_meals too, alongside logging it
-let lfFavoritesData = []; // last-rendered favorite_meals rows, so a chip click can look itself up by id without a refetch
+let lfFavToggleActive = false; // ⭐ toggle in the review form — also save this entry as a one-item saved meal
+let lfSavedMeals = []; // last-rendered saved_meals rows, so a tap can look itself up by index
 let lfBaseNutrition = null; // per-base-serving {qty, calories_kcal, protein_g, carbs_g, fat_g} from the selected food — lets editing Serving size live-rescale the macro fields
 let lfEditingFoodLogId = null; // set while editing an already-logged item (tapped from Today's meals) — routes btnLfSave to an UPDATE instead of an INSERT
 let lfEditingOriginal = null; // { logDate, mealSlot, hypoTreatment } the item belonged to when edit opened, so a meal-slot change re-aggregates BOTH the old and new section
@@ -12365,7 +12363,7 @@ async function loadLogFood() {
   lfDiaryDate = null; // the tab always opens on today
   if (el.lfMealSlot) el.lfMealSlot.value = defaultMealSlot();
   closeLfAddSheet();
-  await Promise.all([renderLfDiary(), renderLfFavorites()]);
+  await renderLfDiary();
 }
 
 /* ── Add-food sheet ──────────────────────────────────────── */
@@ -12445,10 +12443,12 @@ function selectLfMode(mode) {
   if (el.lfScanPanel)   el.lfScanPanel.hidden   = mode !== 'scan';
   if (el.lfSearchPanel) el.lfSearchPanel.hidden = mode !== 'search';
   if (el.lfRecentPanel) el.lfRecentPanel.hidden = mode !== 'recent';
+  if (el.lfMealsPanel)  el.lfMealsPanel.hidden  = mode !== 'meals';
   if (mode === 'manual') { resetLfForm(); showLfReviewForm(); }
   else if (el.lfReviewForm) el.lfReviewForm.hidden = true;
   if (mode === 'scan') startBarcodeScan();
   if (mode === 'recent') renderLfRecent();
+  if (mode === 'meals') renderLfSavedMeals();
 }
 el.lfModePills?.addEventListener('click', e => {
   const btn = e.target.closest('.pill');
@@ -12924,7 +12924,7 @@ el.btnLfSave?.addEventListener('click', async () => {
       }
 
       closeLfAddSheet();
-      await Promise.all([renderLfDiary(), renderLfFavorites()]);
+      await renderLfDiary();
       if (dxBridgeError) {
         showToast(`Saved ${name}, but it won't show in the dose calculator: ${dxBridgeError}`, true);
       } else {
@@ -13002,17 +13002,21 @@ el.btnLfSave?.addEventListener('click', async () => {
       if (bridgeErr) dxBridgeError = bridgeErr;
     }
 
-    // Save as a favourite too, when the ⭐ toggle is on — base per-serving
-    // values (not multiplied by quantity), same as the shared custom_foods
-    // insert above, since a favourite is a reusable template to pick a
-    // quantity against again, not a record of what was eaten this time.
+    // ⭐ on: also keep this entry as a one-item saved meal (same totals as
+    // just logged, quantity included — see saved_meals).
     if (lfFavToggleActive) {
-      const { error: favErr } = await db.from('favorite_meals').insert({
-        user_id: currentUser.id, name, brand, serving_desc: servingDesc,
-        calories_kcal: baseCals, protein_g: baseProtein, carbs_g: baseCarbs, fat_g: baseFat,
-        barcode: lfPendingBarcode,
+      const { error: favErr } = await db.from('saved_meals').insert({
+        user_id: currentUser.id, name,
+        items: [{
+          food_name: name, brand, serving_desc: servingDesc, quantity,
+          calories_kcal: Math.round(baseCals * quantity),
+          protein_g: Math.round(baseProtein * quantity * 10) / 10,
+          carbs_g: Math.round(baseCarbs * quantity * 10) / 10,
+          fat_g: Math.round(baseFat * quantity * 10) / 10,
+          custom_food_id: customFoodId, barcode: lfPendingBarcode, source: 'manual',
+        }],
       });
-      if (favErr) showToast("Couldn't save as favourite: " + favErr.message, true);
+      if (favErr) showToast("Couldn't save as a meal: " + favErr.message, true);
     }
 
     // Also log this exact entry into a linked household partner's own
@@ -13047,7 +13051,7 @@ el.btnLfSave?.addEventListener('click', async () => {
     }
 
     closeLfAddSheet();
-    await Promise.all([renderLfDiary(), renderLfFavorites()]);
+    await renderLfDiary();
     if (shareError) {
       showToast(`Logged ${name}, but couldn't share: ${shareError}`, true);
     } else if (dxBridgeError) {
@@ -13066,7 +13070,7 @@ el.btnLfSave?.addEventListener('click', async () => {
 async function fetchTodayFoodLog() {
   if (!currentUser) return [];
   const { data, error } = await db.from('food_log')
-    .select('id, meal_slot, food_name, brand, quantity, serving_desc, calories_kcal, protein_g, carbs_g, fat_g, source, logged_at, hypo_treatment')
+    .select('id, meal_slot, food_name, brand, quantity, serving_desc, calories_kcal, protein_g, carbs_g, fat_g, source, logged_at, hypo_treatment, custom_food_id, barcode')
     .eq('user_id', currentUser.id)
     .eq('log_date', lfDiaryDay())
     .order('logged_at', { ascending: true });
@@ -13251,52 +13255,24 @@ el.btnLfCopyYesterday?.addEventListener('click', async () => {
     const loggedAtDate = lfDefaultLoggedAt();
     const logDate = loggedAtDate.toISOString().slice(0, 10); // = the diary day (see lfDefaultLoggedAt)
     const loggedAt = loggedAtDate.toISOString();
-    // Inserted one row at a time rather than a single bulk insert — a
-    // bulk `.insert(rows).select('id')` doesn't guarantee its returned
-    // array comes back in the same order the rows were given, so
-    // matching result[i] back to lfCopyYesterdayItems[i] by position
-    // could silently attach the wrong food_log_id to a snack's dosing
-    // bridge below. One insert per row costs an extra round trip each,
-    // but this only ever runs on a small hand-picked batch, and it's the
-    // only way to know for certain which id belongs to which item.
-    const insertedRows = [];
-    for (const r of lfCopyYesterdayItems) {
-      const { data: inserted, error: rowErr } = await db.from('food_log').insert({
-        user_id: currentUser.id, log_date: logDate, logged_at: loggedAt,
+    // Every copied row is from one section (fetchYesterdaySectionItems filters to it).
+    const first = lfCopyYesterdayItems[0];
+    const { inserted: insertedRows, error: copyErr } = await insertFoodRowsAndBridge(
+      lfCopyYesterdayItems.map(r => ({
+        log_date: logDate, logged_at: loggedAt,
         meal_slot: r.meal_slot, food_name: r.food_name, brand: r.brand, serving_desc: r.serving_desc,
         quantity: r.quantity, calories_kcal: r.calories_kcal, protein_g: r.protein_g,
         carbs_g: r.carbs_g, fat_g: r.fat_g, source: r.source, barcode: r.barcode,
         custom_food_id: r.custom_food_id, hypo_treatment: r.hypo_treatment,
-      }).select('id').single();
-      if (rowErr) {
-        showToast("Couldn't copy: " + rowErr.message, true);
-        el.btnLfCopyYesterday.textContent = originalLabel;
-        return;
-      }
-      insertedRows.push(inserted);
+      })), first.meal_slot, !!first.hypo_treatment);
+    if (copyErr && !insertedRows.length) {
+      showToast("Couldn't copy: " + copyErr, true);
+      el.btnLfCopyYesterday.textContent = originalLabel;
+      return;
     }
-    if (profile?.diabetes_enabled !== false) {
-      // Every copied row shares the same section (fetchYesterdaySectionItems
-      // already filtered to one). Snacks dose per-item, so each copied row
-      // needs its own bridge call; everything else re-aggregates once.
-      const first = lfCopyYesterdayItems[0];
-      if (!first.hypo_treatment && first.meal_slot === 'snack') {
-        for (let i = 0; i < lfCopyYesterdayItems.length; i++) {
-          const r = lfCopyYesterdayItems[i];
-          const insertedId = insertedRows[i]?.id;
-          if (!insertedId) continue;
-          const { error: bridgeErr } = await upsertDiabetesMealItem(insertedId, {
-            food_name: r.food_name, carbs_g: r.carbs_g, fat_g: r.fat_g, protein_g: r.protein_g, logged_at: loggedAt,
-          });
-          if (bridgeErr) showToast(`Copied, but it won't show in the dose calculator: ${bridgeErr}`, true);
-        }
-      } else {
-        const { error: bridgeErr } = await upsertDiabetesMealSection(logDate, first.meal_slot, !!first.hypo_treatment);
-        if (bridgeErr) showToast(`Copied, but it won't show in the dose calculator: ${bridgeErr}`, true);
-      }
-    }
+    if (copyErr) showToast(`Copied, but: ${copyErr}`, true);
     closeLfAddSheet();
-    await Promise.all([renderLfDiary(), renderLfFavorites()]);
+    await renderLfDiary();
     showToast(`Copied ${insertedRows.length} item${insertedRows.length === 1 ? '' : 's'} from the previous day.`);
   } finally {
     el.btnLfCopyYesterday.disabled = false;
@@ -13363,12 +13339,18 @@ async function renderLfTodayList() {
         ${items.length ? `<div class="lf-section__macros">Carbs ${fmt1(carbs)}g · Fat ${fmt1(fat)}g · Protein ${fmt1(protein)}g</div>` : ''}
       </div>
       ${items.map(lfRowHtml).join('')}
-      <button type="button" class="lf-section__add" data-slot="${key}">ADD FOOD</button>
+      <div class="lf-section__actions">
+        <button type="button" class="lf-section__add" data-slot="${key}">ADD FOOD</button>
+        ${items.length ? `<button type="button" class="lf-section__add" data-save-meal="${key}">SAVE AS MEAL</button>` : ''}
+      </div>
     </div>`;
   }).join('');
 }
 el.lfTodayList?.addEventListener('click', async e => {
   // Opens the add-food sheet preset to this section (see openLfAddSheet).
+  const saveMealBtn = e.target.closest('[data-save-meal]');
+  if (saveMealBtn) { await saveLfSectionAsMeal(saveMealBtn.dataset.saveMeal); return; }
+
   const addBtn = e.target.closest('.lf-section__add');
   if (addBtn) {
     openLfAddSheet(addBtn.dataset.slot);
@@ -13469,41 +13451,121 @@ async function saveLfLoggedTime(foodLogId, timeVal) {
   showToast('Time updated.');
 }
 
-/* ── Favourites — ⭐-toggled quick-add shortcuts (see btnLfFavToggle) ── */
-async function fetchFavoriteMeals() {
-  if (!currentUser) return [];
-  const { data, error } = await db.from('favorite_meals')
-    .select('id, name, brand, serving_desc, calories_kcal, protein_g, carbs_g, fat_g, barcode')
-    .eq('user_id', currentUser.id)
-    .order('created_at', { ascending: false })
-    .limit(20);
-  if (error) { console.error('fetchFavoriteMeals error:', error.message); return []; }
-  return data || [];
+/* ── Saved meals (SparkyFitness-style "custom meals") ──────────
+   A named group of items re-added to any section in one tap. Saved from a
+   diary section's "Save as meal", or one item at a time via ⭐ in the
+   review form. Items hold logged totals (quantity applied), like food_log. */
+
+// Inserts food_log rows for ONE section (slot + hypo flag) and keeps
+// diabetes_meals in step: Snacks dose per item, every other section is
+// re-aggregated once after all rows are in (see bridgeLfMealChange). Rows
+// are inserted one at a time so each returned id is known to belong to its
+// row — a bulk insert doesn't guarantee result order.
+// Returns { inserted: [{id}], error: string|null } — inserted rows are kept
+// even if a later row or the bridge fails.
+async function insertFoodRowsAndBridge(rows, mealSlot, isHypo) {
+  const inserted = [];
+  for (const row of rows) {
+    const { data, error } = await db.from('food_log')
+      .insert({ ...row, user_id: currentUser.id }).select('id, log_date, logged_at').single();
+    if (error) return { inserted, error: error.message };
+    inserted.push(data);
+  }
+  if (!inserted.length || profile?.diabetes_enabled === false) return { inserted, error: null };
+  let bridgeErr = null;
+  if (!isHypo && mealSlot === 'snack') {
+    for (let i = 0; i < inserted.length; i++) {
+      const r = rows[i];
+      const { error } = await bridgeLfMealChange(inserted[i].log_date, mealSlot, false, inserted[i].id, {
+        food_name: r.food_name, carbs_g: r.carbs_g, fat_g: r.fat_g, protein_g: r.protein_g, logged_at: inserted[i].logged_at,
+      });
+      if (error) bridgeErr = error;
+    }
+  } else {
+    const { error } = await bridgeLfMealChange(inserted[0].log_date, mealSlot, isHypo, inserted[0].id, null);
+    if (error) bridgeErr = error;
+  }
+  return { inserted, error: bridgeErr ? `it won't show in the dose calculator: ${bridgeErr}` : null };
 }
 
-async function renderLfFavorites() {
-  if (!el.lfFavoritesCard || !el.lfFavoritesSelect) return;
-  lfFavoritesData = await fetchFavoriteMeals();
-  el.lfFavoritesCard.hidden = !lfFavoritesData.length;
-  if (!lfFavoritesData.length) return;
-  el.lfFavoritesSelect.innerHTML = lfFavoritesData.map(f =>
-    `<option value="${f.id}">⭐ ${escapeHtml(f.name)} — ${Math.round(f.calories_kcal)} kcal</option>`).join('');
+async function renderLfSavedMeals() {
+  if (!el.lfMealsList || !currentUser) return;
+  el.lfMealsList.innerHTML = '<p class="empty-state">Loading…</p>';
+  const { data, error } = await db.from('saved_meals')
+    .select('id, name, items')
+    .eq('user_id', currentUser.id)
+    .order('created_at', { ascending: false });
+  if (error) { el.lfMealsList.innerHTML = '<p class="empty-state">Couldn\'t load saved meals.</p>'; return; }
+  lfSavedMeals = data || [];
+  el.lfMealsList.innerHTML = lfSavedMeals.length
+    ? lfSavedMeals.map((m, i) => {
+        const kcal = Math.round(m.items.reduce((t, it) => t + (Number(it.calories_kcal) || 0), 0));
+        const what = m.items.length === 1 ? (m.items[0].serving_desc || '1 item') : `${m.items.length} items`;
+        return `<div class="lf-meal-row">
+          <button type="button" class="lf-search-result" data-meal-add="${i}">
+            <span class="lf-search-result__name">${escapeHtml(m.name)} <span class="lf-search-result__brand">${escapeHtml(what)}</span></span>
+            <span class="lf-search-result__cals">${kcal} kcal</span>
+          </button>
+          <button type="button" class="btn btn--ghost btn--small" data-meal-del="${i}" aria-label="Delete ${escapeHtml(m.name)}">✕</button>
+        </div>`;
+      }).join('')
+    : '<p class="empty-state">No saved meals yet — use "Save as meal" on a diary section, or ⭐ when logging a food.</p>';
 }
-el.lfFavoritesAdd?.addEventListener('click', () => {
-  const fav = lfFavoritesData.find(f => f.id === el.lfFavoritesSelect.value);
-  if (!fav) return;
-  openLfAddSheet(defaultMealSlot());
-  selectLfMode(null);
-  populateLfFormFromFood(fav, { barcode: fav.barcode || null });
-  showLfReviewForm();
+
+el.lfMealsList?.addEventListener('click', async e => {
+  const del = e.target.closest('[data-meal-del]');
+  if (del) {
+    const meal = lfSavedMeals[Number(del.dataset.mealDel)];
+    if (!meal || !confirm(`Delete saved meal "${meal.name}"?`)) return;
+    const { error } = await db.from('saved_meals').delete().eq('id', meal.id);
+    if (error) { showToast("Couldn't delete: " + error.message, true); return; }
+    await renderLfSavedMeals();
+    return;
+  }
+  const add = e.target.closest('[data-meal-add]');
+  const meal = add && lfSavedMeals[Number(add.dataset.mealAdd)];
+  if (!meal || !currentUser) return;
+  const mealSlot = el.lfMealSlot?.value || defaultMealSlot();
+  const isHypo = !!el.lfHypoTreatment?.checked;
+  const loggedAtDate = lfDefaultLoggedAt();
+  const logDate = loggedAtDate.toISOString().slice(0, 10);
+  add.disabled = true;
+  const { inserted, error } = await insertFoodRowsAndBridge(meal.items.map(it => ({
+    log_date: logDate, logged_at: loggedAtDate.toISOString(), meal_slot: mealSlot,
+    food_name: it.food_name, brand: it.brand || null, serving_desc: it.serving_desc || null,
+    quantity: Number(it.quantity) || 1,
+    calories_kcal: Math.round(Number(it.calories_kcal) || 0),
+    protein_g: Number(it.protein_g) || 0, carbs_g: Number(it.carbs_g) || 0, fat_g: Number(it.fat_g) || 0,
+    barcode: it.barcode || null, custom_food_id: it.custom_food_id || null,
+    source: ['scan', 'search', 'manual'].includes(it.source) ? it.source : 'manual',
+    hypo_treatment: isHypo,
+  })), mealSlot, isHypo);
+  add.disabled = false;
+  if (!inserted.length) { showToast("Couldn't add: " + error, true); return; }
+  closeLfAddSheet();
+  await renderLfDiary();
+  showToast(error ? `Added ${meal.name}, but ${error}` : `Added ${meal.name}.`, !!error);
 });
-el.lfFavoritesDelete?.addEventListener('click', async () => {
-  const id = el.lfFavoritesSelect.value;
-  if (!id) return;
-  const { error } = await db.from('favorite_meals').delete().eq('id', id);
-  if (error) { showToast("Couldn't remove favourite: " + error.message, true); return; }
-  await renderLfFavorites();
-});
+
+// "Save as meal" on a diary section header — snapshots the section's items.
+async function saveLfSectionAsMeal(sectionKey) {
+  const hypoEnabled = profile?.diabetes_enabled !== false;
+  const items = (await fetchTodayFoodLog()).filter(r => lfSectionOf(r, hypoEnabled) === sectionKey);
+  if (!items.length) return;
+  const label = LF_SECTIONS.find(s => s.key === sectionKey)?.label || 'Meal';
+  const suggested = items.length === 1 ? items[0].food_name : `${label}: ${items.map(r => r.food_name).join(', ')}`.slice(0, 60);
+  const name = prompt('Name this meal', suggested)?.trim();
+  if (!name) return;
+  const { error } = await db.from('saved_meals').insert({
+    user_id: currentUser.id, name,
+    items: items.map(r => ({
+      food_name: r.food_name, brand: r.brand, serving_desc: r.serving_desc, quantity: r.quantity,
+      calories_kcal: r.calories_kcal, protein_g: r.protein_g, carbs_g: r.carbs_g, fat_g: r.fat_g,
+      custom_food_id: r.custom_food_id || null, barcode: r.barcode || null, source: r.source,
+    })),
+  });
+  showToast(error ? "Couldn't save meal: " + error.message : `Saved "${name}" — find it under ⭐ Meals.`, !!error);
+}
 
 /* ═══════════════════════════════════════════════════════════
    THEME
