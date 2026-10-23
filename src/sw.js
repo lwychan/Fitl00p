@@ -95,7 +95,7 @@ self.addEventListener('fetch', event => {
   // they fall through to the cache-first branch below instead — cached
   // once, instant and offline-safe after that.
   const sameOrigin = url.origin === self.location.origin;
-  const isApiCall = url.hostname.includes('supabase.co') || url.pathname.startsWith('/.netlify/');
+  const isApiCall = url.hostname.includes('supabase.co');
   const alwaysNetwork =
     isApiCall ||
     NEVER_CACHE.includes(url.pathname) ||

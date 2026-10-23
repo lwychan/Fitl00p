@@ -594,7 +594,7 @@ const BODY_WEIGHT_UNIT     = 'lb';
 const EXERCISE_WEIGHT_UNIT = 'kg';
 
 // Two-person household, same fixed id already hardcoded server-side
-// (see GEMMA_USER_ID in netlify/functions/_lib/webpush.js) — gates the
+// (see GEMMA_USER_ID in supabase/functions/_shared/webpush.ts) — gates the
 // Gemma-only daily checklist card below and the diabetes tab's default
 // visibility assumption for her account specifically.
 const GEMMA_USER_ID = '2c8bf000-b870-4ea1-8a67-ec00ee7d4041';
@@ -12395,7 +12395,7 @@ async function computeMacroTargets() {
 
 // Two-person household — same fixed Lewis<->Gemma pairing already
 // hardcoded server-side for the Gemma-specific scheduled notifications
-// (see GEMMA_USER_ID in netlify/functions/_lib/webpush.js) and now also
+// (see GEMMA_USER_ID in supabase/functions/_shared/webpush.ts) and now also
 // in share-food-log.js, which does the actual cross-account insert
 // (food_log's RLS is strictly own-write, so this app can't do it
 // directly). This client-side copy only decides whether to show the

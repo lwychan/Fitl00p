@@ -1,55 +1,10 @@
 [build]
   publish   = "."
-  functions = "netlify/functions"
 
-# ── Scheduled push notifications ───────────────────────────────
-# Netlify cron runs in UTC with no timezone support, so each schedule
-# below lists BOTH UTC hours a London-local time can fall on across the
-# year (BST vs GMT) — the function itself checks the real local time via
-# londonNow() in _lib/webpush.js and no-ops on the wrong one, so the
-# actual send time stays fixed at the intended London local time year
-# round instead of drifting an hour at each DST change.
-[functions."notify-daily-summary"]
-  schedule = "0 6,7 * * *"      # 07:00 Europe/London daily
-
-[functions."notify-tirzepatide"]
-  schedule = "10 8-21 * * *"    # hourly, 09:00-21:00 Europe/London every day — the function itself only actually sends once 7 days have passed since the last logged dose (see notify-tirzepatide.js), not on a fixed weekday
-
-[functions."notify-peptide"]
-  schedule = "0,30 4-21 * * *"  # every 30 min, 04:00-21:30 UTC — covers every protocol's own reminder_start_hour (default 07:30, as early as 05:30) across both BST/GMT, until logged
-
-[functions."notify-weighin"]
-  schedule = "10 9-21 * * 2"    # hourly, Tuesday 10:00-21:00 Europe/London, until logged
-
-[functions."notify-weighin-gemma"]
-  schedule = "15 6,7 * * *"     # 07:15 Europe/London daily — Gemma only
-
-[functions."notify-steps-check"]
-  schedule = "0 15,16 * * *"    # 16:00 Europe/London daily
-
-[functions."notify-ai-coach"]
-  schedule = "0 7,8 * * *"    # 08:00 Europe/London daily — an hour after the readiness push, once overnight Health sync has landed
-
-[functions."notify-glucose-forecast"]
-  schedule = "*/15 * * * *"    # every 15 minutes, always — no self-gated hour window, since a hypo/hyper risk isn't confined to office hours the way a reminder is
-
-[functions."notify-sleep-target"]
-  schedule = "0 19,20 * * *"    # 20:00 Europe/London daily — both accounts
-
-[functions."notify-oral-meds"]
-  schedule = "0 20,21 * * *"    # 21:00 Europe/London daily — whoever has an unlogged active oral med
-
-# IMPORTANT: Add these environment variables in Netlify dashboard
-# Site → Site configuration → Environment variables:
-#   VAPID_PUBLIC          (see setup guide)
-#   VAPID_PRIVATE         (see setup guide)
-#   VAPID_SUBJECT         (see setup guide)
-#   SUPABASE_URL          (your Supabase project URL)
-#   SUPABASE_ANON_KEY     (your Supabase anon key)
-#   SUPABASE_SERVICE_KEY  (your Supabase service role key)
-#   ANTHROPIC_API_KEY     (console.anthropic.com — used by food-photo-estimate.js
-#                          for the Log Food photo-estimate feature; get one at
-#                          https://console.anthropic.com/settings/keys)
+# Static hosting only (web PWA + privacy.html). Every backend function and
+# scheduled notification runs on Supabase (supabase/functions + pg_cron) —
+# no Netlify functions or schedules, so a zip upload of src/ can't start
+# a second copy of the notification jobs.
 
 [[redirects]]
   from = "/*"

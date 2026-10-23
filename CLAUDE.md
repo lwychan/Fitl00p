@@ -8,6 +8,6 @@ Pushing to feature/working branches is fine without asking, since that alone doe
 
 ## Layout
 
-The actual app lives in `src/`, not the repo root — `index.html`, `app.js`, `app.css`, and `netlify/functions/` are all under `src/`. When configuring Netlify (or explaining how to), the base directory is `src`; `netlify.toml` (also under `src/`) declares `publish = "."` and `functions = "netlify/functions"` relative to that base.
+The actual app lives in `src/`, not the repo root — `index.html`, `app.js`, `app.css` are all under `src/`. Netlify only hosts `src/` statically (web PWA + `privacy.html`); base directory `src`, `netlify.toml` declares `publish = "."` and nothing else — no Netlify functions or schedules.
 
-Netlify functions call the Anthropic API directly (see `src/netlify/functions/food-photo-estimate.js`) and read/write Supabase via `SUPABASE_URL` / `SUPABASE_SERVICE_KEY`. Required env vars are listed in a comment block near the top of `src/netlify.toml`.
+All backend code is Supabase Edge Functions in `supabase/functions/` (shared code in `_shared/`), scheduled via pg_cron (`private.invoke_edge_fn`). One-off SQL applied to production is recorded in `supabase/sql/`. The iOS app is Capacitor (`ios/`), built by Codemagic from `main`.
