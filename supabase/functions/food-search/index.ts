@@ -50,9 +50,21 @@ Deno.serve(async (req: Request) => {
 
 // Branded products. Same per-100g shape populateLfFormFromFood() in app.js
 // already expects from a barcode-scanned OFF product.
+// UK products first (Tesco, Asda, …); falls back to every country when the
+// UK filter finds too little. The query is Lucene syntax, so quotes, colons
+// and brackets in what was typed are stripped first.
 async function searchOpenFoodFacts(query: string) {
+  const clean = query.replace(/["':()[]{}\]/g, ' ').trim();
+  const uk = await offSearch(`${clean} countries_tags:"en:united-kingdom"`);
+  if (uk.length >= 3) return uk;
+  const all = await offSearch(clean);
+  const seen = new Set(uk.map(f => f!.barcode));
+  return [...uk, ...all.filter(f => !seen.has(f!.barcode))].slice(0, 8);
+}
+
+async function offSearch(q: string) {
   const searchUrl = `https://search.openfoodfacts.org/search?${new URLSearchParams({
-    q: query,
+    q,
     page_size: '15',
     fields: 'code,product_name,brands,nutriments',
   })}`;
@@ -89,21 +101,59 @@ async function searchOpenFoodFacts(query: string) {
 
 // Generic foods ("Bananas, raw", "Chicken, breast, roasted") from USDA
 // FoodData Central — the reference datasets only (Foundation, SR Legacy),
-// whose nutrients are per 100 g. Free key from api.data.gov in the
-// FDC_API_KEY secret; DEMO_KEY (10 requests/hour) until one is set.
-const FDC_API_KEY = Deno.env.get('FDC_API_KEY') || 'DEMO_KEY';
+// whose nutrients are per 100 g. Key (free, api.data.gov): the FDC_API_KEY
+// secret if set, else Vault 'fdc_api_key' via the service-role-only RPC
+// get_fdc_api_key() (see supabase/sql/fdc_api_key.sql), else DEMO_KEY
+// (10 requests/hour). Resolved once per isolate.
+let fdcKey: Promise<string> | null = null;
+function getFdcKey(): Promise<string> {
+  fdcKey ??= (async () => {
+    const env = Deno.env.get('FDC_API_KEY');
+    if (env) return env;
+    const url = Deno.env.get('SUPABASE_URL'), svc = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+    if (url && svc) {
+      try {
+        const res = await fetch(`${url}/rest/v1/rpc/get_fdc_api_key`, {
+          method: 'POST',
+          headers: { apikey: svc, Authorization: `Bearer ${svc}`, 'Content-Type': 'application/json' },
+          body: '{}',
+        });
+        const key = res.ok ? await res.json() : null;
+        if (typeof key === 'string' && key) return key;
+      } catch { /* fall through to DEMO_KEY */ }
+    }
+    return 'DEMO_KEY';
+  })();
+  return fdcKey;
+}
+function rankUsda(foods: any[], query: string) {
+  const stem = query.trim().toLowerCase().split(/s+/)[0].replace(/(es|s)$/, '');
+  const score = (f: any) => {
+    const d = String(f.description || '').toLowerCase();
+    let s = 0;
+    if (d.split(',')[0].trim().startsWith(stem)) s += 4;
+    if (/raw/.test(d)) s += 1;
+    if (d.startsWith('babyfood')) s -= 5;
+    return s;
+  };
+  return foods.map((f, i) => ({ f, s: score(f), i })).sort((a, b) => b.s - a.s || a.i - b.i).map(x => x.f);
+}
+
 const FDC_NUTRIENT = { energyKcal: 1008, atwaterGeneral: 2047, atwaterSpecific: 2048, energyKj: 1062, protein: 1003, carbs: 1005, fat: 1004 };
 
 async function searchUsda(query: string) {
   const url = `https://api.nal.usda.gov/fdc/v1/foods/search?${new URLSearchParams({
     query,
-    pageSize: '10',
+    pageSize: '25',
     dataType: 'Foundation,SR Legacy',
-    api_key: FDC_API_KEY,
+    api_key: await getFdcKey(),
   })}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`USDA HTTP ${res.status}`);
-  const foods: any[] = (await res.json()).foods || [];
+  // USDA's own relevance puts "Croissants, apple" and baby foods above
+  // "Apples, raw" — rank entries whose first word matches the search first,
+  // plain/raw foods next, baby foods last.
+  const foods: any[] = rankUsda((await res.json()).foods || [], query);
   return foods
     .map((f: any) => {
       const n: Record<number, number> = {};
