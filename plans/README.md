@@ -34,9 +34,9 @@ Recon facts every plan relies on:
 |---|---|---|---|
 | — | [001 — Escape untrusted text before innerHTML](001-escape-untrusted-html.md) (findings 1, 4) | **won't do** (user 2026-10-23: TestFlight-only, trusted users) — except step 4 (ExerciseDB names/GIF URLs), folded into 002 | — |
 | — | [003 — Nightscout requires a token; token goes in a header](003-close-public-nightscout.md) (findings 3, 6) | **won't do** (user 2026-10-23: public glucose data is acceptable) | — |
-| 1 | [005 — Run tests before TestFlight builds](005-run-tests-before-testflight-build.md) (finding 8) | todo | — |
-| 2 | [002 — Lock down `exercise_media` writes](002-lock-exercise-media-writes.md) (finding 2) + 001 step 4 | todo | — |
-| 3 | [004 — Food tab, SparkyFitness-style](004-food-tab-sparky-style.md) (D1) | todo | after 005 (tests gate the build) |
+| 1 | [005 — Run tests before TestFlight builds](005-run-tests-before-testflight-build.md) (finding 8) | done (044432e) | — |
+| 2 | [002 — Lock down `exercise_media` writes](002-lock-exercise-media-writes.md) (finding 2) + 001 step 4 | **paused** — user declined the DB policy change 2026-10-23 | — |
+| 3 | [004 — Food tab, SparkyFitness-style](004-food-tab-sparky-style.md) (D1) | in progress — step 2 (tab) done in 9ab85c7 | after 005 (tests gate the build) |
 
 ```
 001 ──┐
