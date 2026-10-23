@@ -2350,29 +2350,6 @@ input[type="checkbox"].import-check {
 }
 
 
-/* ── DAILY BRIEFING (behind the appbar bell icon) ────────── */
-.appbar__bell { position: relative; }
-.appbar__bell-dot {
-  position: absolute;
-  top: 6px; right: 6px;
-  width: 8px; height: 8px;
-  border-radius: 50%;
-  background: var(--red);
-  border: 1.5px solid var(--surface);
-}
-.coach-briefing__date {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--ink-4);
-  margin-bottom: 8px;
-}
-.coach-briefing__text {
-  font-size: 14px;
-  line-height: 1.55;
-  color: var(--ink-2);
-  white-space: pre-wrap;
-}
-
 /* ── DAILY CHECKLIST (Gemma's account) ──────────────────── */
 .card--checklist {
   grid-column: 1 / -1;
@@ -4397,69 +4374,6 @@ body { font-size: 15px; }
 .lf-item__kcal { font-size: 14px; font-weight: 600; color: var(--ink); white-space: nowrap; }
 .lf-item__sub { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 3px; min-height: 20px; }
 .lf-item__desc { font-size: 12px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-/* Describe mode's parsed-item list — every number stays editable,
-   since an estimate is only useful if it's cheap to correct. */
-.lf-text-item { padding: 10px 0; border-top: 1px solid var(--border-2); }
-.lf-text-item:first-of-type { border-top: none; }
-.lf-text-item__head { display: flex; align-items: center; gap: 8px; }
-.lf-text-item__name {
-  flex: 1;
-  font-size: 14px;
-  font-weight: 600;
-  padding: 6px 8px;
-  border-radius: var(--r-sm);
-  border: 1px solid var(--border-2);
-  background: var(--surface-2);
-  color: var(--ink);
-}
-.lf-text-item__remove {
-  flex: 0 0 auto;
-  border: none;
-  background: none;
-  color: var(--ink-3);
-  font-size: 15px;
-  line-height: 1;
-  padding: 6px;
-  cursor: pointer;
-}
-.lf-text-item__remove:hover { color: var(--red, #e5484d); }
-.lf-text-item__serving { font-size: 11px; color: var(--ink-3); margin: 4px 0 6px 2px; }
-.lf-text-item__macros { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
-.lf-text-item__macros label {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--ink-3);
-}
-.lf-text-item__macros input {
-  font-size: 13px;
-  font-variant-numeric: tabular-nums;
-  padding: 5px 6px;
-  border-radius: var(--r-sm);
-  border: 1px solid var(--border-2);
-  background: var(--surface-2);
-  color: var(--ink);
-  width: 100%;
-}
-.lf-text-total {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 10px;
-  margin-top: 12px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border);
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--ink);
-  font-variant-numeric: tabular-nums;
-}
-.lf-text-total__macros { font-size: 11px; font-weight: 500; color: var(--ink-3); }
 
 .lf-today-actions { display: flex; gap: 8px; margin-top: 2px; flex-shrink: 0; }
 .lf-time-edit { display: inline-flex; align-items: center; gap: 6px; }

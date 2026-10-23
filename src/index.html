@@ -305,13 +305,6 @@
     <nav class="appbar__nav" id="appNav"></nav>
     <div class="appbar__right">
       <span class="appbar__user" id="appbarUser"></span>
-      <button class="appbar__icon-btn appbar__bell" id="btnCoachBell" aria-label="Daily briefing" title="Daily briefing">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/>
-          <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
-        </svg>
-        <span class="appbar__bell-dot" id="coachBellDot" hidden></span>
-      </button>
       <button class="appbar__icon-btn appbar__settings" id="btnOpenSettingsHeader" data-view="settings" aria-label="Settings" title="Settings">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="3"/>
@@ -1788,43 +1781,7 @@
         <div class="onboard-pills" id="lfModePills">
           <button type="button" class="pill" data-mode="scan">📷 Scan</button>
           <button type="button" class="pill" data-mode="search">🔍 Search</button>
-          <button type="button" class="pill" data-mode="photo">📸 Photo</button>
-          <button type="button" class="pill" data-mode="text">📝 Describe</button>
           <button type="button" class="pill" data-mode="manual">✏️ Manual</button>
-        </div>
-
-        <!-- Describe mode — plain-English meal text, split server-side
-             into one estimate per distinct food (see
-             food-text-estimate.js). A single parsed item drops into the
-             shared review form below like any other source; several
-             items get their own editable list, since the review form
-             only ever edits one food at a time. -->
-        <div id="lfTextPanel" hidden style="margin-top:12px">
-          <div class="field">
-            <label for="lfTextInput">What did you eat? <span class="field-hint">plain English — several foods at once is fine</span></label>
-            <textarea id="lfTextInput" rows="3" placeholder="e.g. 2 baking sweet potatoes and ready cooked chicken skewers"></textarea>
-          </div>
-          <div class="field">
-            <label for="lfTextLoggedAt">Logged at <span class="field-hint">defaults to now</span></label>
-            <input type="datetime-local" id="lfTextLoggedAt">
-          </div>
-          <button class="btn btn--primary btn--full" id="btnLfTextEstimate">Estimate calories &amp; macros</button>
-          <p class="field-hint" id="lfTextEstimateStatus"></p>
-
-          <div id="lfTextResults" hidden style="margin-top:14px">
-            <p class="field-hint" id="lfTextNote"></p>
-            <div id="lfTextItems"></div>
-            <div class="lf-text-total" id="lfTextTotal"></div>
-            <label class="checkbox-option checkbox-option--full" id="lfTextShareWrap" hidden>
-              <input type="checkbox" id="lfTextShare">
-              <span>🍽️ Also log this for <span id="lfTextShareName">—</span></span>
-            </label>
-            <div style="display:flex;gap:10px;margin-top:10px">
-              <button class="btn btn--primary" id="btnLfTextSave" style="flex:1">Log all</button>
-              <button class="btn btn--ghost" id="btnLfTextCancel" style="flex:1">Cancel</button>
-            </div>
-            <p class="field-hint" id="lfTextSaveStatus"></p>
-          </div>
         </div>
 
         <!-- Scan mode -->
@@ -1841,55 +1798,6 @@
           <div id="lfSearchResults"></div>
         </div>
 
-        <!-- Photo mode — two explicit buttons rather than one input with
-             capture="environment": that attribute forces mobile browsers
-             straight into the live camera, and the in-camera "switch to
-             library" control it leaves behind is unreliable (especially
-             installed-as-PWA) — lfPhotoInputLibrary (no capture attribute)
-             opens the normal photo picker, for logging a meal from an
-             existing photo after the fact. -->
-        <div id="lfPhotoPanel" hidden style="margin-top:12px">
-          <p class="field-hint">Before eating <span style="text-transform:none;letter-spacing:0;font-weight:400">— add up to 3 angles for a more accurate estimate</span></p>
-          <div id="lfPhotoButtons" style="display:flex;gap:10px">
-            <label class="btn btn--ghost" style="flex:1;justify-content:center">
-              📷 Take photo
-              <input type="file" id="lfPhotoInputCamera" accept="image/*" capture="environment" style="display:none">
-            </label>
-            <label class="btn btn--ghost" style="flex:1;justify-content:center">
-              🖼️ Choose photo
-              <input type="file" id="lfPhotoInputLibrary" accept="image/*" style="display:none">
-            </label>
-          </div>
-          <div id="lfPhotoThumbs" hidden style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap"></div>
-          <p class="field-hint" id="lfPhotoTimeNote" hidden></p>
-
-          <!-- Optional second photo of the leftovers — when present, the
-               estimate is of what was actually eaten (before minus
-               after) rather than the whole plate as served. -->
-          <p class="field-hint" style="margin-top:14px">After eating <span style="text-transform:none;letter-spacing:0;font-weight:400">— optional, add for a more accurate estimate of what was actually eaten</span></p>
-          <div id="lfPhotoAfterButtons" style="display:flex;gap:10px">
-            <label class="btn btn--ghost" style="flex:1;justify-content:center">
-              📷 Take photo
-              <input type="file" id="lfPhotoAfterInputCamera" accept="image/*" capture="environment" style="display:none">
-            </label>
-            <label class="btn btn--ghost" style="flex:1;justify-content:center">
-              🖼️ Choose photo
-              <input type="file" id="lfPhotoAfterInputLibrary" accept="image/*" style="display:none">
-            </label>
-          </div>
-          <div id="lfPhotoAfterPreviewWrap" hidden style="margin-top:8px">
-            <img id="lfPhotoAfterPreview" style="max-width:100%;border-radius:var(--r-md)">
-            <button type="button" class="btn btn--ghost btn--small" id="btnLfPhotoAfterClear" style="margin-top:6px">✕ Remove leftovers photo</button>
-          </div>
-
-          <div class="field" style="margin-top:8px">
-            <label for="lfPhotoDesc">Description <span class="field-hint">helps the estimate — portion size, ingredients</span></label>
-            <textarea id="lfPhotoDesc" placeholder="e.g. grilled chicken, rice, side salad, medium portion" rows="2"></textarea>
-          </div>
-          <button class="btn btn--primary btn--full" id="btnLfEstimate" disabled>Estimate calories &amp; macros</button>
-          <p class="field-hint" id="lfEstimateStatus"></p>
-        </div>
-
         <!-- Shared review/save form -->
         <div id="lfReviewForm" hidden style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
           <div class="field">
@@ -1901,7 +1809,7 @@
             <input type="text" id="lfBrand" placeholder="">
           </div>
           <div class="field">
-            <label for="lfLoggedAt">Logged at <span class="field-hint">defaults to now — set from a photo's timestamp when available</span></label>
+            <label for="lfLoggedAt">Logged at <span class="field-hint">defaults to now</span></label>
             <input type="datetime-local" id="lfLoggedAt">
           </div>
           <div style="display:flex;gap:10px">
@@ -1932,7 +1840,6 @@
               <input type="number" id="lfFat" min="0" step="0.1" inputmode="decimal">
             </div>
           </div>
-          <p class="field-hint" id="lfEstimateNote"></p>
           <!-- Only shown when diabetes tracking is on — mirrors the same
                flag already used on diabetes_meals, so a hypo treatment
                logged here skips dose suggestions the same way one
@@ -2076,27 +1983,6 @@
   </div>
 </div>
 
-<!-- Daily briefing — generated once each morning (see notify-ai-coach.js)
-     from recovery/sleep, this week's training and calorie balance, and
-     (when diabetes tracking is on) a 7-day insulin health check. Behind
-     the bell icon rather than a persistent dashboard card — a push
-     notification with a one-line teaser already goes out at ~08:00; this
-     modal is just where you read the full thing in-app. -->
-<div class="modal-backdrop" id="coachModal" hidden>
-  <div class="modal">
-    <div class="modal__head">
-      <span class="modal__title">🧭 Daily briefing</span>
-      <button class="modal__close" id="coachModalClose">×</button>
-    </div>
-    <div class="modal__body">
-      <p class="empty-state" id="coachBriefingEmpty">Your morning briefing appears here once generated (~08:00 daily).</p>
-      <div class="coach-briefing" id="coachBriefingBody" hidden>
-        <div class="coach-briefing__date" id="coachBriefingDate"></div>
-        <div class="coach-briefing__text" id="coachBriefingText"></div>
-      </div>
-    </div>
-  </div>
-</div>
 
 <!-- Detected-activity confirmation popup — see checkDetectedActivities()
      in app.js, checked on every app open (plus whenever a push

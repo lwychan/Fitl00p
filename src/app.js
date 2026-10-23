@@ -282,36 +282,7 @@ const el = {
   lfSearchPanel:    $('lfSearchPanel'),
   lfSearchInput:    $('lfSearchInput'),
   lfSearchResults:  $('lfSearchResults'),
-  lfPhotoPanel:     $('lfPhotoPanel'),
-  lfPhotoButtons:      $('lfPhotoButtons'),
-  lfPhotoInputCamera:  $('lfPhotoInputCamera'),
-  lfPhotoInputLibrary: $('lfPhotoInputLibrary'),
-  lfPhotoThumbs:    $('lfPhotoThumbs'),
-  lfPhotoTimeNote:  $('lfPhotoTimeNote'),
   lfLoggedAt:       $('lfLoggedAt'),
-  lfPhotoAfterInputCamera:  $('lfPhotoAfterInputCamera'),
-  lfPhotoAfterInputLibrary: $('lfPhotoAfterInputLibrary'),
-  lfPhotoAfterPreview:      $('lfPhotoAfterPreview'),
-  lfPhotoAfterPreviewWrap:  $('lfPhotoAfterPreviewWrap'),
-  btnLfPhotoAfterClear:     $('btnLfPhotoAfterClear'),
-  lfPhotoDesc:      $('lfPhotoDesc'),
-  btnLfEstimate:    $('btnLfEstimate'),
-  lfEstimateStatus: $('lfEstimateStatus'),
-  lfTextPanel:      $('lfTextPanel'),
-  lfTextInput:      $('lfTextInput'),
-  lfTextLoggedAt:   $('lfTextLoggedAt'),
-  btnLfTextEstimate: $('btnLfTextEstimate'),
-  lfTextEstimateStatus: $('lfTextEstimateStatus'),
-  lfTextResults:    $('lfTextResults'),
-  lfTextNote:       $('lfTextNote'),
-  lfTextItems:      $('lfTextItems'),
-  lfTextTotal:      $('lfTextTotal'),
-  lfTextShareWrap:  $('lfTextShareWrap'),
-  lfTextShare:      $('lfTextShare'),
-  lfTextShareName:  $('lfTextShareName'),
-  btnLfTextSave:    $('btnLfTextSave'),
-  btnLfTextCancel:  $('btnLfTextCancel'),
-  lfTextSaveStatus: $('lfTextSaveStatus'),
   lfReviewForm:     $('lfReviewForm'),
   lfFoodName:       $('lfFoodName'),
   lfBrand:          $('lfBrand'),
@@ -321,7 +292,6 @@ const el = {
   lfProtein:        $('lfProtein'),
   lfCarbs:          $('lfCarbs'),
   lfFat:            $('lfFat'),
-  lfEstimateNote:   $('lfEstimateNote'),
   lfHypoTreatment:     $('lfHypoTreatment'),
   lfHypoTreatmentWrap: $('lfHypoTreatmentWrap'),
   lfSaveAsCustom:   $('lfSaveAsCustom'),
@@ -370,13 +340,6 @@ const el = {
   dashChart:      $('dashChart'),
   dashChartEmpty: $('dashChartEmpty'),
   dashChartSkeleton: $('dashChartSkeleton'),
-  btnCoachBell:         $('btnCoachBell'),
-  coachModal:           $('coachModal'),
-  coachBellDot:         $('coachBellDot'),
-  coachBriefingEmpty:   $('coachBriefingEmpty'),
-  coachBriefingBody:    $('coachBriefingBody'),
-  coachBriefingDate:    $('coachBriefingDate'),
-  coachBriefingText:    $('coachBriefingText'),
   checklistCard:        $('checklistCard'),
   checklistTiles:       $('checklistTiles'),
   checklistStreak:      $('checklistStreak'),
@@ -1748,7 +1711,7 @@ async function _loadDashboardInner(signal) {
   }
 
   // ── Fetch all data in parallel ────────────────────────────
-  const [logRes, healthRes, healthHistRes, logsRes, lastSessionRes, lastSyncRes, mfpCalRes, todayWorkoutsRes, foodLogRes, recentAppleWorkoutsRes, coachRes] = await Promise.all([
+  const [logRes, healthRes, healthHistRes, logsRes, lastSessionRes, lastSyncRes, mfpCalRes, todayWorkoutsRes, foodLogRes, recentAppleWorkoutsRes] = await Promise.all([
     db.from('daily_logs')
       .select('*, cal_apple')
       .eq('user_id', currentUser.id)
@@ -1841,19 +1804,7 @@ async function _loadDashboardInner(signal) {
       .order('started_at', { ascending: false })
       .limit(15)
       .abortSignal(signal),
-
-    // Latest AI coach briefing (see notify-ai-coach.js) — independent of
-    // everything else fetched here, just batched into the same round trip.
-    db.from('ai_coach_briefings')
-      .select('briefing_date, content')
-      .eq('user_id', currentUser.id)
-      .order('briefing_date', { ascending: false })
-      .limit(1)
-      .abortSignal(signal)
-      .maybeSingle(),
   ]);
-
-  renderCoachBriefing(coachRes.data);
 
   // Daily checklist — Gemma's account only. Not batched into the
   // Promise.all above since it needs currentUser.id to decide whether
@@ -2778,47 +2729,6 @@ function setScoreGauge(key, score) {
   val.textContent = formatScoreVal(key, score);
   liquid?.style.setProperty('--fill-pct', `${pct * 100}%`);
 }
-
-// The bell's unread dot stays lit until today's briefing has actually
-// been opened, keyed by date rather than a fixed "read: true" flag so
-// tomorrow's fresh briefing isn't silently suppressed by today's read.
-const COACH_READ_KEY = 'fitl00p:coach_read_date';
-let latestCoachBriefing = null;
-
-// Stores the once-daily briefing from notify-ai-coach.js and lights the
-// bell icon's dot if it hasn't been opened yet today. Rendered into the
-// modal (openCoachModal) on demand rather than immediately — plain
-// textContent there (not innerHTML), since the content is server-
-// generated free text, not markup.
-function renderCoachBriefing(row) {
-  latestCoachBriefing = row?.content ? row : null;
-  if (!el.coachBellDot) return;
-  let readDate = null;
-  try { readDate = localStorage.getItem(COACH_READ_KEY); } catch {}
-  el.coachBellDot.hidden = !latestCoachBriefing || latestCoachBriefing.briefing_date === readDate;
-}
-
-function openCoachModal() {
-  if (!el.coachModal) return;
-  if (latestCoachBriefing) {
-    el.coachBriefingEmpty.hidden = true;
-    el.coachBriefingBody.hidden = false;
-    const d = new Date(latestCoachBriefing.briefing_date + 'T00:00:00');
-    el.coachBriefingDate.textContent = d.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
-    el.coachBriefingText.textContent = latestCoachBriefing.content;
-    try { localStorage.setItem(COACH_READ_KEY, latestCoachBriefing.briefing_date); } catch {}
-    el.coachBellDot.hidden = true;
-  } else {
-    el.coachBriefingEmpty.hidden = false;
-    el.coachBriefingBody.hidden = true;
-  }
-  el.coachModal.hidden = false;
-}
-
-el.btnCoachBell?.addEventListener('click', openCoachModal);
-document.addEventListener('click', e => {
-  if (e.target.closest('#coachModalClose')) el.coachModal.hidden = true;
-});
 
 /* ═══ DAILY CHECKLIST (Gemma's account only) ═══════════════
    Four manually-ticked daily targets — steps, water, food logged,
@@ -7517,7 +7427,6 @@ const NOTIFICATION_DEFS = [
   { key: 'sleep_target',     label: 'Sleep target',              hint: "Tonight's sleep need + suggested bedtime, each evening.", hasSchedule: true, defaultHour: 20 },
   { key: 'weighin',          label: 'Weigh-in reminder',         hint: "Nudges you to log a weight if you haven't yet.", hasSchedule: true, defaultHour: 10, hasDays: true, defaultDays: [2] },
   { key: 'oral_meds',        label: 'Oral meds reminder',        hint: 'Any active pill not logged yet today.', hasSchedule: true, defaultHour: 21 },
-  { key: 'ai_coach',         label: 'AI morning briefing',       hint: 'A short cross-domain briefing each morning.', hasSchedule: true, defaultHour: 8 },
   { key: 'tirzepatide',      label: 'Tirzepatide reminder',      hint: 'Due ~7 days after your last logged dose.', hasSchedule: false, isRelevant: () => currentUser?.id !== GEMMA_USER_ID },
   { key: 'peptide',          label: 'Peptide protocol reminder', hint: "Follows your active protocol's own schedule.", hasSchedule: false, isRelevant: () => currentUser?.id !== GEMMA_USER_ID },
   { key: 'glucose_forecast', label: 'Glucose forecast alerts',   hint: 'Predictive hypo/hyper warnings — an always-on safety check, deliberately no schedule to set.', hasSchedule: false, isRelevant: (p) => p?.diabetes_enabled !== false && currentUser?.id !== GEMMA_USER_ID },
@@ -12411,10 +12320,6 @@ let lfBarcodeDetector = null;
 let lfBarcodeScanRAF = null;
 let lfZxingControls = null; // ZXing's IScannerControls — the Safari fallback path (see startBarcodeScan)
 let lfZxingScanAttempts = 0; // frames checked so far this scan session — diagnostic only, see startBarcodeScan
-const LF_PHOTO_MAX_ANGLES = 3;
-let lfPhotoAngles = []; // up to 3 photos of the meal as served, from different angles — [{base64, mediaType, dataUrl}]
-let lfPhotoAfterBase64 = null; // optional "leftovers" photo — when set, the estimate is before-minus-after
-let lfPhotoAfterMediaType = null;
 let lfSelectedCustomFoodId = null; // set when the review form was populated from an existing custom_foods row (scan/search) — avoids re-saving a duplicate
 let lfPendingBarcode = null; // carries a scanned (found-or-not) barcode into save, so a not-found product is still remembered for next time
 let lfFavToggleActive = false; // ⭐ toggle in the review form — save this entry to favorite_meals too, alongside logging it
@@ -12423,7 +12328,6 @@ let lfBaseNutrition = null; // per-base-serving {qty, calories_kcal, protein_g, 
 let lfEditingFoodLogId = null; // set while editing an already-logged item (tapped from Today's meals) — routes btnLfSave to an UPDATE instead of an INSERT
 let lfEditingOriginal = null; // { logDate, mealSlot, hypoTreatment } the item belonged to when edit opened, so a meal-slot change re-aggregates BOTH the old and new section
 let lfCopyYesterdayItems = []; // yesterday's food_log rows for whichever section "+ Add" was just tapped on — populated by updateLfCopyYesterdayButton(), consumed by the button's own click handler
-let lfTextItems = []; // Describe mode's parsed items, kept editable in place — [{food_name, serving_desc, calories_kcal, protein_g, carbs_g, fat_g}]
 
 async function loadLogFood() {
   if (el.lfMealSlot) el.lfMealSlot.value = defaultMealSlot();
@@ -12445,8 +12349,6 @@ function selectLfMode(mode) {
   el.lfModePills?.querySelectorAll('.pill').forEach(p => p.classList.toggle('active', p.dataset.mode === mode));
   if (el.lfScanPanel)   el.lfScanPanel.hidden   = mode !== 'scan';
   if (el.lfSearchPanel) el.lfSearchPanel.hidden = mode !== 'search';
-  if (el.lfPhotoPanel)  el.lfPhotoPanel.hidden  = mode !== 'photo';
-  if (el.lfTextPanel)   el.lfTextPanel.hidden   = mode !== 'text';
   if (mode === 'manual') { resetLfForm(); showLfReviewForm(); }
   else if (el.lfReviewForm) el.lfReviewForm.hidden = true;
   if (mode === 'scan') startBarcodeScan();
@@ -12457,9 +12359,6 @@ el.lfModePills?.addEventListener('click', e => {
 });
 
 function resetLfForm() {
-  lfPhotoAngles = [];
-  lfPhotoAfterBase64 = null;
-  lfPhotoAfterMediaType = null;
   lfSelectedCustomFoodId = null;
   lfPendingBarcode = null;
   lfBaseNutrition = null;
@@ -12471,14 +12370,12 @@ function resetLfForm() {
   if (el.lfFoodName) el.lfFoodName.value = '';
   if (el.lfBrand) el.lfBrand.value = '';
   if (el.lfLoggedAt) el.lfLoggedAt.value = toDatetimeLocalValue(new Date());
-  if (el.lfPhotoTimeNote) el.lfPhotoTimeNote.hidden = true;
   if (el.lfQuantity) el.lfQuantity.value = '1';
   if (el.lfServingDesc) el.lfServingDesc.value = '';
   if (el.lfCals) el.lfCals.value = '';
   if (el.lfProtein) el.lfProtein.value = '';
   if (el.lfCarbs) el.lfCarbs.value = '';
   if (el.lfFat) el.lfFat.value = '';
-  if (el.lfEstimateNote) el.lfEstimateNote.textContent = '';
   if (el.lfSaveStatus) el.lfSaveStatus.textContent = '';
   if (el.lfHypoTreatment) el.lfHypoTreatment.checked = false;
   if (el.lfHypoTreatmentWrap) el.lfHypoTreatmentWrap.hidden = profile?.diabetes_enabled === false;
@@ -12490,26 +12387,6 @@ function resetLfForm() {
   if (householdPartner && el.lfShareName) el.lfShareName.textContent = householdPartner.name;
   lfFavToggleActive = false;
   if (el.btnLfFavToggle) { el.btnLfFavToggle.classList.remove('is-active'); el.btnLfFavToggle.setAttribute('aria-pressed', 'false'); }
-  renderLfPhotoThumbs();
-  if (el.lfPhotoDesc) el.lfPhotoDesc.value = '';
-  if (el.lfPhotoInputCamera) el.lfPhotoInputCamera.value = '';
-  if (el.lfPhotoInputLibrary) el.lfPhotoInputLibrary.value = '';
-  if (el.lfPhotoAfterPreviewWrap) el.lfPhotoAfterPreviewWrap.hidden = true;
-  if (el.lfPhotoAfterPreview) el.lfPhotoAfterPreview.src = '';
-  if (el.lfPhotoAfterInputCamera) el.lfPhotoAfterInputCamera.value = '';
-  if (el.lfPhotoAfterInputLibrary) el.lfPhotoAfterInputLibrary.value = '';
-  if (el.btnLfEstimate) el.btnLfEstimate.disabled = true;
-  lfTextItems = [];
-  if (el.lfTextInput) el.lfTextInput.value = '';
-  if (el.lfTextLoggedAt) el.lfTextLoggedAt.value = toDatetimeLocalValue(new Date());
-  if (el.lfTextResults) el.lfTextResults.hidden = true;
-  if (el.lfTextItems) el.lfTextItems.innerHTML = '';
-  if (el.lfTextNote) el.lfTextNote.textContent = '';
-  if (el.lfTextEstimateStatus) el.lfTextEstimateStatus.textContent = '';
-  if (el.lfTextSaveStatus) el.lfTextSaveStatus.textContent = '';
-  if (el.lfTextShare) el.lfTextShare.checked = false;
-  if (el.lfTextShareWrap) el.lfTextShareWrap.hidden = !HOUSEHOLD_PARTNER[currentUser?.id];
-  if (el.lfTextShareName && HOUSEHOLD_PARTNER[currentUser?.id]) el.lfTextShareName.textContent = HOUSEHOLD_PARTNER[currentUser.id].name;
 }
 el.btnLfFavToggle?.addEventListener('click', () => {
   lfFavToggleActive = !lfFavToggleActive;
@@ -12764,7 +12641,6 @@ function populateLfFormFromFood(food, opts = {}) {
   if (el.lfProtein) el.lfProtein.value = food.protein_g ?? '';
   if (el.lfCarbs) el.lfCarbs.value = food.carbs_g ?? '';
   if (el.lfFat) el.lfFat.value = food.fat_g ?? '';
-  if (el.lfEstimateNote) el.lfEstimateNote.textContent = '';
   if (el.lfSaveAsCustomWrap) el.lfSaveAsCustomWrap.hidden = !!opts.hideSaveAsCustom;
   lfPendingBarcode = opts.barcode || null;
 
@@ -12865,519 +12741,10 @@ async function runLfSearch(query) {
   });
 }
 
-/* ── EXIF capture-time extraction ────────────────────────────
-   Reads DateTimeOriginal straight out of the JPEG's own EXIF bytes — no
-   library, just walking the APP1/TIFF segment structure by hand (same
-   "no external deps" approach as the rest of this app). Has to run on
-   the ORIGINAL file, before resizeImageToBase64's canvas round-trip,
-   since re-encoding through <canvas> always strips EXIF entirely. Only
-   reads the first 256KB (EXIF always lives right after the JPEG SOI
-   marker, long before any actual image data) so this stays cheap even
-   on a full-resolution photo. */
-function readExifDateTaken(file) {
-  return new Promise(resolve => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const view = new DataView(reader.result);
-        if (view.byteLength < 4 || view.getUint16(0, false) !== 0xFFD8) return resolve(null); // not a JPEG
-        let offset = 2;
-        while (offset + 4 <= view.byteLength) {
-          const marker = view.getUint16(offset, false);
-          if ((marker & 0xFF00) !== 0xFF00) break;
-          if (marker === 0xFFDA) break; // start of scan — no more metadata segments follow
-          const segLen = view.getUint16(offset + 2, false);
-          if (marker === 0xFFE1 && offset + 4 + 6 <= view.byteLength) {
-            const exifStart = offset + 4;
-            if (view.getUint32(exifStart, false) === 0x45786966 && view.getUint16(exifStart + 4, false) === 0x0000) {
-              return resolve(readExifDateFromTiff(view, exifStart + 6));
-            }
-          }
-          offset += 2 + segLen;
-        }
-        resolve(null);
-      } catch {
-        resolve(null); // malformed/truncated segment — just skip the prefill, never block logging
-      }
-    };
-    reader.onerror = () => resolve(null);
-    reader.readAsArrayBuffer(file.slice(0, 256 * 1024));
-  });
-}
-
-function readExifDateFromTiff(view, tiffStart) {
-  const bom = view.getUint16(tiffStart, false);
-  if (bom !== 0x4949 && bom !== 0x4D4D) return null;
-  const little = bom === 0x4949;
-  const get16 = o => view.getUint16(o, little);
-  const get32 = o => view.getUint32(o, little);
-  const readAscii = (offset, count) => {
-    let s = '';
-    for (let i = 0; i < count - 1; i++) s += String.fromCharCode(view.getUint8(offset + i));
-    return s;
-  };
-  const readIFD = ifdOffset => {
-    const entries = [];
-    const count = get16(ifdOffset);
-    for (let i = 0; i < count; i++) {
-      const entryOffset = ifdOffset + 2 + i * 12;
-      const tag = get16(entryOffset);
-      const type = get16(entryOffset + 2);
-      const valCount = get32(entryOffset + 4);
-      const valueOffset = entryOffset + 8;
-      entries.push({ tag, type, count: valCount, valueOffset });
-    }
-    return entries;
-  };
-  const stringTag = (entries, tag) => {
-    const e = entries.find(x => x.tag === tag && x.type === 2);
-    if (!e) return null;
-    const strOffset = e.count <= 4 ? e.valueOffset : tiffStart + get32(e.valueOffset);
-    return readAscii(strOffset, e.count);
-  };
-
-  const ifd0 = readIFD(tiffStart + get32(tiffStart + 4));
-  const exifPtr = ifd0.find(x => x.tag === 0x8769);
-  if (exifPtr) {
-    const subEntries = readIFD(tiffStart + get32(exifPtr.valueOffset));
-    const original = stringTag(subEntries, 0x9003); // DateTimeOriginal
-    if (original) return original;
-  }
-  return stringTag(ifd0, 0x0132); // DateTime — IFD0 fallback
-}
-
-// EXIF dates are "YYYY:MM:DD HH:MM:SS", the camera's own local wall-clock
-// time with no reliable timezone info attached — treated as local time
-// here, same as reading it off the camera's own clock display would be.
-function parseExifDateTime(str) {
-  if (!str) return null;
-  const m = /^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(str.trim());
-  if (!m) return null;
-  const [, y, mo, d, h, mi, s] = m.map(Number);
-  const dt = new Date(y, mo - 1, d, h, mi, s);
-  if (Number.isNaN(dt.getTime())) return null;
-  // An unset/wrong camera clock is common enough to guard against —
-  // silently skip the prefill rather than set a nonsense logged time.
-  const now = Date.now();
-  if (dt.getTime() > now + 5 * 60000 || dt.getTime() < now - 5 * 365 * 24 * 3600000) return null;
-  return dt;
-}
-
 function toDatetimeLocalValue(d) {
   const pad = n => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
-
-function lfFormatPhotoTime(d) {
-  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  const isToday = d.toDateString() === new Date().toDateString();
-  const dayLabel = isToday ? 'today' : d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
-  return `${dayLabel} at ${time}`;
-}
-
-/* ── Photo mode — two separate inputs share this handler: the camera
-   one (capture="environment") for a photo taken right now, the library
-   one (no capture attribute) for picking an existing photo — e.g.
-   logging a meal after the fact from a photo taken earlier. Either way,
-   the photo's own EXIF capture time (when present) prefills "Logged at"
-   in the review form — the point of the whole feature: what the pump/
-   Nightscout timeline lines this meal up against should be when it was
-   actually eaten, not whenever the user got around to logging it. ── */
-async function handleLfPhotoInputChange(inputEl) {
-  const file = inputEl.files?.[0];
-  inputEl.value = ''; // clear so picking the same file again for another angle still fires 'change'
-  if (!file) return;
-  if (lfPhotoAngles.length >= LF_PHOTO_MAX_ANGLES) return;
-  try {
-    const isFirstPhoto = lfPhotoAngles.length === 0;
-    const [{ base64, mediaType, dataUrl }, exifDateStr] = await Promise.all([
-      resizeImageToBase64(file),
-      isFirstPhoto ? readExifDateTaken(file) : Promise.resolve(null),
-    ]);
-    lfPhotoAngles.push({ base64, mediaType, dataUrl });
-    renderLfPhotoThumbs();
-    if (el.btnLfEstimate) el.btnLfEstimate.disabled = false;
-
-    // Only the first photo's capture time seeds "Logged at" — later
-    // angles are the same meal, not a new one.
-    if (isFirstPhoto) {
-      const takenAt = parseExifDateTime(exifDateStr);
-      if (takenAt) {
-        if (el.lfLoggedAt) el.lfLoggedAt.value = toDatetimeLocalValue(takenAt);
-        if (el.lfPhotoTimeNote) {
-          el.lfPhotoTimeNote.hidden = false;
-          el.lfPhotoTimeNote.textContent = `📷 Photo taken ${lfFormatPhotoTime(takenAt)} — set as the logged time (adjust above if needed)`;
-        }
-      } else if (el.lfPhotoTimeNote) {
-        el.lfPhotoTimeNote.hidden = true;
-      }
-    }
-  } catch (err) {
-    showToast("Couldn't read that photo: " + err.message, true);
-  }
-}
-el.lfPhotoInputCamera?.addEventListener('change', () => handleLfPhotoInputChange(el.lfPhotoInputCamera));
-el.lfPhotoInputLibrary?.addEventListener('change', () => handleLfPhotoInputChange(el.lfPhotoInputLibrary));
-
-// Renders the thumbnail strip for the (up to 3) "before" angle photos,
-// each with a ✕ to remove it, and hides the add-photo buttons once the
-// cap is reached.
-function renderLfPhotoThumbs() {
-  if (el.lfPhotoThumbs) {
-    el.lfPhotoThumbs.hidden = lfPhotoAngles.length === 0;
-    el.lfPhotoThumbs.innerHTML = lfPhotoAngles.map((p, i) => `
-      <div style="position:relative">
-        <img src="${p.dataUrl}" style="width:72px;height:72px;object-fit:cover;border-radius:var(--r-md);display:block">
-        <button type="button" class="lf-photo-thumb-remove" data-idx="${i}" aria-label="Remove photo" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--danger,#c0392b);color:#fff;border:none;font-size:12px;line-height:1;cursor:pointer">✕</button>
-      </div>
-    `).join('');
-  }
-  // lfPhotoButtons carries an inline `style="display:flex"` (index.html),
-  // which beats the `[hidden]{display:none}` UA rule — so the `hidden`
-  // IDL property alone wouldn't actually hide it; toggle display directly.
-  if (el.lfPhotoButtons) el.lfPhotoButtons.style.display = lfPhotoAngles.length >= LF_PHOTO_MAX_ANGLES ? 'none' : 'flex';
-}
-el.lfPhotoThumbs?.addEventListener('click', e => {
-  const btn = e.target.closest('.lf-photo-thumb-remove');
-  if (!btn) return;
-  lfPhotoAngles.splice(Number(btn.dataset.idx), 1);
-  renderLfPhotoThumbs();
-  if (el.btnLfEstimate) el.btnLfEstimate.disabled = lfPhotoAngles.length === 0;
-});
-
-// Optional "after eating" photo of the leftovers — same resize/read
-// path as the main photo, but stored separately and only sent to the
-// estimator when present (see btnLfEstimate below), so a before/after
-// pair estimates what was actually eaten rather than the whole plate.
-async function handleLfPhotoAfterInputChange(inputEl) {
-  const file = inputEl.files?.[0];
-  if (!file) return;
-  try {
-    const { base64, mediaType, dataUrl } = await resizeImageToBase64(file);
-    lfPhotoAfterBase64 = base64;
-    lfPhotoAfterMediaType = mediaType;
-    if (el.lfPhotoAfterPreview) el.lfPhotoAfterPreview.src = dataUrl;
-    if (el.lfPhotoAfterPreviewWrap) el.lfPhotoAfterPreviewWrap.hidden = false;
-  } catch (err) {
-    showToast("Couldn't read that photo: " + err.message, true);
-  }
-}
-el.lfPhotoAfterInputCamera?.addEventListener('change', () => handleLfPhotoAfterInputChange(el.lfPhotoAfterInputCamera));
-el.lfPhotoAfterInputLibrary?.addEventListener('change', () => handleLfPhotoAfterInputChange(el.lfPhotoAfterInputLibrary));
-el.btnLfPhotoAfterClear?.addEventListener('click', () => {
-  lfPhotoAfterBase64 = null;
-  lfPhotoAfterMediaType = null;
-  if (el.lfPhotoAfterPreviewWrap) el.lfPhotoAfterPreviewWrap.hidden = true;
-  if (el.lfPhotoAfterPreview) el.lfPhotoAfterPreview.src = '';
-  if (el.lfPhotoAfterInputCamera) el.lfPhotoAfterInputCamera.value = '';
-  if (el.lfPhotoAfterInputLibrary) el.lfPhotoAfterInputLibrary.value = '';
-});
-
-// Downscales to a max 1024px side and re-encodes as JPEG — keeps the
-// upload small/cheap regardless of the original photo's resolution,
-// comfortably under the function's own size cap.
-function resizeImageToBase64(file) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    const url = URL.createObjectURL(file);
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      const MAX = 1024;
-      const scale = Math.min(1, MAX / Math.max(img.width, img.height));
-      const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
-      const canvas = document.createElement('canvas');
-      canvas.width = w; canvas.height = h;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(img, 0, 0, w, h);
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
-      resolve({ base64: dataUrl.split(',')[1], mediaType: 'image/jpeg', dataUrl });
-    };
-    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not load image')); };
-    img.src = url;
-  });
-}
-
-el.btnLfEstimate?.addEventListener('click', async () => {
-  if (lfPhotoAngles.length === 0) return;
-  setBtn(el.btnLfEstimate, true, 'Estimate calories & macros', 'Estimating…');
-  if (el.lfEstimateStatus) el.lfEstimateStatus.textContent = '';
-  try {
-    const session = (await db.auth.getSession()).data.session;
-    const res = await fetch(`${FUNCTIONS_ORIGIN}/food-photo-estimate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
-      body: JSON.stringify({
-        // Up to 3 photos of the same meal from different angles.
-        images: lfPhotoAngles.map(p => ({ base64: p.base64, media_type: p.mediaType })),
-        description: el.lfPhotoDesc?.value || '',
-        // Optional leftovers photo — when present, the server estimates
-        // what was actually eaten (before minus after) instead of the
-        // whole plate as served.
-        image_base64_after: lfPhotoAfterBase64 || undefined,
-        media_type_after: lfPhotoAfterMediaType || undefined,
-      }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      if (el.lfEstimateStatus) el.lfEstimateStatus.textContent = data.error || 'Estimate failed.';
-      return;
-    }
-    lfSelectedCustomFoodId = null;
-    // A read title (from a nutrition-label screenshot) beats the photo
-    // description as the food name — it's the actual name of the thing,
-    // not just whatever the person typed as a caption.
-    if (el.lfFoodName && (!el.lfFoodName.value || data.food_name)) el.lfFoodName.value = data.food_name || el.lfPhotoDesc?.value?.slice(0, 60) || 'Photo estimate';
-    if (el.lfQuantity) el.lfQuantity.value = '1';
-    if (el.lfServingDesc) el.lfServingDesc.value = data.food_name ? '1 serving' : 'estimated meal';
-    if (el.lfCals) el.lfCals.value = data.calories_kcal;
-    if (el.lfProtein) el.lfProtein.value = data.protein_g;
-    if (el.lfCarbs) el.lfCarbs.value = data.carbs_g;
-    if (el.lfFat) el.lfFat.value = data.fat_g;
-    if (el.lfEstimateNote) {
-      el.lfEstimateNote.textContent = data.food_name
-        ? `Read from label (${data.confidence} confidence): ${data.note || 'no notes'} — review and adjust before saving.`
-        : `Claude's estimate (${data.confidence} confidence): ${data.note || 'no notes'} — review and adjust before saving.`;
-    }
-    if (el.lfSaveAsCustomWrap) el.lfSaveAsCustomWrap.hidden = false;
-    if (el.lfSaveAsCustom) el.lfSaveAsCustom.checked = false; // a one-off estimated meal usually isn't worth saving as a reusable food
-    showLfReviewForm();
-  } catch (err) {
-    if (el.lfEstimateStatus) el.lfEstimateStatus.textContent = "Couldn't reach the estimator: " + err.message;
-  } finally {
-    setBtn(el.btnLfEstimate, false, 'Estimate calories & macros');
-  }
-});
-
-/* ── Describe mode ───────────────────────────────────────── */
-// One parsed item behaves exactly like a photo/scan/search result — it
-// drops into the shared review form, so favourites, "save to food list",
-// hypo and share all keep working. Several items can't: the review form
-// edits one food at a time, so they get their own list with the same
-// numbers editable in place, saved as one food_log row each.
-el.btnLfTextEstimate?.addEventListener('click', async () => {
-  const text = el.lfTextInput?.value.trim();
-  if (!text) {
-    if (el.lfTextEstimateStatus) el.lfTextEstimateStatus.textContent = 'Describe what you ate first.';
-    return;
-  }
-  setBtn(el.btnLfTextEstimate, true, 'Estimate calories & macros', 'Estimating…');
-  if (el.lfTextEstimateStatus) el.lfTextEstimateStatus.textContent = '';
-  try {
-    const session = (await db.auth.getSession()).data.session;
-    const res = await fetch(`${FUNCTIONS_ORIGIN}/food-text-estimate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
-      body: JSON.stringify({ text }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      if (el.lfTextEstimateStatus) el.lfTextEstimateStatus.textContent = data.error || 'Estimate failed.';
-      return;
-    }
-    const noteText = `Claude's estimate (${data.confidence} confidence): ${data.note || 'no notes'} — review and adjust before saving.`;
-
-    if (data.items.length === 1) {
-      const item = data.items[0];
-      lfSelectedCustomFoodId = null;
-      lfTextItems = [];
-      if (el.lfTextResults) el.lfTextResults.hidden = true;
-      if (el.lfFoodName) el.lfFoodName.value = item.food_name;
-      if (el.lfQuantity) el.lfQuantity.value = '1';
-      if (el.lfServingDesc) el.lfServingDesc.value = item.serving_desc || '';
-      if (el.lfCals) el.lfCals.value = item.calories_kcal;
-      if (el.lfProtein) el.lfProtein.value = item.protein_g;
-      if (el.lfCarbs) el.lfCarbs.value = item.carbs_g;
-      if (el.lfFat) el.lfFat.value = item.fat_g;
-      if (el.lfLoggedAt && el.lfTextLoggedAt?.value) el.lfLoggedAt.value = el.lfTextLoggedAt.value;
-      if (el.lfEstimateNote) el.lfEstimateNote.textContent = noteText;
-      if (el.lfSaveAsCustomWrap) el.lfSaveAsCustomWrap.hidden = false;
-      if (el.lfSaveAsCustom) el.lfSaveAsCustom.checked = false; // a one-off estimate usually isn't worth saving as a reusable food
-      showLfReviewForm();
-      return;
-    }
-
-    lfTextItems = data.items;
-    if (el.lfReviewForm) el.lfReviewForm.hidden = true;
-    if (el.lfTextNote) el.lfTextNote.textContent = noteText;
-    if (el.lfTextSaveStatus) el.lfTextSaveStatus.textContent = '';
-    renderLfTextItems();
-    if (el.lfTextResults) el.lfTextResults.hidden = false;
-  } catch (err) {
-    if (el.lfTextEstimateStatus) el.lfTextEstimateStatus.textContent = "Couldn't reach the estimator: " + err.message;
-  } finally {
-    setBtn(el.btnLfTextEstimate, false, 'Estimate calories & macros');
-  }
-});
-
-const LF_TEXT_MACRO_FIELDS = [
-  { key: 'calories_kcal', label: 'kcal', step: '1' },
-  { key: 'carbs_g', label: 'Carbs', step: '0.1' },
-  { key: 'fat_g', label: 'Fat', step: '0.1' },
-  { key: 'protein_g', label: 'Protein', step: '0.1' },
-];
-
-function renderLfTextItems() {
-  if (!el.lfTextItems) return;
-  if (!lfTextItems.length) {
-    el.lfTextItems.innerHTML = '<p class="empty-state">No items left.</p>';
-    if (el.lfTextTotal) el.lfTextTotal.textContent = '';
-    return;
-  }
-  el.lfTextItems.innerHTML = lfTextItems.map((item, idx) => `
-    <div class="lf-text-item" data-idx="${idx}">
-      <div class="lf-text-item__head">
-        <input type="text" class="lf-text-item__name" data-field="food_name" value="${escapeHtml(item.food_name)}">
-        <button type="button" class="lf-text-item__remove" data-remove="${idx}" aria-label="Remove ${escapeHtml(item.food_name)}">✕</button>
-      </div>
-      ${item.serving_desc ? `<div class="lf-text-item__serving">${escapeHtml(item.serving_desc)}</div>` : ''}
-      <div class="lf-text-item__macros">
-        ${LF_TEXT_MACRO_FIELDS.map(f => `
-          <label>${f.label}
-            <input type="number" min="0" step="${f.step}" inputmode="decimal" data-field="${f.key}" value="${item[f.key]}">
-          </label>`).join('')}
-      </div>
-    </div>`).join('');
-  renderLfTextTotal();
-}
-
-function renderLfTextTotal() {
-  if (!el.lfTextTotal) return;
-  const t = lfTextItems.reduce((acc, it) => ({
-    cals: acc.cals + (Number(it.calories_kcal) || 0),
-    carbs: acc.carbs + (Number(it.carbs_g) || 0),
-    fat: acc.fat + (Number(it.fat_g) || 0),
-    protein: acc.protein + (Number(it.protein_g) || 0),
-  }), { cals: 0, carbs: 0, fat: 0, protein: 0 });
-  const r1 = n => Math.round(n * 10) / 10;
-  el.lfTextTotal.innerHTML = `<span>${lfTextItems.length} item${lfTextItems.length === 1 ? '' : 's'} · ${Math.round(t.cals)} kcal</span>`
-    + `<span class="lf-text-total__macros">${r1(t.carbs)}g C · ${r1(t.fat)}g F · ${r1(t.protein)}g P</span>`;
-}
-
-el.lfTextItems?.addEventListener('input', e => {
-  const input = e.target.closest('[data-field]');
-  if (!input) return;
-  const idx = Number(input.closest('.lf-text-item')?.dataset.idx);
-  const item = lfTextItems[idx];
-  if (!item) return;
-  const field = input.dataset.field;
-  item[field] = field === 'food_name' ? input.value : (Number(input.value) || 0);
-  if (field !== 'food_name') renderLfTextTotal();
-});
-
-el.lfTextItems?.addEventListener('click', e => {
-  const btn = e.target.closest('[data-remove]');
-  if (!btn) return;
-  lfTextItems.splice(Number(btn.dataset.remove), 1);
-  renderLfTextItems();
-});
-
-el.btnLfTextCancel?.addEventListener('click', () => { resetLfForm(); selectLfMode(null); });
-
-el.btnLfTextSave?.addEventListener('click', async () => {
-  if (!currentUser || !lfTextItems.length) return;
-  const usable = lfTextItems.filter(it => it.food_name.trim() && (Number(it.calories_kcal) || 0) > 0);
-  if (!usable.length) {
-    if (el.lfTextSaveStatus) el.lfTextSaveStatus.textContent = 'Each item needs a name and calories.';
-    return;
-  }
-  const mealSlot = el.lfMealSlot?.value || defaultMealSlot();
-  const loggedAtInput = el.lfTextLoggedAt?.value ? new Date(el.lfTextLoggedAt.value) : null;
-  const loggedAt = loggedAtInput && !Number.isNaN(loggedAtInput.getTime()) ? loggedAtInput : new Date();
-  const logDate = loggedAt.toISOString().slice(0, 10);
-  const wantsShare = !!el.lfTextShare?.checked && !!HOUSEHOLD_PARTNER[currentUser.id];
-
-  setBtn(el.btnLfTextSave, true, 'Log all', 'Saving…');
-  try {
-    const rows = usable.map(it => ({
-      user_id: currentUser.id,
-      log_date: logDate,
-      logged_at: loggedAt.toISOString(),
-      meal_slot: mealSlot,
-      source: 'text',
-      food_name: it.food_name.trim(),
-      serving_desc: it.serving_desc || null,
-      quantity: 1,
-      calories_kcal: Math.round(Number(it.calories_kcal) || 0),
-      protein_g: Math.round((Number(it.protein_g) || 0) * 10) / 10,
-      carbs_g: Math.round((Number(it.carbs_g) || 0) * 10) / 10,
-      fat_g: Math.round((Number(it.fat_g) || 0) * 10) / 10,
-      estimate_note: el.lfTextNote?.textContent || null,
-      hypo_treatment: false,
-    }));
-    const { data: saved, error } = await db.from('food_log').insert(rows).select('id');
-    if (error) {
-      if (el.lfTextSaveStatus) el.lfTextSaveStatus.textContent = "Couldn't save: " + error.message;
-      return;
-    }
-
-    // Snacks are dosed per item, so each row needs its own bridge call.
-    // Every other slot aggregates the whole section from food_log, so one
-    // call after all the rows are in re-sums the lot — running it per row
-    // would just repeat the same full re-sum N times.
-    let dxBridgeError = null;
-    if (profile?.diabetes_enabled !== false) {
-      const bridgeItem = i => ({
-        food_name: rows[i].food_name,
-        carbs_g: rows[i].carbs_g,
-        fat_g: rows[i].fat_g,
-        protein_g: rows[i].protein_g,
-        logged_at: rows[i].logged_at,
-      });
-      if (mealSlot === 'snack') {
-        for (let i = 0; i < rows.length; i++) {
-          const { error: e } = await bridgeLfMealChange(logDate, mealSlot, false, saved[i].id, bridgeItem(i));
-          if (e) dxBridgeError = e;
-        }
-      } else {
-        const last = rows.length - 1;
-        const { error: e } = await bridgeLfMealChange(logDate, mealSlot, false, saved[last].id, bridgeItem(last));
-        if (e) dxBridgeError = e;
-      }
-    }
-
-    let shareError = null;
-    if (wantsShare) {
-      try {
-        const session = (await db.auth.getSession()).data.session;
-        for (const row of rows) {
-          const shareRes = await fetch(`${FUNCTIONS_ORIGIN}/share-food-log`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token}` },
-            body: JSON.stringify({
-              log_date: row.log_date, logged_at: row.logged_at, meal_slot: row.meal_slot,
-              food_name: row.food_name, brand: null, serving_desc: row.serving_desc,
-              quantity: 1,
-              calories_kcal: row.calories_kcal, protein_g: row.protein_g, carbs_g: row.carbs_g, fat_g: row.fat_g,
-              barcode: null,
-            }),
-          });
-          if (!shareRes.ok) {
-            const errData = await shareRes.json().catch(() => ({}));
-            shareError = errData.error || `HTTP ${shareRes.status}`;
-          }
-        }
-      } catch (err) {
-        shareError = err.message;
-      }
-    }
-
-    const label = `${rows.length} item${rows.length === 1 ? '' : 's'}`;
-    resetLfForm();
-    selectLfMode(null);
-    await Promise.all([renderLfTodayTotals(), renderLfTodayList(), renderLfFavorites()]);
-    if (shareError) {
-      showToast(`Logged ${label}, but couldn't share: ${shareError}`, true);
-    } else if (dxBridgeError) {
-      showToast(`Logged ${label}, but it won't show in the dose calculator: ${dxBridgeError}`, true);
-    } else if (wantsShare) {
-      showToast(`Logged ${label} — shared with ${HOUSEHOLD_PARTNER[currentUser.id].name}.`);
-    } else {
-      showToast(`Logged ${label}.`);
-    }
-  } finally {
-    setBtn(el.btnLfTextSave, false, 'Log all');
-  }
-});
 
 /* ── Save ────────────────────────────────────────────────── */
 el.btnLfCancel?.addEventListener('click', () => { resetLfForm(); selectLfMode(null); });
@@ -13492,7 +12859,7 @@ el.btnLfSave?.addEventListener('click', async () => {
       log_date: logDate,
       logged_at: loggedAt.toISOString(),
       meal_slot: mealSlot,
-      source: lfSelectedCustomFoodId ? (lfSelectedMode === 'search' ? 'search' : 'scan') : (lfPhotoAngles.length > 0 ? 'photo' : (lfPendingBarcode ? 'scan' : (lfSelectedMode === 'text' ? 'text' : 'manual'))),
+      source: lfSelectedCustomFoodId ? (lfSelectedMode === 'search' ? 'search' : 'scan') : (lfPendingBarcode ? 'scan' : 'manual'),
       food_name: name, brand, serving_desc: servingDesc,
       quantity,
       calories_kcal: Math.round(baseCals * quantity),
@@ -13500,7 +12867,6 @@ el.btnLfSave?.addEventListener('click', async () => {
       carbs_g: Math.round(baseCarbs * quantity * 10) / 10,
       fat_g: Math.round(baseFat * quantity * 10) / 10,
       barcode: lfPendingBarcode,
-      estimate_note: el.lfEstimateNote?.textContent || null,
       custom_food_id: customFoodId,
       hypo_treatment: hypoTreatment,
     }).select('id').single();
