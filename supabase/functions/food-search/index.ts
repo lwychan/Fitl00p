@@ -54,7 +54,7 @@ Deno.serve(async (req: Request) => {
 // UK filter finds too little. The query is Lucene syntax, so quotes, colons
 // and brackets in what was typed are stripped first.
 async function searchOpenFoodFacts(query: string) {
-  const clean = query.replace(/["':()[]{}\]/g, ' ').trim();
+  const clean = query.replace(/["':()[\]{}\\]/g, ' ').trim();
   const uk = await offSearch(`${clean} countries_tags:"en:united-kingdom"`);
   if (uk.length >= 3) return uk;
   const all = await offSearch(clean);
@@ -126,13 +126,14 @@ function getFdcKey(): Promise<string> {
   })();
   return fdcKey;
 }
+
 function rankUsda(foods: any[], query: string) {
-  const stem = query.trim().toLowerCase().split(/s+/)[0].replace(/(es|s)$/, '');
+  const stem = query.trim().toLowerCase().split(/\s+/)[0].replace(/(es|s)$/, '');
   const score = (f: any) => {
     const d = String(f.description || '').toLowerCase();
     let s = 0;
     if (d.split(',')[0].trim().startsWith(stem)) s += 4;
-    if (/raw/.test(d)) s += 1;
+    if (/\braw\b/.test(d)) s += 1;
     if (d.startsWith('babyfood')) s -= 5;
     return s;
   };
