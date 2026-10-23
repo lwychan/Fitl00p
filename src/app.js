@@ -12799,10 +12799,13 @@ async function runLfSearch(query) {
   if (!el.lfSearchResults) return;
   if (query.length < 2) { el.lfSearchResults.innerHTML = ''; return; }
 
+  // PostgREST's or() filter syntax treats , ( ) as separators — strip them
+  // from the typed text so e.g. "chicken, rice" doesn't break the query.
+  const like = query.replace(/[,()]/g, ' ').trim();
   const [customRes, offRes] = await Promise.all([
     db.from('custom_foods')
       .select('id, name, brand, serving_desc, serving_qty, serving_unit, calories_kcal, protein_g, carbs_g, fat_g')
-      .or(`name.ilike.%${query}%,brand.ilike.%${query}%`)
+      .or(`name.ilike.%${like}%,brand.ilike.%${like}%`)
       .order('name', { ascending: true })
       .limit(20),
     fetch(`${FUNCTIONS_ORIGIN}/food-search?q=${encodeURIComponent(query)}`, { headers: FUNCTIONS_ANON_HEADERS })
@@ -12812,15 +12815,17 @@ async function runLfSearch(query) {
 
   const customFoods = customRes.data || [];
   const offFoods = offRes.results || [];
+  const genericFoods = offRes.generic || []; // USDA FoodData Central, via the same food-search function
 
-  if (!customFoods.length && !offFoods.length) {
-    el.lfSearchResults.innerHTML = '<p class="empty-state">No matches — try Photo or Manual instead.</p>';
+  if (!customFoods.length && !offFoods.length && !genericFoods.length) {
+    el.lfSearchResults.innerHTML = '<p class="empty-state">No matches — try Scan or Manual instead.</p>';
     return;
   }
 
   el.lfSearchResults.innerHTML = [
     customFoods.length ? `<p class="field-hint" style="margin:10px 0 4px">Your foods</p>${customFoods.map(f => lfSearchResultButton(f, 'custom', f.id)).join('')}` : '',
-    offFoods.length ? `<p class="field-hint" style="margin:10px 0 4px">Open Food Facts</p>${offFoods.map((f, i) => lfSearchResultButton(f, 'off', i)).join('')}` : '',
+    genericFoods.length ? `<p class="field-hint" style="margin:10px 0 4px">Generic foods (USDA, per 100g)</p>${genericFoods.map((f, i) => lfSearchResultButton(f, 'usda', i)).join('')}` : '',
+    offFoods.length ? `<p class="field-hint" style="margin:10px 0 4px">Branded (Open Food Facts)</p>${offFoods.map((f, i) => lfSearchResultButton(f, 'off', i)).join('')}` : '',
   ].join('');
 
   el.lfSearchResults.querySelectorAll('.lf-search-result').forEach(btn => {
@@ -12830,7 +12835,7 @@ async function runLfSearch(query) {
         if (!food) return;
         populateLfFormFromFood(food, { custom_food_id: food.id, hideSaveAsCustom: true });
       } else {
-        const food = offFoods[Number(btn.dataset.id)];
+        const food = (btn.dataset.source === 'usda' ? genericFoods : offFoods)[Number(btn.dataset.id)];
         if (!food) return;
         populateLfFormFromFood(food, { barcode: food.barcode }); // not yet in custom_foods — offers "Save to shared list", same as a fresh scan
       }
