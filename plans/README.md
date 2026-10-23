@@ -36,7 +36,7 @@ Recon facts every plan relies on:
 | — | [003 — Nightscout requires a token; token goes in a header](003-close-public-nightscout.md) (findings 3, 6) | **won't do** (user 2026-10-23: public glucose data is acceptable) | — |
 | 1 | [005 — Run tests before TestFlight builds](005-run-tests-before-testflight-build.md) (finding 8) | done (044432e) | — |
 | 2 | [002 — Lock down `exercise_media` writes](002-lock-exercise-media-writes.md) (finding 2) + 001 step 4 | **paused** — user declined the DB policy change 2026-10-23 | — |
-| 3 | [004 — Food tab, SparkyFitness-style](004-food-tab-sparky-style.md) (D1) | in progress — steps 1, 2, 3, 4, 6, 7 done (9ab85c7, bfbf67b); step 5 (saved_meals table) awaits user OK | after 005 (tests gate the build) |
+| 3 | [004 — Food tab, SparkyFitness-style](004-food-tab-sparky-style.md) (D1) | done (9ab85c7, bfbf67b, saved meals + USDA search added after) | after 005 (tests gate the build) |
 
 ```
 001 ──┐
