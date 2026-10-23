@@ -1717,10 +1717,16 @@
     <div class="view-inner">
       <div class="view-head">
         <h1 class="view-title" style="margin:0;font-size:20px">Food</h1>
+        <!-- Diary day — the label jumps back to today. -->
+        <div class="lf-datenav">
+          <button type="button" class="lf-datenav__arrow" id="btnLfDayPrev" aria-label="Previous day">‹</button>
+          <button type="button" class="lf-datenav__label" id="btnLfDayLabel" aria-label="Go to today">Today</button>
+          <button type="button" class="lf-datenav__arrow" id="btnLfDayNext" aria-label="Next day">›</button>
+        </div>
       </div>
 
       <div class="card">
-        <div class="card-eyebrow">Today's totals</div>
+        <div class="card-eyebrow">Eaten</div>
         <div class="macro-totals" id="foodMacroTotals">
           <div class="macro-total"><span class="macro-total__val" id="mtCals">0</span><span class="macro-total__label">kcal</span></div>
           <div class="macro-total"><span class="macro-total__val" id="mtProtein">0g</span><span class="macro-total__label">Protein</span></div>
@@ -1764,6 +1770,19 @@
       </div>
 
       <div class="card">
+        <div class="card-eyebrow">Diary</div>
+        <div id="lfTodayList"><p class="empty-state">Nothing logged yet.</p></div>
+      </div>
+
+      <!-- Add-food sheet — opened from a diary section's ADD FOOD (or by
+           tapping a logged item to edit it). -->
+      <div class="modal-backdrop" id="lfAddSheet" hidden>
+      <div class="modal">
+      <div class="modal__head">
+        <span class="modal__title" id="lfAddSheetTitle">Add food</span>
+        <button type="button" class="modal__close" id="btnLfAddSheetClose" aria-label="Close">×</button>
+      </div>
+      <div class="modal__body">
         <div class="field">
           <label for="lfMealSlot">Meal</label>
           <select id="lfMealSlot">
@@ -1777,9 +1796,15 @@
         <button type="button" class="btn btn--ghost btn--full" id="btnLfCopyYesterday" hidden style="margin-bottom:10px">📋 Copy yesterday's meal</button>
 
         <div class="onboard-pills" id="lfModePills">
+          <button type="button" class="pill" data-mode="recent">🕘 Recent</button>
           <button type="button" class="pill" data-mode="scan">📷 Scan</button>
           <button type="button" class="pill" data-mode="search">🔍 Search</button>
           <button type="button" class="pill" data-mode="manual">✏️ Manual</button>
+        </div>
+
+        <!-- Recent mode — foods you've logged before, newest first -->
+        <div id="lfRecentPanel" hidden style="margin-top:12px">
+          <div id="lfRecentList"></div>
         </div>
 
         <!-- Scan mode -->
@@ -1865,10 +1890,7 @@
           <p class="field-hint" id="lfSaveStatus"></p>
         </div>
       </div>
-
-      <div class="card">
-        <div class="card-eyebrow">Logged today</div>
-        <div id="lfTodayList"><p class="empty-state">Nothing logged yet.</p></div>
+      </div>
       </div>
     </div>
   </div>
@@ -2086,6 +2108,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@zxing/browser@0.2.1/umd/zxing-browser.min.js" defer></script>
 <script src="diabetes-engine.js"></script>
 <script src="nightscout-adapter.js"></script>
+<script src="food-utils.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

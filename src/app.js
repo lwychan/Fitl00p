@@ -280,6 +280,14 @@ const el = {
   lfSearchPanel:    $('lfSearchPanel'),
   lfSearchInput:    $('lfSearchInput'),
   lfSearchResults:  $('lfSearchResults'),
+  lfRecentPanel:    $('lfRecentPanel'),
+  lfRecentList:     $('lfRecentList'),
+  lfAddSheet:       $('lfAddSheet'),
+  lfAddSheetTitle:  $('lfAddSheetTitle'),
+  btnLfAddSheetClose: $('btnLfAddSheetClose'),
+  btnLfDayPrev:     $('btnLfDayPrev'),
+  btnLfDayNext:     $('btnLfDayNext'),
+  btnLfDayLabel:    $('btnLfDayLabel'),
   lfLoggedAt:       $('lfLoggedAt'),
   lfReviewForm:     $('lfReviewForm'),
   lfFoodName:       $('lfFoodName'),
@@ -12241,14 +12249,16 @@ function initOnboarding() {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   LOG FOOD — fitl00p-native calorie/macro tracking
-   Four ways in: barcode scan (native BarcodeDetector where available,
-   ZXing as a Safari fallback — see startBarcodeScan — against Open Food
-   Facts, client-side, no backend needed for lookups since OFF's API is
-   keyless and CORS-open), search the shared custom-foods list, a Claude
-   vision estimate from a photo + description, or plain manual entry.
-   All four funnel into the same review/save form so the numbers are
-   always checked before they're logged, never saved sight-unseen.
+   FOOD TAB — fitl00p-native calorie/macro diary (SparkyFitness-style)
+   A day-by-day diary (‹ date › in the view head, lfDiaryDate) of meal
+   sections; each section's ADD FOOD opens the add-food sheet. Four ways
+   in: Recent (foods already logged), barcode scan (native BarcodeDetector
+   where available, ZXing as a Safari fallback — see startBarcodeScan —
+   against Open Food Facts, client-side), search (shared custom-foods list
+   + Open Food Facts via the food-search Edge Function), or manual entry.
+   All of them funnel into the same review/save form so the numbers are
+   always checked before they're logged, and every food_log write goes
+   through bridgeLfMealChange so diabetes dosing sees the meal.
 ═══════════════════════════════════════════════════════════ */
 const MEAL_SLOT_BY_HOUR = { 5: 'breakfast', 11: 'lunch', 16: 'dinner', 21: 'snack' };
 function defaultMealSlot() {
@@ -12319,14 +12329,112 @@ let lfFavoritesData = []; // last-rendered favorite_meals rows, so a chip click 
 let lfBaseNutrition = null; // per-base-serving {qty, calories_kcal, protein_g, carbs_g, fat_g} from the selected food — lets editing Serving size live-rescale the macro fields
 let lfEditingFoodLogId = null; // set while editing an already-logged item (tapped from Today's meals) — routes btnLfSave to an UPDATE instead of an INSERT
 let lfEditingOriginal = null; // { logDate, mealSlot, hypoTreatment } the item belonged to when edit opened, so a meal-slot change re-aggregates BOTH the old and new section
-let lfCopyYesterdayItems = []; // yesterday's food_log rows for whichever section "+ Add" was just tapped on — populated by updateLfCopyYesterdayButton(), consumed by the button's own click handler
+let lfCopyYesterdayItems = []; // the previous day's food_log rows for whichever section "ADD FOOD" was just tapped on — populated by updateLfCopyYesterdayButton(), consumed by the button's own click handler
+let lfDiaryDate = null; // diary day shown on the Food tab (UTC YYYY-MM-DD, same convention as food_log.log_date); null = today, so "today" keeps up past midnight
+let lfRecentFoods = []; // last-rendered Recent list, so a tap can look itself up by index
+let lfRecentSource = null; // source of the Recent item picked, reused on save (food_log.source has a fixed set of values)
+
+const { addDaysISO, defaultLoggedAtFor, dedupeRecentFoods } = window.FoodUtils; // src/food-utils.js
+const lfDiaryDay = () => lfDiaryDate || todayISO();
+const lfDefaultLoggedAt = () => defaultLoggedAtFor(lfDiaryDay());
+
+function lfDayLabel(iso) {
+  const today = todayISO();
+  if (iso === today) return 'Today';
+  if (iso === addDaysISO(today, -1)) return 'Yesterday';
+  return new Date(iso + 'T12:00:00Z').toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+}
+
+async function renderLfDiary() {
+  const day = lfDiaryDay();
+  if (el.btnLfDayLabel) el.btnLfDayLabel.textContent = lfDayLabel(day);
+  if (el.btnLfDayNext) el.btnLfDayNext.disabled = day >= todayISO();
+  await Promise.all([renderLfTodayTotals(), renderLfTodayList()]);
+}
+
+function setLfDiaryDay(iso) {
+  lfDiaryDate = iso >= todayISO() ? null : iso;
+  closeLfAddSheet();
+  renderLfDiary();
+}
+el.btnLfDayPrev?.addEventListener('click', () => setLfDiaryDay(addDaysISO(lfDiaryDay(), -1)));
+el.btnLfDayNext?.addEventListener('click', () => setLfDiaryDay(addDaysISO(lfDiaryDay(), 1)));
+el.btnLfDayLabel?.addEventListener('click', () => setLfDiaryDay(todayISO()));
 
 async function loadLogFood() {
+  lfDiaryDate = null; // the tab always opens on today
   if (el.lfMealSlot) el.lfMealSlot.value = defaultMealSlot();
-  resetLfForm();
-  selectLfMode(null);
-  await Promise.all([renderLfTodayTotals(), renderLfTodayList(), renderLfFavorites()]);
+  closeLfAddSheet();
+  await Promise.all([renderLfDiary(), renderLfFavorites()]);
 }
+
+/* ── Add-food sheet ──────────────────────────────────────── */
+// slot: a LF_SECTIONS key ('hypo' presets the hypo checkbox), or null to
+// keep whatever the Meal dropdown already says (editing an item).
+function openLfAddSheet(slot, { editing = false } = {}) {
+  if (!editing) {
+    resetLfForm();
+    if (slot === 'hypo') {
+      if (el.lfMealSlot) el.lfMealSlot.value = defaultMealSlot();
+      if (el.lfHypoTreatment) el.lfHypoTreatment.checked = true;
+    } else if (slot && el.lfMealSlot) {
+      el.lfMealSlot.value = slot;
+    }
+  }
+  const label = editing ? 'Edit food' : `Add to ${LF_SECTIONS.find(s => s.key === slot)?.label || 'diary'}`;
+  if (el.lfAddSheetTitle) el.lfAddSheetTitle.textContent = `${label} · ${lfDayLabel(lfDiaryDay())}`;
+  if (el.lfAddSheet) el.lfAddSheet.hidden = false;
+  if (!editing) {
+    selectLfMode('recent');
+    if (slot) updateLfCopyYesterdayButton(slot);
+  }
+}
+
+function closeLfAddSheet() {
+  if (!el.lfAddSheet || el.lfAddSheet.hidden) return;
+  selectLfMode(null); // also stops the barcode camera
+  resetLfForm();
+  el.lfAddSheet.hidden = true;
+}
+el.btnLfAddSheetClose?.addEventListener('click', closeLfAddSheet);
+el.lfAddSheet?.addEventListener('click', e => { if (e.target === el.lfAddSheet) closeLfAddSheet(); });
+
+/* ── Recent foods ─────────────────────────────────────────── */
+// Last 20 distinct foods logged (by name + brand), newest first —
+// SparkyFitness-style quick re-add. Per-serving values are recovered from
+// the logged totals (food_log stores quantity × per-serving).
+async function renderLfRecent() {
+  if (!el.lfRecentList || !currentUser) return;
+  el.lfRecentList.innerHTML = '<p class="empty-state">Loading…</p>';
+  const { data, error } = await db.from('food_log')
+    .select('food_name, brand, serving_desc, quantity, calories_kcal, protein_g, carbs_g, fat_g, custom_food_id, barcode, source')
+    .eq('user_id', currentUser.id)
+    .order('logged_at', { ascending: false })
+    .limit(200);
+  if (error) { el.lfRecentList.innerHTML = '<p class="empty-state">Couldn\'t load recent foods.</p>'; return; }
+  lfRecentFoods = dedupeRecentFoods(data, 20);
+  el.lfRecentList.innerHTML = lfRecentFoods.length
+    ? lfRecentFoods.map((r, i) => `<button type="button" class="lf-search-result" data-recent="${i}">
+        <span class="lf-search-result__name">${escapeHtml(r.food_name)}${r.brand ? ` <span class="lf-search-result__brand">${escapeHtml(r.brand)}</span>` : ''}</span>
+        <span class="lf-search-result__cals">${Math.round(r.calories_kcal)} kcal</span>
+      </button>`).join('')
+    : '<p class="empty-state">Nothing logged yet — try Search, Scan or Manual.</p>';
+}
+el.lfRecentList?.addEventListener('click', e => {
+  const btn = e.target.closest('[data-recent]');
+  const r = btn && lfRecentFoods[Number(btn.dataset.recent)];
+  if (!r) return;
+  const qty = Number(r.quantity) || 1;
+  const per = v => Math.round((Number(v) || 0) / qty * 10) / 10;
+  populateLfFormFromFood(
+    { name: r.food_name, brand: r.brand, serving_desc: r.serving_desc,
+      calories_kcal: Math.round((Number(r.calories_kcal) || 0) / qty),
+      protein_g: per(r.protein_g), carbs_g: per(r.carbs_g), fat_g: per(r.fat_g) },
+    { custom_food_id: r.custom_food_id, barcode: r.barcode, hideSaveAsCustom: true });
+  if (el.lfQuantity) el.lfQuantity.value = qty;
+  lfRecentSource = r.source === 'shared' ? 'manual' : r.source;
+  showLfReviewForm();
+});
 
 
 /* ── Mode switching ──────────────────────────────────────── */
@@ -12336,9 +12444,11 @@ function selectLfMode(mode) {
   el.lfModePills?.querySelectorAll('.pill').forEach(p => p.classList.toggle('active', p.dataset.mode === mode));
   if (el.lfScanPanel)   el.lfScanPanel.hidden   = mode !== 'scan';
   if (el.lfSearchPanel) el.lfSearchPanel.hidden = mode !== 'search';
+  if (el.lfRecentPanel) el.lfRecentPanel.hidden = mode !== 'recent';
   if (mode === 'manual') { resetLfForm(); showLfReviewForm(); }
   else if (el.lfReviewForm) el.lfReviewForm.hidden = true;
   if (mode === 'scan') startBarcodeScan();
+  if (mode === 'recent') renderLfRecent();
 }
 el.lfModePills?.addEventListener('click', e => {
   const btn = e.target.closest('.pill');
@@ -12347,6 +12457,7 @@ el.lfModePills?.addEventListener('click', e => {
 
 function resetLfForm() {
   lfSelectedCustomFoodId = null;
+  lfRecentSource = null;
   lfPendingBarcode = null;
   lfBaseNutrition = null;
   lfEditingFoodLogId = null;
@@ -12356,7 +12467,7 @@ function resetLfForm() {
   if (el.btnLfSave) el.btnLfSave.textContent = 'Log it';
   if (el.lfFoodName) el.lfFoodName.value = '';
   if (el.lfBrand) el.lfBrand.value = '';
-  if (el.lfLoggedAt) el.lfLoggedAt.value = toDatetimeLocalValue(new Date());
+  if (el.lfLoggedAt) el.lfLoggedAt.value = toDatetimeLocalValue(lfDefaultLoggedAt());
   if (el.lfQuantity) el.lfQuantity.value = '1';
   if (el.lfServingDesc) el.lfServingDesc.value = '';
   if (el.lfCals) el.lfCals.value = '';
@@ -12431,8 +12542,8 @@ function openLfEditItem(row) {
   if (el.lfSaveAsCustomWrap) el.lfSaveAsCustomWrap.hidden = true; // editing an existing entry — not a new reusable food
   if (el.lfSaveAsCustom) el.lfSaveAsCustom.checked = false;
   if (el.btnLfSave) el.btnLfSave.textContent = 'Save changes';
+  openLfAddSheet(null, { editing: true });
   showLfReviewForm();
-  el.lfMealSlot?.closest('.card')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 /* ── Barcode scanning ────────────────────────────────────────
@@ -12734,7 +12845,7 @@ function toDatetimeLocalValue(d) {
 }
 
 /* ── Save ────────────────────────────────────────────────── */
-el.btnLfCancel?.addEventListener('click', () => { resetLfForm(); selectLfMode(null); });
+el.btnLfCancel?.addEventListener('click', closeLfAddSheet);
 
 el.btnLfSave?.addEventListener('click', async () => {
   if (!currentUser) return;
@@ -12807,9 +12918,8 @@ el.btnLfSave?.addEventListener('click', async () => {
         if (bridgeErr) dxBridgeError = bridgeErr;
       }
 
-      resetLfForm();
-      selectLfMode(null);
-      await Promise.all([renderLfTodayTotals(), renderLfTodayList(), renderLfFavorites()]);
+      closeLfAddSheet();
+      await Promise.all([renderLfDiary(), renderLfFavorites()]);
       if (dxBridgeError) {
         showToast(`Saved ${name}, but it won't show in the dose calculator: ${dxBridgeError}`, true);
       } else {
@@ -12846,7 +12956,8 @@ el.btnLfSave?.addEventListener('click', async () => {
       log_date: logDate,
       logged_at: loggedAt.toISOString(),
       meal_slot: mealSlot,
-      source: lfSelectedCustomFoodId ? (lfSelectedMode === 'search' ? 'search' : 'scan') : (lfPendingBarcode ? 'scan' : 'manual'),
+      source: (lfSelectedMode === 'recent' && lfRecentSource) ? lfRecentSource
+        : lfSelectedCustomFoodId ? (lfSelectedMode === 'search' ? 'search' : 'scan') : (lfPendingBarcode ? 'scan' : 'manual'),
       food_name: name, brand, serving_desc: servingDesc,
       quantity,
       calories_kcal: Math.round(baseCals * quantity),
@@ -12930,9 +13041,8 @@ el.btnLfSave?.addEventListener('click', async () => {
       }
     }
 
-    resetLfForm();
-    selectLfMode(null);
-    await Promise.all([renderLfTodayTotals(), renderLfTodayList(), renderLfFavorites()]);
+    closeLfAddSheet();
+    await Promise.all([renderLfDiary(), renderLfFavorites()]);
     if (shareError) {
       showToast(`Logged ${name}, but couldn't share: ${shareError}`, true);
     } else if (dxBridgeError) {
@@ -12953,7 +13063,7 @@ async function fetchTodayFoodLog() {
   const { data, error } = await db.from('food_log')
     .select('id, meal_slot, food_name, brand, quantity, serving_desc, calories_kcal, protein_g, carbs_g, fat_g, source, logged_at, hypo_treatment')
     .eq('user_id', currentUser.id)
-    .eq('log_date', todayISO())
+    .eq('log_date', lfDiaryDay())
     .order('logged_at', { ascending: true });
   if (error) { console.error('fetchTodayFoodLog error:', error.message); return []; }
   return data || [];
@@ -13096,14 +13206,13 @@ function lfSectionOf(r, hypoEnabled) {
   return LF_SECTIONS.some(s => s.key === r.meal_slot) ? r.meal_slot : 'snack';
 }
 
-// Yesterday's items already routed into a given section (same grouping
-// rule as the day's own list — see lfSectionOf), for the "Copy
-// yesterday's X" button. UTC day window, same convention as todayISO()
-// everywhere else — 'yesterday' is calendar-yesterday relative to now,
-// not tied to whichever section is being added to.
+// The previous day's items already routed into a given section (same
+// grouping rule as the day's own list — see lfSectionOf), for the "Copy
+// …" button. "Previous" is relative to the diary day being viewed; UTC
+// days, same convention as food_log.log_date.
 async function fetchYesterdaySectionItems(sectionKey) {
   if (!currentUser) return [];
-  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const yesterday = addDaysISO(lfDiaryDay(), -1);
   const { data, error } = await db.from('food_log')
     .select('food_name, brand, serving_desc, quantity, calories_kcal, protein_g, carbs_g, fat_g, source, barcode, custom_food_id, meal_slot, hypo_treatment')
     .eq('user_id', currentUser.id)
@@ -13123,7 +13232,8 @@ async function updateLfCopyYesterdayButton(sectionKey) {
   if (!items.length) { el.btnLfCopyYesterday.hidden = true; return; }
   const label = LF_SECTIONS.find(s => s.key === sectionKey)?.label || 'meal';
   el.btnLfCopyYesterday.hidden = false;
-  el.btnLfCopyYesterday.textContent = `📋 Copy yesterday's ${label} (${items.length} item${items.length === 1 ? '' : 's'})`;
+  const fromDay = lfDiaryDay() === todayISO() ? "yesterday's" : `${lfDayLabel(addDaysISO(lfDiaryDay(), -1))}'s`;
+  el.btnLfCopyYesterday.textContent = `📋 Copy ${fromDay} ${label} (${items.length} item${items.length === 1 ? '' : 's'})`;
   el.btnLfCopyYesterday.title = items.map(i => i.food_name).join(', ');
 }
 
@@ -13133,8 +13243,9 @@ el.btnLfCopyYesterday?.addEventListener('click', async () => {
   el.btnLfCopyYesterday.disabled = true;
   el.btnLfCopyYesterday.textContent = 'Copying…';
   try {
-    const logDate = todayISO();
-    const loggedAt = new Date().toISOString();
+    const loggedAtDate = lfDefaultLoggedAt();
+    const logDate = loggedAtDate.toISOString().slice(0, 10); // = the diary day (see lfDefaultLoggedAt)
+    const loggedAt = loggedAtDate.toISOString();
     // Inserted one row at a time rather than a single bulk insert — a
     // bulk `.insert(rows).select('id')` doesn't guarantee its returned
     // array comes back in the same order the rows were given, so
@@ -13179,10 +13290,9 @@ el.btnLfCopyYesterday?.addEventListener('click', async () => {
         if (bridgeErr) showToast(`Copied, but it won't show in the dose calculator: ${bridgeErr}`, true);
       }
     }
-    resetLfForm();
-    selectLfMode(null);
-    await Promise.all([renderLfTodayTotals(), renderLfTodayList(), renderLfFavorites()]);
-    showToast(`Copied ${insertedRows.length} item${insertedRows.length === 1 ? '' : 's'} from yesterday.`);
+    closeLfAddSheet();
+    await Promise.all([renderLfDiary(), renderLfFavorites()]);
+    showToast(`Copied ${insertedRows.length} item${insertedRows.length === 1 ? '' : 's'} from the previous day.`);
   } finally {
     el.btnLfCopyYesterday.disabled = false;
   }
@@ -13253,24 +13363,10 @@ async function renderLfTodayList() {
   }).join('');
 }
 el.lfTodayList?.addEventListener('click', async e => {
-  // Presets the Meal dropdown (and, for Hypo Treatment, the hypo
-  // checkbox) to this section before jumping to the existing add-item
-  // flow — same mode-pill/review-form UI every other entry point already
-  // uses, just arriving with the right section pre-selected instead of
-  // whatever defaultMealSlot()'s hour-based guess would've picked.
+  // Opens the add-food sheet preset to this section (see openLfAddSheet).
   const addBtn = e.target.closest('.lf-section__add');
   if (addBtn) {
-    const slot = addBtn.dataset.slot;
-    resetLfForm();
-    if (slot === 'hypo') {
-      if (el.lfMealSlot) el.lfMealSlot.value = defaultMealSlot();
-      if (el.lfHypoTreatment) el.lfHypoTreatment.checked = true;
-    } else if (el.lfMealSlot) {
-      el.lfMealSlot.value = slot;
-    }
-    selectLfMode(null);
-    el.lfMealSlot?.closest('.card')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    updateLfCopyYesterdayButton(slot);
+    openLfAddSheet(addBtn.dataset.slot);
     return;
   }
 
@@ -13391,6 +13487,7 @@ async function renderLfFavorites() {
 el.lfFavoritesAdd?.addEventListener('click', () => {
   const fav = lfFavoritesData.find(f => f.id === el.lfFavoritesSelect.value);
   if (!fav) return;
+  openLfAddSheet(defaultMealSlot());
   selectLfMode(null);
   populateLfFormFromFood(fav, { barcode: fav.barcode || null });
   showLfReviewForm();

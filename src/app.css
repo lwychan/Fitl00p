@@ -4365,6 +4365,21 @@ body { font-size: 15px; }
 }
 .lf-section__add:hover { text-decoration: underline; }
 
+/* Food tab day switcher: ‹ Today › */
+.lf-datenav { display: flex; align-items: center; gap: 4px; }
+.lf-datenav__arrow,
+.lf-datenav__label {
+  font-family: var(--ui);
+  border: 1.5px solid var(--border);
+  background: var(--surface-2);
+  color: var(--ink);
+  border-radius: 20px;
+  cursor: pointer;
+}
+.lf-datenav__arrow { width: 34px; height: 34px; font-size: 18px; line-height: 1; }
+.lf-datenav__arrow:disabled { opacity: .35; cursor: default; }
+.lf-datenav__label { height: 34px; min-width: 96px; padding: 0 12px; font-size: 13px; font-weight: 600; }
+
 /* MFP-style item row: name + kcal, then a muted brand/serving sub-line
    with the time/delete actions — the whole row is tappable to edit. */
 .lf-item { padding: 10px 0; border-top: 1px solid var(--border-2); cursor: pointer; }
