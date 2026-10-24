@@ -81,17 +81,18 @@ Deno.serve(async () => {
     if (prefs?.enabled === false) { skipped++; continue; }
     if (now.hour !== (prefs?.check_hour ?? 20)) { skipped++; continue; }
 
-    const [{ data: profiles }, { data: history }, { data: workouts }] = await Promise.all([
+    const [{ data: profiles }, { data: history }, { data: workouts }, { data: maxRows }] = await Promise.all([
       sbFetch(`/rest/v1/profiles?id=eq.${userId}&select=age_years,sex`),
       sbFetch(`/rest/v1/health_daily?user_id=eq.${userId}&log_date=gte.${historyStart}&select=log_date,sleep_total_hrs,sleep_start,active_energy_kcal,resting_hr&order=log_date.desc`),
       sbFetch(`/rest/v1/apple_health_workouts?user_id=eq.${userId}&started_at=gte.${now.dateStr}T00:00:00Z&select=avg_heart_rate,started_at,ended_at,active_energy_kcal`),
+      sbFetch(`/rest/v1/apple_health_workouts?user_id=eq.${userId}&started_at=gte.${new Date(Date.now() - 180 * 86400000).toISOString()}&max_heart_rate=not.is.null&select=max_heart_rate&order=max_heart_rate.desc&limit=2`),
     ]);
     const profile = (profiles as any[])?.[0] || null;
     const historyArr = (history as any[]) || [];
     const todayHealth = historyArr.find((h: any) => h.log_date === now.dateStr) || null;
     if (!historyArr.length) { skipped++; continue; }
 
-    const strain = computeStrainScoreTrimp(todayHealth, null, workouts, profile?.age_years, profile?.sex === 'female');
+    const strain = computeStrainScoreTrimp(todayHealth, null, workouts, profile?.age_years, profile?.sex === 'female', (maxRows as any[])?.[1]?.max_heart_rate ?? null);
     const sleepNeed = computeSleepNeed(historyArr, now.dateStr, strain.score);
     if (sleepNeed?.needHours == null) { skipped++; continue; }
 

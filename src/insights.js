@@ -46,6 +46,7 @@ const METRICS = {
   weekly_net_abs: 'size of weekly_net, kcal',
   weekly_kg: 'weekly_net as kg of body fat (abs)',
   weekly_days: 'days with both eaten and burned data in the last 7',
+  food_logged_days_7: 'days food was logged (fitl00p or MFP) in the last 7',
   weight_change_14d: 'weight change over 14 days, kg',
   has_plan: '1 if a weight plan is active',
   days_since_workout: 'days since the last workout',
@@ -244,7 +245,81 @@ function validateRule(r) {
   return errs;
 }
 
-const Insights = { METRICS, evaluateInsights, conditionHolds, fillTemplate, validateRule, glucoseMetrics, healthTrendMetrics };
+// Day-level numbers for the rules: steps, food vs target, the last 7
+// complete days' calorie balance, 14-day weight change, workout frequency.
+// history = health_daily rows (with cal_fitl00p / cal_mfp merged in);
+// weights = [{ log_date, weight (kg) }]; workouts = [{ workout_type, started_at }].
+function dailyContextMetrics({ day, nowMs, history = [], weights = [], workouts = [], steps, stepsGoal = 10000, consumed, eatTarget, hasPlan }) {
+  const out = {};
+  if (steps != null && Number.isFinite(Number(steps))) {
+    out.steps = Number(steps); out.steps_goal = stepsGoal;
+    out.steps_pct = Math.round((out.steps / stepsGoal) * 100);
+    out.steps_left = Math.max(0, stepsGoal - out.steps);
+  }
+  if (consumed != null && consumed > 0) out.consumed = Math.round(consumed);
+  if (eatTarget) {
+    out.eat_target = Math.round(eatTarget);
+    if (out.consumed != null) {
+      out.consumed_pct = Math.round((out.consumed / eatTarget) * 100);
+      out.over_kcal = Math.max(0, out.consumed - out.eat_target);
+    }
+  }
+  let net = 0, days = 0;
+  for (const h of history.filter(h => h.log_date < day && h.log_date >= isoAddDays(day, -7))) {
+    const eaten = h.cal_fitl00p ?? h.cal_mfp ?? h.dietary_energy_kcal;
+    if (eaten == null || h.active_energy_kcal == null || h.resting_energy_kcal == null) continue;
+    net += Number(eaten) - (Number(h.active_energy_kcal) + Number(h.resting_energy_kcal));
+    days++;
+  }
+  if (days) {
+    out.weekly_days = days;
+    out.weekly_net = Math.round(net);
+    out.weekly_net_abs = Math.abs(out.weekly_net);
+    out.weekly_kg = round1(Math.abs(net) / 7700);
+  }
+  out.food_logged_days_7 = history.filter(h => h.log_date < day && h.log_date >= isoAddDays(day, -7) && (Number(h.cal_fitl00p) > 0 || Number(h.cal_mfp) > 0)).length;
+  out.has_plan = hasPlan ? 1 : 0;
+  const from = isoAddDays(day, -14);
+  const pts = [...weights.map(w => ({ d: w.log_date, kg: Number(w.weight) })),
+    ...history.filter(h => h.weight_kg != null).map(h => ({ d: h.log_date, kg: Number(h.weight_kg) }))]
+    .filter(p => p.d >= from && p.d <= day && Number.isFinite(p.kg)).sort((a, b) => a.d.localeCompare(b.d));
+  if (pts.length >= 2 && Date.parse(pts[pts.length - 1].d) - Date.parse(pts[0].d) >= 7 * DAY) {
+    out.weight_change_14d = round1(pts[pts.length - 1].kg - pts[0].kg);
+  }
+  const real = workouts.filter(w => !/walk/i.test(w.workout_type || '') && Number.isFinite(Date.parse(w.started_at)))
+    .sort((a, b) => Date.parse(b.started_at) - Date.parse(a.started_at));
+  if (real.length) {
+    out.days_since_workout = Math.floor((nowMs - Date.parse(real[0].started_at)) / DAY);
+    out.workouts_7d = real.filter(w => nowMs - Date.parse(w.started_at) < 7 * DAY).length;
+  }
+  return out;
+}
+
+// Body Battery numbers for the rules, from a simulate() result.
+// wakeLevel = level when last night's sleep ended (null if no night found).
+function batteryContextMetrics({ level, result, hasNight, wakeLevel, hourNow }) {
+  if (level == null || !result) return {};
+  const rate = result.ratePerHr;
+  const out = {
+    battery: Math.round(level),
+    battery_rate: round1(rate),
+    battery_stress_drain: Math.round(Math.max(0, -result.parts.stress)),
+    battery_ex_drain: Math.round(Math.max(0, -result.parts.exercise)),
+  };
+  if (hasNight) {
+    out.battery_bed = Math.round(result.levelAtBreakdown);
+    out.battery_charged = Math.round(result.parts.sleep);
+    if (wakeLevel != null) out.battery_wake = Math.round(wakeLevel);
+  }
+  if (rate < -0.3 && level > 25) {
+    out.battery_hrs_to_low = round1((level - 25) / -rate);
+    const at = hourNow + out.battery_hrs_to_low;
+    if (at < 24) out.battery_low_hour = Math.floor(at);
+  }
+  return out;
+}
+
+const Insights = { dailyContextMetrics, batteryContextMetrics, METRICS, evaluateInsights, conditionHolds, fillTemplate, validateRule, glucoseMetrics, healthTrendMetrics };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = Insights;

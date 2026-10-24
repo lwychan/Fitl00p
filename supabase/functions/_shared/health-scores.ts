@@ -233,15 +233,16 @@ function computeStrainScore(health, healthHistory, log, ageYears) {
 const STRAIN_MAX = 21;
 const STRAIN_K_TRIMP = 0.0085;
 const STRAIN_K_KCAL  = 0.00081;
-function tanakaHrMax(ageYears) { return 208 - 0.7 * (ageYears || 35); }
 
-function computeStrainScoreTrimp(health, log, workoutsToday, ageYears, isFemale) {
+// secondHighestWorkoutMax: 2nd-highest workout max HR of the last 180 days
+// (see ReadinessModel.personalHrMax) — same max HR the app uses.
+function computeStrainScoreTrimp(health, log, workoutsToday, ageYears, isFemale, secondHighestWorkoutMax = null) {
   const dailyActiveKcal = health?.active_energy_kcal ?? log?.active_energy_kcal;
   const workouts = (workoutsToday || []).filter(w => Number.isFinite(Number(w.avg_heart_rate)));
   if (dailyActiveKcal == null && !workouts.length) return { score: null };
 
   const restingHr = health?.resting_hr;
-  const hrMax = tanakaHrMax(ageYears);
+  const hrMax = ReadinessModel.personalHrMax(ageYears, secondHighestWorkoutMax);
 
   let cumulativeTrimp = 0;
   let workoutKcal = 0;

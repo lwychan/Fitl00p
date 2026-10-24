@@ -83,3 +83,34 @@ test('healthTrendMetrics: a week of suppressed HRV and short nights', () => {
   assert.ok(t.rhr_trend_7 > 2, String(t.rhr_trend_7));
   assert.equal(t.short_nights_7, 7);
 });
+
+test('dailyContextMetrics: weekly balance, weight change, workouts, food-logging habit', () => {
+  const day = '2026-10-24', nowMs = Date.parse('2026-10-24T12:00:00Z');
+  const d = n => new Date(Date.parse(day) - n * 86400000).toISOString().slice(0, 10);
+  const history = [];
+  for (let n = 9; n >= 0; n--) {
+    history.push({ log_date: d(n), active_energy_kcal: 500, resting_energy_kcal: 1800,
+      cal_fitl00p: n % 2 ? 1500 : null, dietary_energy_kcal: 1700, weight_kg: n === 9 ? 90 : n === 0 ? 88.6 : null });
+  }
+  const m = I.dailyContextMetrics({ day, nowMs, history, steps: 4000, stepsGoal: 10000, consumed: 1200, eatTarget: 2000, hasPlan: true,
+    workouts: [{ workout_type: 'Walking', started_at: '2026-10-24T08:00:00Z' }, { workout_type: 'Strength training', started_at: '2026-10-21T18:00:00Z' }, { workout_type: 'Running', started_at: '2026-10-10T18:00:00Z' }] });
+  assert.equal(m.weekly_days, 7);                       // today (partial) excluded
+  assert.equal(m.weekly_net, 4 * (1500 - 2300) + 3 * (1700 - 2300));
+  assert.equal(m.weekly_kg, Math.round(Math.abs(m.weekly_net) / 7700 * 10) / 10);
+  assert.equal(m.weight_change_14d, -1.4);
+  assert.equal(m.days_since_workout, 2);                // walking ignored
+  assert.equal(m.workouts_7d, 1);
+  assert.equal(m.steps_left, 6000);
+  assert.equal(m.consumed_pct, 60);
+  assert.equal(m.food_logged_days_7, 4);
+  assert.equal(m.has_plan, 1);
+});
+
+test('batteryContextMetrics: charge, drains and when it hits 25%', () => {
+  const result = { ratePerHr: -3, levelAtBreakdown: 22, parts: { sleep: 51.6, rest: 1, exercise: -12.4, stress: -9.2, awake: 0 } };
+  const m = I.batteryContextMetrics({ level: 55, result, hasNight: true, wakeLevel: 73.4, hourNow: 10.5 });
+  assert.deepEqual(m, { battery: 55, battery_rate: -3, battery_stress_drain: 9, battery_ex_drain: 12,
+    battery_bed: 22, battery_charged: 52, battery_wake: 73, battery_hrs_to_low: 10, battery_low_hour: 20 });
+  assert.deepEqual(I.batteryContextMetrics({ level: null, result }), {});
+  assert.equal(I.batteryContextMetrics({ level: 60, result: { ...result, ratePerHr: 1 }, hasNight: false, hourNow: 9 }).battery_low_hour, undefined);
+});

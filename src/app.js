@@ -2683,10 +2683,7 @@ function tanakaHrMax(ageYears) { return 208 - 0.7 * (ageYears || 35); }
 // (one sensor spike can't move it), only when above the formula, and no
 // more than 15bpm above it. Set by loadRecoveryModel; null = formula only.
 let observedHrMax = null;
-function personalHrMax(ageYears) {
-  const formula = tanakaHrMax(ageYears);
-  return observedHrMax != null ? Math.max(formula, Math.min(observedHrMax, formula + 15)) : formula;
-}
+function personalHrMax(ageYears) { return window.ReadinessModel.personalHrMax(ageYears, observedHrMax); }
 
 // Closes the loop between the two scores instead of leaving them as two
 // independent charts: how hard today "should" be, given how recovered
@@ -3788,6 +3785,18 @@ function bbZScore(hist, field, date, value, log, floor) {
   return ((log ? Math.log(value) : value) - stats.mean) / Math.max(stats.sd, floor);
 }
 
+// readSamples caps at 5,000 per call and returns oldest first; during
+// workouts the Watch logs heart rate every few seconds, so ~2 days in one
+// call could silently drop the newest readings. 12-hour chunks stay well
+// under the cap.
+async function hkReadChunked(dataType, fromMs, toMs) {
+  const CHUNK = 12 * 3600000, calls = [];
+  for (let t = fromMs; t < toMs; t += CHUNK) {
+    calls.push(hkSafe(hkReadAll(dataType, new Date(t).toISOString(), new Date(Math.min(toMs, t + CHUNK)).toISOString()), []));
+  }
+  return (await Promise.all(calls)).flat();
+}
+
 async function loadBodyBattery(healthHistory) {
   if (!currentUser || bbLoading) return;
   bbLoading = true;
@@ -3813,7 +3822,7 @@ async function loadBodyBattery(healthHistory) {
     let hrSamples = [], sleeps = [], source = 'synced';
     if (healthKitAvailable()) {
       const [hrRaw, sleepRaw] = await Promise.all([
-        hkSafe(hkReadAll('heartRate', startISO, nowISO), []),
+        hkReadChunked('heartRate', start, now),
         hkSafe(hkReadAll('sleep', new Date(start - 12 * 3600000).toISOString(), nowISO), []),
       ]);
       hrSamples = hrRaw.map(s => ({ t: Date.parse(s.startDate), bpm: Number(s.value) }))
@@ -3983,7 +3992,7 @@ document.addEventListener('visibilitychange', () => {
    dashboard card shows the top one per topic; the Body Battery popup shows
    every matching battery rule. Re-run on each dashboard load and each
    Body Battery recompute. */
-const { evaluateInsights, glucoseMetrics, healthTrendMetrics } = window.Insights;
+const { evaluateInsights, glucoseMetrics, healthTrendMetrics, dailyContextMetrics, batteryContextMetrics } = window.Insights;
 const INSIGHT_RULES_CACHE_KEY = 'fitl00p_insight_rules';
 let insightRules = null;      // rows from insight_rules
 let insightInputs = null;     // set by the dashboard load
@@ -4009,8 +4018,11 @@ async function loadInsightRules() {
 let insightDxFetching = false;
 function insightDiabetesContext() {
   if (profile?.diabetes_enabled === false || !profile?.diabetes_ns_url) return {};
+  const fresh = diabetesData && diabetesFetchedAt && Date.now() - diabetesFetchedAt < DIABETES_CACHE_MS;
   const data = diabetesData || readDxCache()?.body || null;
-  if (!diabetesData && !insightDxFetching) {
+  // Refetch whenever our copy is older than the Diabetes tab's own cache
+  // window (fetchDiabetesData reuses it otherwise), then re-run.
+  if (!fresh && !insightDxFetching) {
     insightDxFetching = true;
     fetchDiabetesData().then(() => refreshInsights()).catch(() => {}).finally(() => { insightDxFetching = false; });
   }
@@ -4018,6 +4030,10 @@ function insightDiabetesContext() {
   const now = Date.now();
   const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
   const out = glucoseMetrics(data.glucoseHistory, now, midnight.getTime());
+  // Only trust "how old is the latest reading" from a fresh fetch — from a
+  // stale copy it measures our cache age, not the sensor, and would raise
+  // false "no glucose reading" warnings / miss a current low.
+  if (!fresh) { delete out.dx_bg; delete out.dx_bg_age_min; delete out.dx_trend5; }
   try {
     const dctx = DiabetesEngine.dosingContext({ ...data, settings: dxSettings(), activities: { workouts: [] }, macroMealLog: [] }, now);
     if (Number.isFinite(dctx.iob)) out.dx_iob = Math.round(dctx.iob * 10) / 10;
@@ -4028,27 +4044,11 @@ function insightDiabetesContext() {
 
 function insightBatteryContext() {
   if (!bbState) return {};
-  const { result, lastNight, wakeLevel } = bbState;
-  const level = bbLevelNow();
-  const rate = result.ratePerHr;
-  const hour = new Date().getHours() + new Date().getMinutes() / 60;
-  const out = {
-    battery: Math.round(level),
-    battery_rate: Math.round(rate * 10) / 10,
-    battery_stress_drain: Math.round(Math.max(0, -result.parts.stress)),
-    battery_ex_drain: Math.round(Math.max(0, -result.parts.exercise)),
-  };
-  if (lastNight) {
-    out.battery_bed = Math.round(result.levelAtBreakdown);
-    out.battery_charged = Math.round(result.parts.sleep);
-    if (wakeLevel != null) out.battery_wake = Math.round(wakeLevel);
-  }
-  if (rate < -0.3 && level > 25) {
-    out.battery_hrs_to_low = Math.round(((level - 25) / -rate) * 10) / 10;
-    const at = hour + out.battery_hrs_to_low;
-    if (at < 24) out.battery_low_hour = Math.floor(at);
-  }
-  return out;
+  const d = new Date();
+  return batteryContextMetrics({
+    level: bbLevelNow(), result: bbState.result, hasNight: !!bbState.lastNight,
+    wakeLevel: bbState.wakeLevel, hourNow: d.getHours() + d.getMinutes() / 60,
+  });
 }
 
 function buildInsightContext() {
@@ -4078,52 +4078,13 @@ function buildInsightContext() {
     }
     if (strainYday != null) ctx.strain_yday = strainYday;
 
-    const steps = log?.steps || health?.steps;
-    const goal = profile?.steps_goal || 10000;
-    if (steps != null) {
-      ctx.steps = Number(steps); ctx.steps_goal = goal;
-      ctx.steps_pct = Math.round((ctx.steps / goal) * 100);
-      ctx.steps_left = Math.max(0, goal - ctx.steps);
-    }
-    const consumed = pickConsumedCalories(log, health);
-    const target = smartTarget?.eatTarget ?? profile?.eat_target_kcal ?? null;
-    if (consumed != null && consumed > 0) ctx.consumed = Math.round(consumed);
-    if (target) {
-      ctx.eat_target = Math.round(target);
-      if (ctx.consumed != null) {
-        ctx.consumed_pct = Math.round((ctx.consumed / target) * 100);
-        ctx.over_kcal = Math.max(0, ctx.consumed - ctx.eat_target);
-      }
-    }
-    // Last 7 complete days with both eaten and burned figures.
-    let net = 0, days = 0;
-    for (const h of hist.filter(h => h.log_date < day).slice(-7)) {
-      const eatenRaw = h.cal_fitl00p ?? h.cal_mfp ?? h.dietary_energy_kcal;
-      if (eatenRaw == null || h.active_energy_kcal == null || h.resting_energy_kcal == null) continue;
-      net += Number(eatenRaw) - (Number(h.active_energy_kcal) + Number(h.resting_energy_kcal));
-      days++;
-    }
-    if (days) {
-      ctx.weekly_days = days;
-      ctx.weekly_net = Math.round(net);
-      ctx.weekly_net_abs = Math.abs(ctx.weekly_net);
-      ctx.weekly_kg = Math.round((Math.abs(net) / 7700) * 10) / 10;
-    }
-    ctx.has_plan = activePlan ? 1 : 0;
-    // Weight: daily_logs (kg) plus synced Health weights, last 14 days.
-    const from = addDaysISO(day, -14);
-    const pts = [...(weights || []).map(w => ({ d: w.log_date, kg: Number(w.weight) })),
-      ...hist.filter(h => h.weight_kg != null).map(h => ({ d: h.log_date, kg: Number(h.weight_kg) }))]
-      .filter(p => p.d >= from && Number.isFinite(p.kg)).sort((a, b) => a.d.localeCompare(b.d));
-    if (pts.length >= 2 && Date.parse(pts[pts.length - 1].d) - Date.parse(pts[0].d) >= 7 * 86400000) {
-      ctx.weight_change_14d = Math.round((pts[pts.length - 1].kg - pts[0].kg) * 10) / 10;
-    }
-    const real = (workouts || []).filter(w => !/walk/i.test(w.workout_type || ''));
-    if (real.length) {
-      const nowMs = Date.now();
-      ctx.days_since_workout = Math.floor((nowMs - Date.parse(real[0].started_at)) / 86400000);
-      ctx.workouts_7d = real.filter(w => nowMs - Date.parse(w.started_at) < 7 * 86400000).length;
-    }
+    Object.assign(ctx, dailyContextMetrics({
+      day, nowMs: Date.now(), history: hist, weights, workouts,
+      steps: log?.steps || health?.steps, stepsGoal: profile?.steps_goal || 10000,
+      consumed: pickConsumedCalories(log, health),
+      eatTarget: smartTarget?.eatTarget ?? profile?.eat_target_kcal ?? null,
+      hasPlan: !!activePlan,
+    }));
   }
   const feel = feelCheckins.find(c => c.log_date === todayISO());
   if (feel) ctx.feel = feel.feel;
@@ -4902,13 +4863,14 @@ async function renderWorkoutReadinessBanner() {
   if (readinessBannerDismissed) { elW.readinessBanner.hidden = true; return; }
 
   const todayStr = todayISO();
+  // 31 days, not just today/yesterday: Recovery is scored against your own
+  // baseline, so without history this banner disagreed with the dashboard.
   const [healthRes, logRes] = await Promise.all([
     db.from('health_daily')
-      .select('sleep_total_hrs, sleep_deep_hrs, sleep_rem_hrs, hrv_ms, resting_hr, active_energy_kcal, resting_energy_kcal, dietary_energy_kcal, log_date')
+      .select('sleep_total_hrs, sleep_deep_hrs, sleep_rem_hrs, hrv_ms, resting_hr, respiratory_rate, wrist_temp_dev, active_energy_kcal, resting_energy_kcal, dietary_energy_kcal, log_date')
       .eq('user_id', currentUser.id)
-      .gte('log_date', new Date(Date.now() - 1 * 86400000).toISOString().slice(0, 10))
-      .order('log_date', { ascending: false })
-      .limit(2),
+      .gte('log_date', new Date(Date.now() - 31 * 86400000).toISOString().slice(0, 10))
+      .order('log_date', { ascending: false }),
     db.from('daily_logs')
       .select('cal_total, cal_apple, active_energy_kcal')
       .eq('user_id', currentUser.id)
@@ -4927,7 +4889,12 @@ async function renderWorkoutReadinessBanner() {
     ...Object.fromEntries(Object.entries(todayHealth).filter(([, v]) => v != null && v !== 0)),
   };
 
-  const { score, label } = computeRecoveryScore(health, []);
+  // Same number the dashboard shows: reuse its result when it has one,
+  // otherwise score with the same history + sleep need.
+  const history = rawHealthRows.slice().reverse();
+  const { score, label } = insightInputs?.recovery?.score != null
+    ? insightInputs.recovery
+    : computeRecoveryScore(health, history, health.log_date ? computeSleepNeed(history, health.log_date, null) : null);
 
   // Only interrupt the flow when recovery is genuinely moderate-or-below —
   // matches the same 50-point line "Moderate — consider a lighter session" uses.

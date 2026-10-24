@@ -253,7 +253,7 @@
    "title":"{over_kcal} kcal over today's target",
    "body":"Fine now and then — it's the weekly total that counts. Keep tomorrow at target."},
   {"id":"nutrition_not_logged","category":"nutrition","severity":"info","priority":40,
-   "conditions":[{"m":"hour","op":"gte","v":14},{"m":"consumed","op":"exists","v":false}],
+   "conditions":[{"m":"hour","op":"gte","v":14},{"m":"consumed","op":"exists","v":false},{"m":"food_logged_days_7","op":"gte","v":3}],
    "title":"Nothing logged yet today",
    "body":"Log what you've eaten so far — same-day logging is far more accurate than remembering tonight."},
   {"id":"nutrition_weekly_on_track","category":"nutrition","severity":"good","priority":20,

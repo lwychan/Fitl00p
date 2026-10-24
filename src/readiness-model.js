@@ -53,6 +53,15 @@ function weightedSleepDebt(shortfallsNewestFirst, { perNight = 0.35, decay = 0.8
   return Math.min(cap, debt);
 }
 
+// Max heart rate: Tanaka (208 - 0.7 x age) unless you have actually hit
+// higher — secondHighestWorkoutMax is the 2nd-highest workout max of the last
+// 180 days (one sensor spike can't move it), capped at formula + 15.
+function personalHrMax(ageYears, secondHighestWorkoutMax) {
+  const formula = 208 - 0.7 * (ageYears || 35);
+  const seen = Number(secondHighestWorkoutMax);
+  return Number.isFinite(seen) && seen > 0 ? Math.max(formula, Math.min(seen, formula + 15)) : formula;
+}
+
 // Solve A x = b (small, dense) by Gaussian elimination with pivoting.
 function solve(A, b) {
   const n = b.length, M = A.map((r, i) => [...r, b[i]]);
@@ -152,7 +161,7 @@ function spearman(xs, ys) {
   return dx && dy ? num / Math.sqrt(dx * dy) : null;
 }
 
-const ReadinessModel = { personalBaseline, scoreVsPersonalBaseline, weightedSleepDebt, fitRecoveryWeights, spearman, addDaysISO };
+const ReadinessModel = { personalHrMax, personalBaseline, scoreVsPersonalBaseline, weightedSleepDebt, fitRecoveryWeights, spearman, addDaysISO };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = ReadinessModel;

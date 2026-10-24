@@ -51,19 +51,21 @@ function consumedFor(dayLog: any, healthRow: any) {
 // share the same underlying context (e.g. steps + calories both due at once).
 async function fetchUserContext(userId: string, todayStr: string) {
   const historyStart = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
-  const [{ data: healthRows }, { data: profiles }, { data: dailyLogRows }, { data: foodLogRows }, { data: workouts }] = await Promise.all([
+  const [{ data: healthRows }, { data: profiles }, { data: dailyLogRows }, { data: foodLogRows }, { data: workouts }, { data: maxRows }] = await Promise.all([
     sbFetch(`/rest/v1/health_daily?user_id=eq.${userId}&log_date=gte.${historyStart}&log_date=lte.${todayStr}&select=log_date,steps,active_energy_kcal,exercise_mins,sleep_total_hrs,hrv_ms,resting_hr,respiratory_rate,wrist_temp_dev,weight_kg,dietary_energy_kcal&order=log_date.asc`),
     sbFetch(`/rest/v1/profiles?id=eq.${userId}&select=age_years,sex,recovery_weights`),
     sbFetch(`/rest/v1/daily_logs?user_id=eq.${userId}&log_date=eq.${todayStr}&select=weight,cal_total,cal_apple,cal_mfp`),
     sbFetch(`/rest/v1/food_log?user_id=eq.${userId}&log_date=eq.${todayStr}&select=calories_kcal`),
     sbFetch(`/rest/v1/apple_health_workouts?user_id=eq.${userId}&started_at=gte.${todayStr}T00:00:00Z&select=avg_heart_rate,started_at,ended_at,active_energy_kcal`),
+    sbFetch(`/rest/v1/apple_health_workouts?user_id=eq.${userId}&started_at=gte.${new Date(Date.now() - 180 * 86400000).toISOString()}&max_heart_rate=not.is.null&select=max_heart_rate&order=max_heart_rate.desc&limit=2`),
   ]);
   const healthHistory = (healthRows as any[]) || [];
   const todayHealth = healthHistory.find((h: any) => h.log_date === todayStr) || {};
   const dayLog = (dailyLogRows as any[])?.[0] || {};
   const foodSum = ((foodLogRows as any[]) || []).reduce((s: number, r: any) => s + (Number(r.calories_kcal) || 0), 0);
   const profile = (profiles as any[])?.[0] || {};
-  return { healthHistory, todayHealth, dayLog, foodSum, workouts: (workouts as any[]) || [], profile };
+  const secondMaxHr = (maxRows as any[])?.[1]?.max_heart_rate ?? null;
+  return { healthHistory, todayHealth, dayLog, foodSum, workouts: (workouts as any[]) || [], profile, secondMaxHr };
 }
 
 // Missing data → null, never fabricated — same "unknown ≠ behind" posture
@@ -88,7 +90,7 @@ function getMetricValue(metricKey: string, ctx: any): number | null {
     case 'sleep_score':
       return computeSleepScore(ctx.todayHealth, ctx.healthHistory).score;
     case 'strain_score':
-      return computeStrainScoreTrimp(ctx.todayHealth, ctx.dayLog, ctx.workouts, ctx.profile.age_years, ctx.profile.sex === 'female').score;
+      return computeStrainScoreTrimp(ctx.todayHealth, ctx.dayLog, ctx.workouts, ctx.profile.age_years, ctx.profile.sex === 'female', ctx.secondMaxHr).score;
     default:
       return null;
   }

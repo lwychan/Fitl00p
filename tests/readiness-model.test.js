@@ -80,3 +80,11 @@ test('spearman', () => {
   assert.equal(R.spearman([1, 2], [1, 2]), null);
   assert.equal(R.spearman([1, 1, 1], [1, 2, 3]), null);
 });
+
+test('personalHrMax: formula unless a higher max was really reached, capped at +15', () => {
+  assert.equal(R.personalHrMax(37), 208 - 0.7 * 37);
+  assert.equal(R.personalHrMax(37, 170), 208 - 0.7 * 37);        // lower than formula: ignored
+  assert.equal(R.personalHrMax(37, 186), 186);
+  assert.equal(R.personalHrMax(37, 230), 208 - 0.7 * 37 + 15);   // capped
+  assert.equal(R.personalHrMax(null, null), 208 - 0.7 * 35);
+});
