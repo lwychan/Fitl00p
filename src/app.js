@@ -8026,12 +8026,12 @@ async function saveNsProfileFields(updates) {
    each reads notification_prefs before deciding whether/when to fire.
    ═══════════════════════════════════════════════════════════ */
 const NOTIFICATION_DEFS = [
-  { key: 'daily_summary',    label: 'Daily readiness summary',   hint: 'Recovery/sleep/strain, once each morning.', hasSchedule: true, defaultHour: 7 },
-  { key: 'sleep_target',     label: 'Sleep target',              hint: "Tonight's sleep need + suggested bedtime, each evening.", hasSchedule: true, defaultHour: 20 },
-  { key: 'weighin',          label: 'Weigh-in reminder',         hint: "Nudges you to log a weight if you haven't yet.", hasSchedule: true, defaultHour: 10, hasDays: true, defaultDays: [2] },
-  { key: 'oral_meds',        label: 'Oral meds reminder',        hint: 'Any active pill not logged yet today.', hasSchedule: true, defaultHour: 21 },
-  { key: 'tirzepatide',      label: 'Tirzepatide reminder',      hint: 'Due ~7 days after your last logged dose.', hasSchedule: false, isRelevant: () => currentUser?.id !== GEMMA_USER_ID },
-  { key: 'peptide',          label: 'Peptide protocol reminder', hint: "Follows your active protocol's own schedule.", hasSchedule: false, isRelevant: () => currentUser?.id !== GEMMA_USER_ID },
+  { key: 'morning_briefing', label: 'Morning briefing',          hint: 'Your scores, what they mean and what to do today. Times: weekdays / weekends.', briefingTimes: 'morning' },
+  { key: 'evening_briefing', label: 'Evening briefing',          hint: "An hour before your suggested bedtime: bedtime, the day's summary, your workout. Set the times you wake: weekdays / weekends.", briefingTimes: 'wake' },
+  { key: 'weighin',          label: 'Weigh-in line',             hint: "Added to the morning briefing on these days, until you've logged a weight.", hasSchedule: false, hasDays: true, defaultDays: [2], isRelevant: () => currentUser?.id !== GEMMA_USER_ID },
+  { key: 'oral_meds',        label: 'Oral meds reminder',        hint: 'In the evening briefing; a separate 21:00 nudge only if still not logged.', hasSchedule: false },
+  { key: 'tirzepatide',      label: 'Tirzepatide reminder',      hint: 'Morning briefing line on the due day, then 12:00, 15:00, 17:00 and 19:00 until logged.', hasSchedule: false, isRelevant: () => currentUser?.id !== GEMMA_USER_ID },
+  { key: 'peptide',          label: 'Peptide protocol reminder', hint: 'Morning briefing line, one 15:30 nudge, last call in the evening briefing.', hasSchedule: false, isRelevant: () => currentUser?.id !== GEMMA_USER_ID },
   { key: 'glucose_forecast', label: 'Glucose forecast alerts',   hint: 'Predictive hypo/hyper warnings — an always-on safety check, deliberately no schedule to set.', hasSchedule: false, isRelevant: (p) => p?.diabetes_enabled !== false && currentUser?.id !== GEMMA_USER_ID },
 ];
 
@@ -8107,6 +8107,12 @@ async function loadNotificationSettings() {
       const scheduleBit = def.hasSchedule
         ? `<input type="time" class="notif-time" data-key="${def.key}" value="${hmFromMinutes(p?.check_hour ?? def.defaultHour, p?.check_minute ?? 0)}" style="margin-left:10px;width:auto;display:inline-block">`
         : '';
+      const briefingBit = def.briefingTimes ? (() => {
+        const sched = Briefings.scheduleFor(currentUser.id, profile?.briefing_schedule);
+        const pair = sched[def.briefingTimes];
+        return ['weekday', 'weekend'].map(k =>
+          `<input type="time" class="briefing-time" data-part="${def.briefingTimes}" data-which="${k}" value="${pair[k]}" aria-label="${k}" style="margin-left:10px;width:auto;display:inline-block">`).join('');
+      })() : '';
       const days = p?.days_of_week ?? def.defaultDays ?? [];
       const daysBit = def.hasDays
         ? `<div class="notif-days" data-key="${def.key}" style="margin:6px 0 0 30px;display:flex;gap:4px">` +
@@ -8117,7 +8123,7 @@ async function loadNotificationSettings() {
         : '';
       return `<label class="checkbox-option checkbox-option--full" style="align-items:center">
         <input type="checkbox" class="notif-toggle" data-key="${def.key}" ${enabled ? 'checked' : ''}>
-        <span>${def.label}${scheduleBit} <span class="field-hint">${def.hint}</span></span>
+        <span>${def.label}${scheduleBit}${briefingBit} <span class="field-hint">${def.hint}</span></span>
       </label>${daysBit}`;
     }).join('');
 
@@ -8132,6 +8138,20 @@ async function loadNotificationSettings() {
       const { hour, minute } = minutesFromHm(input.value, 8);
       const { error } = await saveNotificationPref(input.dataset.key, { check_hour: hour, check_minute: minute });
       if (error) showToast("Couldn't save: " + error.message, true);
+    });
+  });
+  // Briefing times live in profiles.briefing_schedule (read by notify-briefings);
+  // a cleared input goes back to the default.
+  simpleList.querySelectorAll('.briefing-time').forEach(input => {
+    input.addEventListener('change', async () => {
+      const next = JSON.parse(JSON.stringify(profile?.briefing_schedule || {}));
+      const part = (next[input.dataset.part] ||= {});
+      if (/^\d{2}:\d{2}$/.test(input.value)) part[input.dataset.which] = input.value;
+      else delete part[input.dataset.which];
+      const { error } = await db.from('profiles').update({ briefing_schedule: next }).eq('id', currentUser.id);
+      if (error) { showToast("Couldn't save: " + error.message, true); return; }
+      if (profile) profile.briefing_schedule = next;
+      if (!input.value) input.value = Briefings.scheduleFor(currentUser.id, next)[input.dataset.part][input.dataset.which];
     });
   });
   simpleList.querySelectorAll('.notif-days').forEach(wrap => {
