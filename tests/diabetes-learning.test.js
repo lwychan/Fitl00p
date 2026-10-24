@@ -726,40 +726,101 @@ test('time decay: old evidence weighs less', () => {
   assert.ok(v > 3.0 && v < 3.05, `value ${v}`);   // 120-day-old episodes weigh 1/16
 });
 
-// Seeds 1-7 x 90 days pooled (one seed has only ~5-15 clean corrections per block), scored lazily, once.
-let _corr90 = null;
-function corrections90() {
-  if (!_corr90) {
-    _corr90 = [];
-    for (const p of sim90) {
-      const P = E.prepareLearningInput(simInput(p));
-      const nowMs = p.glucoseHistory[p.glucoseHistory.length - 1].time;
-      for (const c of p.corrections) {
-        const ep = E.scoreCorrectionEpisode(P, c, { pumpProfile: p.pumpProfile, nowMs });
-        if (ep) _corr90.push(ep);
-      }
-    }
+// Corrections + nights of seeds 1-7 x 90 days pooled (one seed has only ~5-15 clean corrections per
+// block); nights let fitModel learn the post-exercise boost it normalises with. Scored lazily, once per set.
+function scorePooled(sims) {
+  const out = [];
+  for (const p of sims) {
+    const P = E.prepareLearningInput(simInput(p));
+    const nowMs = p.glucoseHistory[p.glucoseHistory.length - 1].time;
+    const opts = { pumpProfile: p.pumpProfile, nowMs };
+    for (const c of p.corrections) { const ep = E.scoreCorrectionEpisode(P, c, opts); if (ep) out.push(ep); }
+    for (let t = p.glucoseHistory[0].time; t < nowMs; t += 24 * H) { const ep = E.scoreNight(P, t + 12 * H, opts); if (ep) out.push(ep); }
   }
-  return _corr90;
+  return out;
+}
+let _pooled90 = null, _daily90 = null;
+const pooled90 = () => (_pooled90 = _pooled90 || scorePooled(sim90));
+// daily-ish running (85% of days, boost 1.3 for 24h): most episodes sit in a post-exercise window
+const DAILY_RUN = { Running: { dropPerMin: 0.03, sensitivityBoost: 1.3, hours: 24 } };
+const daily90 = () => (_daily90 = _daily90 || scorePooled([1, 2, 3, 4, 5, 6, 7].map(seed => simulatePatient({ days: 90, seed, workoutRate: 0.85, exercise: DAILY_RUN }))));
+const exercisedEp = ep => ep.context.exercise24h.minutes > 0;
+
+// Block truth = the block's hour-averaged ISF. It equals isfByHour(block midpoint) except where the sim's
+// truth steps inside a block (04:00 in 03-06, 17:00 in 15-18): 03-06's midpoint (4.5h -> 2.2) is not
+// its truth when hour 3 runs at 3.2.
+function isfVsTruth(m, p) {
+  const rows = m.blocks.map(b => {
+    const hrs = Array.from({ length: b.to - b.from }, (_, i) => b.from + i);
+    const truth = meanOf(hrs.map(h => p.truth.isfByHour(h))), mid = p.truth.isfByHour((b.from + b.to) / 2);
+    return { label: b.label, n: b.isf.n, nPost: b.isf.nPostExercise, source: b.isf.source, value: b.isf.value, truth, mid, err: (b.isf.value - truth) / truth };
+  });
+  return { rows, text: rows.map(r => `${r.label} n=${r.n} (post ${r.nPost}) ${r.source} ${r.value.toFixed(2)} (truth ${r.truth.toFixed(2)} ${(r.err * 100).toFixed(1)}%; midpoint ${r.mid} ${((r.value - r.mid) / r.mid * 100).toFixed(1)}%)`).join('; ') };
+}
+function assertIsfWithin(rows, tol) {
+  const tested = rows.filter(r => r.n >= 10);
+  assert.strictEqual(tested.length, 8, `only ${tested.length} blocks with n >= 10`);
+  for (const r of tested) {
+    assert.strictEqual(r.source, 'learned');
+    assert.ok(Math.abs(r.err) <= tol, `${r.label}: ${r.value.toFixed(2)} vs truth ${r.truth.toFixed(2)} (${(r.err * 100).toFixed(1)}%)`);
+  }
 }
 
 test('learns time-of-day ISF from the sim', () => {
   const p = sim90[0];
   const nowMs = p.glucoseHistory[p.glucoseHistory.length - 1].time;
-  const m = E.fitModel(corrections90(), p.pumpProfile, { nowMs });
-  // Truth = the block's hour-averaged ISF. It equals isfByHour(block midpoint) except where the sim's
-  // truth steps inside a block (04:00 in 03-06, 17:00 in 15-18): 03-06's midpoint (4.5h -> 2.2) is not
-  // its truth when hour 3 runs at 3.2 (learned 2.65 = 20.7% off the midpoint, 4.6% off the block mean).
-  const rows = m.blocks.map(b => {
-    const hrs = Array.from({ length: b.to - b.from }, (_, i) => b.from + i);
-    const truth = meanOf(hrs.map(h => p.truth.isfByHour(h))), mid = p.truth.isfByHour((b.from + b.to) / 2);
-    return { label: b.label, n: b.isf.n, source: b.isf.source, value: b.isf.value, truth, mid, err: (b.isf.value - truth) / truth };
-  });
-  console.log('fitModel ISF per block: ' + rows.map(r => `${r.label} n=${r.n} ${r.source} ${r.value.toFixed(2)} (truth ${r.truth.toFixed(2)} ${(r.err * 100).toFixed(1)}%; midpoint ${r.mid} ${((r.value - r.mid) / r.mid * 100).toFixed(1)}%)`).join('; '));
-  const tested = rows.filter(r => r.n >= 10);
-  assert.strictEqual(tested.length, 8, `only ${tested.length} blocks with n >= 10`);
-  for (const r of tested) {
-    assert.strictEqual(r.source, 'learned');
-    assert.ok(Math.abs(r.err) <= 0.2, `${r.label}: ${r.value.toFixed(2)} vs truth ${r.truth} (${(r.err * 100).toFixed(1)}%)`);
+  const m = E.fitModel(pooled90(), p.pumpProfile, { nowMs });
+  const { rows, text } = isfVsTruth(m, p);
+  console.log(`fitModel ISF per block (boost ${m.exercise.boost.multiplier.toFixed(3)}, nights ${m.exercise.boost.n}/${m.exercise.boost.nWithout}): ${text}`);
+  assert.ok(m.exercise.boost.multiplier > 1);
+  assertIsfWithin(rows, 0.2);
+});
+
+test('daily-ish training: post-exercise episodes normalised by the learned boost, not excluded', () => {
+  const eps = daily90();
+  const p = sim90[0];   // same truth + pump profile as the daily-run sims
+  const nowMs = p.glucoseHistory[p.glucoseHistory.length - 1].time;
+  const m = E.fitModel(eps, p.pumpProfile, { nowMs });
+  const { rows, text } = isfVsTruth(m, p);
+  console.log(`daily-run ISF (boost ${m.exercise.boost.multiplier.toFixed(3)}, nights ${m.exercise.boost.n}/${m.exercise.boost.nWithout}): ${text}`);
+  assert.ok(m.exercise.boost.multiplier > 1.1, `boost ${m.exercise.boost.multiplier}`);
+  assertIsfWithin(rows, 0.2);
+  // (c) more evidence per block than excluding post-exercise episodes would leave
+  const clean = eps.filter(ep => ep.kind === 'correction' && ep.confounded === null);
+  for (const b of m.blocks) {
+    const inB = clean.filter(ep => { const h = londonHour(ep.startMs); return h >= b.from && h < b.to; });
+    const excluded = inB.filter(ep => !exercisedEp(ep)).length;
+    assert.strictEqual(b.isf.n, inB.length);
+    assert.ok(b.isf.nPostExercise === inB.length - excluded && b.isf.n > excluded, `${b.label}: n ${b.isf.n} vs ${excluded} without exercise`);
   }
+  console.log(`  per block n with normalisation vs exclusion: ${m.blocks.map(b => `${b.isf.n}/${b.isf.n - b.isf.nPostExercise}`).join(' ')}`);
+  // without the nights the boost is unlearned and the post-exercise episodes go in raw: biased up
+  const raw = E.fitModel(eps.filter(ep => ep.kind !== 'night'), p.pumpProfile, { nowMs });
+  const rawRows = isfVsTruth(raw, p).rows;
+  console.log(`  unnormalised: ${rawRows.map(r => `${r.label} ${(r.err * 100).toFixed(1)}%`).join(' ')}`);
+  assert.ok(meanOf(rawRows.map(r => r.err)) > meanOf(rows.map(r => r.err)));
+});
+
+test('post-exercise episodes: normalised when the boost is learned, as-is when not', () => {
+  const night = i => Date.UTC(2026, 0, 6 + i, 0);
+  const ran = { exercise24h: { minutes: 45, types: ['Running'], trimp: null } };
+  const post = [...many(10, i => corrEp(AT10 + i * 60000, 3.6, ran)), ...many(10, i => mealEp(AT10 + i * 60000, 12, { context: ctx(ran) }))];
+  const boostNights = [...many(6, i => nightEp(night(i), 1.2, true)), ...many(6, i => nightEp(night(i + 20), 1.0, false))];
+  // (b) no boost learned -> included unchanged
+  const asIs = block(E.fitModel(post, FLAT, { nowMs: AT10 }), '09:00–12:00');
+  assert.ok(Math.abs(asIs.isf.value - 3.6) < 1e-9 && Math.abs(asIs.carbRatio.value - 12) < 1e-9);
+  assert.strictEqual(asIs.isf.nPostExercise, 10);
+  assert.strictEqual(asIs.carbRatio.nPostExercise, 10);
+  // boost 1.2 learned -> ISF and CR divided by it
+  const m = E.fitModel([...post, ...boostNights], FLAT, { nowMs: AT10 });
+  assert.ok(Math.abs(m.exercise.boost.multiplier - 1.2) < 1e-9);
+  const b = block(m, '09:00–12:00');
+  assert.ok(Math.abs(b.isf.value - 3.0) < 1e-9, `isf ${b.isf.value}`);
+  assert.ok(Math.abs(b.carbRatio.value - 10) < 1e-9, `cr ${b.carbRatio.value}`);
+  assert.strictEqual(b.isf.n, 10);
+  assert.strictEqual(b.isf.nPostExercise, 10);
+  // episodes outside the window are untouched
+  const rest = block(E.fitModel([...many(10, i => corrEp(AT10 + i * 60000, 3.6)), ...boostNights], FLAT, { nowMs: AT10 }), '09:00–12:00');
+  assert.ok(Math.abs(rest.isf.value - 3.6) < 1e-9);
+  assert.strictEqual(rest.isf.nPostExercise, 0);
 });

@@ -4069,7 +4069,7 @@ function weightedStats(items) {
 // One block parameter (ISF or CR — for both, a higher value = less insulin).
 function fitBlockParam(items, all, pump, prevValue, daysSincePrev, shrinkK) {
   const b = weightedStats(items);
-  const out = { value: pump, pump, n: b.n, source: 'pump', outsideBand: false, se: b.se };
+  const out = { value: pump, pump, n: b.n, nPostExercise: items.filter(x => x.post).length, source: 'pump', outsideBand: false, se: b.se };
   if (!isNum(pump) || !(pump > 0)) return { ...out, value: null, pump: null };
   const usable = (value, n) => isNum(value) && n >= (value > pump ? MODEL_N_LESS_INSULIN : MODEL_N_MORE_INSULIN);
   let value = null;
@@ -4094,13 +4094,13 @@ function fitBlockParam(items, all, pump, prevValue, daysSincePrev, shrinkK) {
 // Condition modifier: correction ISF (relative to the pump ISF at the
 // episode's start) with vs without the condition. Active only with >= 10
 // each side and |diff| > 2 SE; effect = mean ratio with / without.
-function fitModifier(corrs, pumpProfile, cond) {
+function fitModifier(isfItems, pumpProfile, cond) {
   const w = [], wo = [];
-  for (const ep of corrs) {
+  for (const { ep, v } of isfItems) {
     const c = cond(ep.context || {});
     if (c == null) continue;
     const pump = profileValueAt(pumpProfile, ep.startMs, 'correctionFactor');
-    const rel = pump > 0 ? ep.fit.isf / pump : ep.fit.isf;
+    const rel = pump > 0 ? v / pump : v;
     (c ? w : wo).push(rel);
   }
   const off = { active: false, effect: 1, n: w.length, nWithout: wo.length };
@@ -4123,27 +4123,8 @@ function fitModel(episodes, pumpProfile, opts = {}) {
   const nowMs = toMs(nowIn);
   const clean = (episodes || []).filter(ep => ep && ep.confounded === null && isNum(toMs(ep.startMs)));
   const weight = ep => 0.5 ** (Math.max(0, nowMs - toMs(ep.startMs)) / DAY_MS / halfLifeDays);
-  // a workout in the 24h before the start = inside the post-exercise boost window, which
-  // exercise.boost learns and applies separately: keep those out of ISF/CR (no double counting)
+  // a workout in the 24h before the start = inside the post-exercise boost window
   const exercised = ep => (ep.context?.exercise24h?.minutes || 0) > 0 || (ep.context?.exercise24h?.types?.length || 0) > 0;
-  const items = (kind, get) => clean.filter(ep => ep.kind === kind && !exercised(ep) && isNum(get(ep)) && get(ep) > 0)
-    .map(ep => ({ ep, v: get(ep), w: weight(ep), hour: hourOfDay(toMs(ep.startMs)) }));
-  const isfItems = items('correction', ep => ep.fit?.isf);
-  const crItems = items('meal', ep => ep.fit?.carbRatio);
-  const allIsf = weightedStats(isfItems), allCr = weightedStats(crItems);
-
-  const table = prescribedRegimenTable(pumpProfile) || REGIMEN_TOD_BUCKETS.map(() => ({}));
-  const prevFitted = prevModel ? toMs(prevModel.fittedAt) : null;
-  const daysSincePrev = prevFitted != null ? (nowMs - prevFitted) / DAY_MS : null;
-  const blocks = REGIMEN_TOD_BUCKETS.map((bk, i) => {
-    const prev = prevModel?.blocks?.find(b => b.label === bk.label);
-    const inBlock = xs => xs.filter(x => x.hour >= bk.from && x.hour < bk.to);
-    return {
-      label: bk.label, from: bk.from, to: bk.to,
-      isf: fitBlockParam(inBlock(isfItems), allIsf, finiteOrNull(table[i].correctionFactor), prev?.isf?.value, daysSincePrev, shrinkK),
-      carbRatio: fitBlockParam(inBlock(crItems), allCr, finiteOrNull(table[i].carbRatio), prev?.carbRatio?.value, daysSincePrev, shrinkK),
-    };
-  });
 
   // exercise: per workout type, median of clean episodes (one unlogged snack can't swing it),
   // never a rise
@@ -4166,11 +4147,38 @@ function fitModel(episodes, pumpProfile, opts = {}) {
   exercise.boost = { multiplier: boostOk ? Math.max(1, median(after) / median(without)) : 1,
     n: after.length, nWithout: without.length, hours: MODEL_BOOST_HOURS };
 
-  const corrs = isfItems.map(x => x.ep);
+  // Post-exercise episodes (inside boost.hours of a workout) carry the boost. When the boost is
+  // learned, divide it out of their fitted ISF / CR (applyModel multiplies it back in) and keep
+  // them: someone who trains most days has few episodes outside the window. When it isn't learned
+  // (multiplier 1), they go in as-is — that is the person's habitual state.
+  const boostLearned = exercise.boost.multiplier > 1;
+  const items = (kind, get) => clean.filter(ep => ep.kind === kind && isNum(get(ep)) && get(ep) > 0)
+    .map(ep => {
+      const post = exercised(ep);
+      return { ep, post, v: post && boostLearned ? get(ep) / exercise.boost.multiplier : get(ep),
+        w: weight(ep), hour: hourOfDay(toMs(ep.startMs)) };
+    });
+  const isfItems = items('correction', ep => ep.fit?.isf);
+  const crItems = items('meal', ep => ep.fit?.carbRatio);
+  const allIsf = weightedStats(isfItems), allCr = weightedStats(crItems);
+
+  const table = prescribedRegimenTable(pumpProfile) || REGIMEN_TOD_BUCKETS.map(() => ({}));
+  const prevFitted = prevModel ? toMs(prevModel.fittedAt) : null;
+  const daysSincePrev = prevFitted != null ? (nowMs - prevFitted) / DAY_MS : null;
+  const blocks = REGIMEN_TOD_BUCKETS.map((bk, i) => {
+    const prev = prevModel?.blocks?.find(b => b.label === bk.label);
+    const inBlock = xs => xs.filter(x => x.hour >= bk.from && x.hour < bk.to);
+    return {
+      label: bk.label, from: bk.from, to: bk.to,
+      isf: fitBlockParam(inBlock(isfItems), allIsf, finiteOrNull(table[i].correctionFactor), prev?.isf?.value, daysSincePrev, shrinkK),
+      carbRatio: fitBlockParam(inBlock(crItems), allCr, finiteOrNull(table[i].carbRatio), prev?.carbRatio?.value, daysSincePrev, shrinkK),
+    };
+  });
+
   const modifiers = {
-    siteAge: fitModifier(corrs, pumpProfile, c => (isNum(c.siteAgeHours) ? c.siteAgeHours >= MODEL_SITE_AGE_HOURS : null)),
-    illness: fitModifier(corrs, pumpProfile, c => (isNum(c.rhrZ) ? c.rhrZ >= MODEL_ILLNESS_RHR_Z : null)),
-    shortSleep: fitModifier(corrs, pumpProfile, c => (isNum(c.sleepHrs) ? c.sleepHrs < MODEL_SHORT_SLEEP_HRS : null)),
+    siteAge: fitModifier(isfItems, pumpProfile, c => (isNum(c.siteAgeHours) ? c.siteAgeHours >= MODEL_SITE_AGE_HOURS : null)),
+    illness: fitModifier(isfItems, pumpProfile, c => (isNum(c.rhrZ) ? c.rhrZ >= MODEL_ILLNESS_RHR_Z : null)),
+    shortSleep: fitModifier(isfItems, pumpProfile, c => (isNum(c.sleepHrs) ? c.sleepHrs < MODEL_SHORT_SLEEP_HRS : null)),
   };
 
   // delayed rise: meals that are clean or late-absorption (other labels can't tell a late rise

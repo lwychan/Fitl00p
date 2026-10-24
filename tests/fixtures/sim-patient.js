@@ -35,6 +35,7 @@ function simulatePatient(opts = {}) {
     days = 60, seed = 1, startMs = Date.UTC(2026, 0, 5),
     isfByHour = DEFAULT_ISF, carbRatioByHour = DEFAULT_CR, scheduledBasalByHour = DEFAULT_BASAL,
     exercise = DEFAULT_EXERCISE, controlIq = true, autoBolus = true,
+    workoutRate = 0.5,          // share of days with a workout
     unloggedSnackRate = 0.03,   // chance per waking hour (07-22 London)
     compressionLowRate = 0.02,  // scaled x5 -> per-night chance
     underdosedMealRate = 0.5696360365999861,   // share of logged meals the patient under-doses (bolus 20-40% of need)
@@ -86,7 +87,7 @@ function simulatePatient(opts = {}) {
     for (const t of dayTemplates) { if (u < t.w) { tpl = t; break; } u -= t.w; }
     const meals = tpl.meals.map(([b, c]) => ({ min: Math.max(0, Math.round((b + (rand() - 0.5) * 40) / 5) * 5), carbs: Math.round(c + (rand() - 0.5) * 20),
       frac: rand() < underdosedMealRate ? 0.2 + rand() * 0.2 : 1 }));
-    plan.push({ meals, workout: rand() < 0.5 ? wTypes[Math.floor(rand() * wTypes.length)] : null,
+    plan.push({ meals, workout: rand() < workoutRate ? wTypes[Math.floor(rand() * wTypes.length)] : null,
       workoutMin: Math.round((600 + rand() * 660) / 5) * 5,   // 10:00-21:00 London
       comp: rand() < compressionLowRate * 5 ? Math.round((60 + rand() * 240) / 5) * 5 : -1 });
   }
