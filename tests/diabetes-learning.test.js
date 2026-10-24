@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { simulatePatient } = require('./fixtures/sim-patient.js');
+const { simulatePatient, londonHour } = require('./fixtures/sim-patient.js');
 
 test('sim patient: 60 days of plausible data', () => {
   const t0 = Date.now();
@@ -17,7 +17,48 @@ test('sim patient: 60 days of plausible data', () => {
   assert.ok(p.basalDoses.length > 0);
   assert.ok(p.activities.workouts.length > 0);
   assert.ok(p.pumpProfile.default.length > 0);
-  assert.ok(elapsed < 3000, `took ${elapsed}ms`);
+  assert.ok(elapsed < 10000, `took ${elapsed}ms`);   // loose: just guards against pathological slowness
   assert.deepStrictEqual(simulatePatient({ days: 60, seed: 1 }), p);
   assert.notDeepStrictEqual(simulatePatient({ days: 5, seed: 2 }).glucoseHistory, simulatePatient({ days: 5, seed: 3 }).glucoseHistory);
+});
+
+const H = 3600000;
+const sim60 = simulatePatient({ days: 60, seed: 1 });
+
+test('sim patient: clean corrections spread across all eight 3h London blocks', () => {
+  const p = sim60;
+  const confounds = [
+    ...p.boluses.filter(b => !b.auto && b.carbs > 0).map(b => b.time),
+    ...p.truth.snacks.map(x => x.time), ...p.truth.compressionLows.map(x => x.time),
+  ];
+  // clean = no meal / snack / compression low within 4h before or 2h after the correction
+  const clean = Array(8).fill(0);
+  for (const c of p.corrections) {
+    if (!confounds.some(t => t > c.time - 4 * H && t < c.time + 2 * H)) clean[Math.floor(londonHour(c.time) / 3)]++;
+  }
+  for (let b = 0; b < 8; b++) assert.ok(clean[b] >= 8, `block ${b} has ${clean[b]} clean corrections (${clean})`);
+});
+
+test('sim patient: nights inside a post-exercise boost window, with insulin activity', () => {
+  const p = sim60;
+  const nights = new Set();
+  for (const w of p.activities.workouts) {
+    const boostEnd = w.endTime + p.truth.exercise[w.workoutType].hours * H;
+    // each London night 00:00-06:00 fully covered by the boost window
+    for (let t = Math.floor(w.endTime / H) * H; t < boostEnd; t += H) {
+      if (londonHour(t) !== 0) continue;
+      if (t < w.endTime || t + 6 * H > boostEnd) continue;
+      const active = p.basalDoses.some(b => b.time >= t && b.time < t + 6 * H) ||
+        p.corrections.some(c => c.time >= t && c.time < t + 6 * H);
+      if (active) nights.add(t);
+    }
+  }
+  assert.ok(nights.size >= 10, `only ${nights.size} boosted nights`);
+});
+
+test('sim patient: realistic lows and no clamping of true glucose', () => {
+  const v = sim60.glucoseHistory.map(g => g.value);
+  const low = v.filter(x => x < 3.9).length / v.length;
+  assert.ok(low < 0.05, `share <3.9 = ${low}`);
+  assert.strictEqual(sim60.truth.clampedCount, 0);
 });

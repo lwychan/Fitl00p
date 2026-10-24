@@ -26,8 +26,8 @@ const DEFAULT_ISF = h => (h < 4 ? 3.2 : h < 9 ? 2.2 : h < 17 ? 3.0 : 3.6);   // 
 const DEFAULT_CR = h => (h < 11 ? 8 : h < 17 ? 10 : 12);                      // g per U
 const DEFAULT_BASAL = h => (h < 6 ? 0.8 : 0.9);                               // U/h
 const DEFAULT_EXERCISE = {
-  Running: { dropPerMin: 0.03, sensitivityBoost: 1.3, hours: 6 },
-  Weights: { dropPerMin: 0.015, sensitivityBoost: 1.15, hours: 4 },
+  Running: { dropPerMin: 0.03, sensitivityBoost: 1.3, hours: 24 },
+  Weights: { dropPerMin: 0.015, sensitivityBoost: 1.15, hours: 16 },
 };
 
 function simulatePatient(opts = {}) {
@@ -50,21 +50,41 @@ function simulatePatient(opts = {}) {
   for (let k = 0; k < 48; k++) insDec.push(E.iobFraction(k * STEP, E.IOB_PEAK_MINUTES, 240) - E.iobFraction((k + 1) * STEP, E.IOB_PEAK_MINUTES, 240));
   for (let k = 0; k < 36; k++) carbDec.push(E.cobFraction(k * STEP, 180) - E.cobFraction((k + 1) * STEP, 180));
 
+  const insRem = [1];   // insRem[k] = fraction still active k steps after a dose
+  for (let k = 0; k < 48; k++) insRem.push(insRem[k] - insDec[k]);
   const out = { glucoseHistory: [], boluses: [], corrections: [], basalDoses: [], workouts: [], snacks: [], compressionLows: [] };
   const trueG = [], insDoses = [], carbDoses = [], exWin = [];
+  let clampedCount = 0, lastSnack = -999;
   let g = 7, noise = 0, compUntil = -1, compDepth = 0;
   let lastMeal = -999, lastCorr = -999, lastAuto = -999, workoutEnd = -1;
 
-  // daily plan (London minute-of-day, rounded to 5)
+  // Daily plan, indexed by UTC day (limitation: across a DST change the plan day flips at
+  // 00:00 UTC = 01:00 BST, so London minute-of-day 0-60 uses the previous day's plan; harmless).
+  // Lunch/dinner are sometimes skipped so meal-free windows exist for clean corrections, and
+  // hidden "drift" highs (stress/missed-bolus, no carbs) are scheduled across all eight 3h blocks.
+  const pumpCr = [...Array(24).keys()].reduce((a, h) => a + carbRatioByHour(h), 0) / 24 * 1.2;
   const plan = [];
   for (let d = 0; d < days + 1; d++) {
-    const meals = [[480, 40, 25], [780, 40, 35], [1140, 40, 45]].map(([b, j, c]) => ({
-      min: Math.round((b + (rand() - 0.5) * j) / 5) * 5, carbs: Math.round(c + (rand() - 0.5) * 30) }));
-    plan.push({ meals, workout: rand() < 0.5 ? wTypes[Math.floor(rand() * wTypes.length)] : null,
+    // day types: full (3 meals + sometimes a late one), lunch-only, dinner-only
+    const kind = rand(), set = kind < 0.6 ? [0, 1, 2, 3] : kind < 0.8 ? [1] : [2];
+    const meals = [[450, 40, 25, 1], [750, 40, 35, 1], [1095, 30, 45, 1], [1290, 20, 15, 0.7]]
+      .map(([b, j, c, p], idx) => ({ min: Math.round((b + (rand() - 0.5) * j) / 5) * 5, carbs: Math.round(c + (rand() - 0.5) * 30), on: set.includes(idx) && rand() < p }))
+      .filter(m => m.on);
+    const drifts = [];
+    for (let b = 0; b < 8; b++) {
+      if (rand() >= 0.85) continue;
+      for (let tries = 0; tries < 16; tries++) {
+        const m = b * 180 + 5 * Math.floor(rand() * 36), amt = 4.5 + rand() * 1.5;
+        if (meals.every(x => x.min < m - 240 || x.min > m + 120)) { drifts.push({ min: m, amt }); break; }
+      }
+    }
+    plan.push({ meals, drifts, workout: rand() < 0.5 ? wTypes[Math.floor(rand() * wTypes.length)] : null,
+      workoutMin: Math.round((600 + rand() * 660) / 5) * 5,   // 10:00-21:00 London
       comp: rand() < compressionLowRate * 5 ? Math.round((60 + rand() * 240) / 5) * 5 : -1 });
   }
+  const driftSteps = [];
 
-  const addIns = (i, units, hour) => insDoses.push({ i, units, isf: isfByHour(hour) });
+  const addIns = (i, units, hour, basal) => insDoses.push({ i, units, isf: isfByHour(hour), basal: !!basal });
   for (let i = 0; i < steps; i++) {
     const t = startMs + i * MS, hour = londonHour(t);
     const mod = hour * 60 + new Date(t).getUTCMinutes();
@@ -80,62 +100,74 @@ function simulatePatient(opts = {}) {
       compUntil = i + 7; compDepth = 3 + rand() * 1.5; out.compressionLows.push({ time: t });
     }
 
+    // sensitivity boost active now (workout window); patient dose-adjusts for it
+    let boost = 1;
+    for (const w of exWin) if (i >= w.s && i <= w.until) boost = Math.max(boost, w.ex.sensitivityBoost);
     // meals
     for (const m of day.meals) if (m.min === mod) {
-      const cr = carbRatioByHour(hour), units = Math.max(0.5, Math.round(m.carbs / cr * (1 + 0.05 * randn()) * 20) / 20);
+      const cr = carbRatioByHour(hour), units = Math.max(0.5, Math.round(m.carbs / pumpCr / boost * (1 + 0.05 * randn()) * 20) / 20); // patient doses from the (wrong) pump CR
       out.boluses.push({ time: t, units, carbs: m.carbs, mealName: null });
       addIns(i, units, hour);
       carbDoses.push({ i, g: m.carbs, perG: isfByHour(hour) / cr });
       lastMeal = i;
     }
-    // unlogged snacks
-    if (hour >= 7 && hour < 22 && mod % 60 === 0 && rand() < unloggedSnackRate) {
+    for (const dr of day.drifts) if (dr.min === mod) driftSteps.push({ i, per: dr.amt / 12 });
+    // unlogged snacks (not near scheduled drift highs, so corrections stay clean)
+    if (hour >= 7 && hour < 22 && mod % 60 === 0 && rand() < unloggedSnackRate &&
+        !day.drifts.some(x => mod >= x.min - 120 && mod <= x.min + 240)) {
       const gr = 10 + Math.round(rand() * 20);
       carbDoses.push({ i, g: gr, perG: isfByHour(hour) / carbRatioByHour(hour) });
-      out.snacks.push({ time: t, carbs: gr });
+      out.snacks.push({ time: t, carbs: gr }); lastSnack = i;
     }
-    // workouts at 17:30 London
-    if (day.workout && mod === 1050 && i > workoutEnd) {
+    // workouts at a random London time 10:00-21:00
+    if (day.workout && mod === day.workoutMin && i > workoutEnd && i - lastMeal > 36) {
       const dur = 30 + Math.round(rand() * 3) * 15, type = day.workout, ex = exercise[type];
       out.workouts.push({ startTime: t, endTime: t + dur * 60000, workoutType: type, avgHr: 125 + Math.round(rand() * 30) });
       workoutEnd = i + dur / STEP;
       exWin.push({ s: i, e: workoutEnd, until: workoutEnd + ex.hours * 12, ex });
     }
     // manual correction
-    if (meas > 9.5 && i - lastCorr > 36 && i - lastMeal > 24 && i - lastAuto > 12 && rand() < 0.4) {
-      const units = Math.max(0.3, Math.round((meas - 6.5) / isfByHour(hour) * 20) / 20);
-      out.corrections.push({ time: t, units, startGlucose: +meas.toFixed(2), predictedGlucose: null });
-      addIns(i, units, hour); lastCorr = i;
+    if (meas > 9.5 && i - lastCorr > 36 && i - lastMeal > 48 && i - lastSnack > 48 && i - compUntil > 48 && i - lastAuto > 12 && rand() < 0.8) {
+      const iob = insDoses.reduce((a, x) => a + (!x.basal && i - x.i < 48 ? x.units * insRem[i - x.i] : 0), 0);
+      const units = Math.max(0, Math.round(((meas - 6.5) / isfByHour(hour) * 0.6 / boost - Math.max(0, iob)) * 20) / 20);
+      if (units >= 0.3) {
+        out.corrections.push({ time: t, units, startGlucose: +meas.toFixed(2), predictedGlucose: null });
+        addIns(i, units, hour); lastCorr = i;
+      }
     }
     // Control-IQ: temp basal deviating from schedule, optional auto-bolus
     if (controlIq) {
       const sched = scheduledBasalByHour(hour), prev = out.glucoseHistory[i - 1]?.value ?? meas;
       const eventual = meas + (meas - prev) * 4;
-      let rate = sched * (1 + 0.4 * (eventual - 6.5));
-      if (eventual < 4.4) rate = 0;
-      rate = Math.min(sched * 3, Math.max(0, rate));
+      let rate = sched * (1 + 0.15 * (eventual - 6.5));
+      if (eventual < 5.6) rate = 0;
+      rate = Math.min(sched * 2, Math.max(0, rate));
       if (Math.abs(rate - sched) > 0.005) {
         out.basalDoses.push({ time: t, units: rate / 12, durationMin: 5, rate: +rate.toFixed(3) });
-        addIns(i, (rate - sched) / 12, hour);
+        addIns(i, (rate - sched) / 12, hour, true);
       }
-      if (autoBolus && meas > 11.5 && eventual > 12 && i - lastAuto > 12) {
+      if (autoBolus && meas > 14 && eventual > 14.5 && i - lastAuto > 12) {
         const units = Math.round((meas - 8) / isfByHour(hour) * 0.4 * 20) / 20;
         if (units > 0) { out.boluses.push({ time: t, units, carbs: 0, auto: true }); addIns(i, units, hour); lastAuto = i; }
       }
     }
 
     // advance true glucose one step
-    let boost = 1, d = 0;
+    let d = 0;
     for (const w of exWin) {
-      if (i >= w.s && i <= w.until) boost = Math.max(boost, w.ex.sensitivityBoost);
-      if (i >= w.s && i < w.e) d -= w.ex.dropPerMin * STEP;
+      if (i >= w.s && i < w.e) d -= w.ex.dropPerMin * STEP * Math.min(1, Math.max(0, (g - 3.5) / 3)); // liver response blunts the drop when low
     }
+    for (const x of driftSteps) { const k = i - x.i; if (k < 12) d += x.per; }
+    while (driftSteps.length && i - driftSteps[0].i >= 11) driftSteps.shift();
     for (const x of insDoses) { const k = i - x.i; if (k < 48) d -= x.units * x.isf * boost * insDec[k]; }
     for (const x of carbDoses) { const k = i - x.i; if (k < 36) d += x.g * x.perG * carbDec[k]; }
     while (insDoses.length && i - insDoses[0].i >= 47) insDoses.shift();
     while (carbDoses.length && i - carbDoses[0].i >= 35) carbDoses.shift();
     while (exWin.length && i > exWin[0].until) exWin.shift();
-    g = Math.min(22.2, Math.max(2.2, g + d + 0.04 * randn()));
+    // glucagon-style counter-regulation: soft floor below 3.0 mmol/L (keeps true glucose off the hard clamp)
+    if (g + d < 3.0) d = (3.0 - g) + (d - (3.0 - g)) * 0.2;
+    g += d + 0.04 * randn();
+    if (g < 2.2 || g > 22.2) { clampedCount++; g = Math.min(22.2, Math.max(2.2, g)); }
   }
 
   // pump profile: deliberately wrong (flat ISF at truth 24h mean, CR 20% too high)
@@ -150,7 +182,7 @@ function simulatePatient(opts = {}) {
     glucoseHistory: out.glucoseHistory, boluses: out.boluses, corrections: out.corrections,
     basalDoses: out.basalDoses, activities: { workouts: out.workouts }, pumpProfile,
     truth: { isfByHour, carbRatioByHour, scheduledBasalByHour, exercise, snacks: out.snacks,
-      compressionLows: out.compressionLows, pumpIsf: meanIsf, pumpCarbRatioFactor: 1.2 },
+      compressionLows: out.compressionLows, clampedCount, pumpIsf: meanIsf, pumpCarbRatioFactor: 1.2 },
   };
 }
 
