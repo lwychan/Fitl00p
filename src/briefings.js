@@ -67,13 +67,15 @@ const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
 // Reasons starting with one of these read straight on from a headline
 // ("Recovery 31 after only 4.9h sleep"); others follow a dash.
 const JOINS = /^(after|with|on|despite|and|but|as|from|following|plus|so|while)\b/;
+// "after X, and Y" — unless a reason already carries its own "and".
+const joinReasons = rs => rs.join(rs.some(r => /^and\b/.test(r)) ? ', ' : ', and ');
 
 // items = evaluateInsights output (highest priority first) with rule parts.
 // Body: "<headline> <reason1>, and <reason2>. <Action>." + one line per extra,
 // trimmed (second reason, then trailing extras, then the first reason) to
-// maxChars. A headline that is already a sentence (the evening bedtime line)
+// maxChars. pinned lines (e.g. "sleep hasn't synced") are never dropped. A headline that is already a sentence (the evening bedtime line)
 // makes the reasons their own sentence.
-function composeBriefing(items, { slot, extras = [], maxChars = 180, headlineOverride = null } = {}) {
+function composeBriefing(items, { slot, extras = [], pinned = [], maxChars = 180, headlineOverride = null } = {}) {
   const use = (items || []).filter(i => i && (i.slot === slot || i.slot === 'both'));
   const top = headlineOverride ? null : use.find(i => i.headline);
   const headline = headlineOverride || (top ? top.headline : null);
@@ -89,11 +91,11 @@ function composeBriefing(items, { slot, extras = [], maxChars = 180, headlineOve
 
   const build = (reasons, extraLines) => {
     let first;
-    if (!headline) first = reasons.length ? sentence(cap(reasons.join(', and '))) : (slot === 'evening' ? 'Nothing new to flag tonight.' : 'Good morning, nothing new to flag today.');
+    if (!headline) first = reasons.length ? sentence(cap(joinReasons(reasons))) : (slot === 'evening' ? 'Nothing new to flag tonight.' : 'Good morning, nothing new to flag today.');
     else if (!reasons.length) first = sentence(headline);
-    else if (ends(headline)) first = `${headline} ${sentence(cap(reasons.join(', and ')))}`;
-    else first = sentence(`${headline}${JOINS.test(reasons[0]) ? ' ' : ' — '}${reasons.join(', and ')}`);
-    const lines = [actionItem ? `${first} ${sentence(actionItem.action)}` : first, ...extraLines];
+    else if (ends(headline)) first = `${headline} ${sentence(cap(joinReasons(reasons)))}`;
+    else first = sentence(`${headline}${JOINS.test(reasons[0]) ? ' ' : ' — '}${joinReasons(reasons)}`);
+    const lines = [actionItem ? `${first} ${sentence(actionItem.action)}` : first, ...(pinned || []).filter(Boolean), ...extraLines];
     return lines.join('\n');
   };
   let reasons = reasonItems.map(i => i.reason);
@@ -121,11 +123,15 @@ function londonHHMM(iso) {
 
 // When last night's sleep hasn't synced: what the evening snapshot (battery at
 // last app open) and overnight glucose suggest. null if nothing is known.
-function fallbackNightPhrase({ snapshot = null, nightGlucose = null } = {}) {
+// Sleep under 3h in the morning is almost always a partial sync, not a real night.
+const sleepSynced = hrs => hrs != null && Number(hrs) >= 3;
+
+function fallbackNightPhrase({ snapshot = null, nightGlucose = null, partialHrs = null } = {}) {
   const snap = snapshot && snapshot.battery != null && snapshot.takenAt ? snapshot : null;
   const g = nightGlucose && Number.isFinite(nightGlucose.low) ? nightGlucose : null;
-  if (!snap && !g) return null;
-  let s = 'No sleep data from last night yet';
+  if (!snap && !g && partialHrs == null) return null;
+  let s = partialHrs != null ? `Only ${Number(partialHrs).toFixed(1)}h of last night's sleep has synced so far`
+    : 'No sleep data from last night yet';
   if (g) s += ` — probably a ${g.low < 3.9 || g.cv > 36 ? 'broken' : 'settled'} night`;
   if (snap) s += ` (bed ~${londonHHMM(snap.takenAt)} on ${Math.round(snap.battery)}%)`;
   if (g) s += g.low < 3.9 ? `, glucose dipped to ${g.low.toFixed(1)}` : g.cv > 36 ? ', glucose up and down' : ', glucose steady';
@@ -192,7 +198,40 @@ function workoutLine(today, previous, history = []) {
   return line;
 }
 
-const Briefings = { workoutLine, sameExercise, fitl00pSessionRow, DEFAULT_SCHEDULES, defaultSchedule, scheduleFor, isWeekend, morningTime, eveningTime, isDue,
+// ---- Morning reminders & helpers -------------------------------------------
+
+const WEEKDAY_NUM = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+
+// Gemma weighs in daily; Lewis on his weigh-in days (notification_prefs
+// 'weighin'.days_of_week, default Tuesday). Never once logged today.
+function weighinDue({ isGemma, weekday, days, loggedToday }) {
+  if (loggedToday) return false;
+  return isGemma || (days && days.length ? days : [2]).includes(WEEKDAY_NUM[weekday]);
+}
+
+function morningExtras({ weighinDue: w, tirzepatideDue, peptideDue }) {
+  return [w && '⚖️ Weigh-in day.', tirzepatideDue && '💉 Tirzepatide due today.', peptideDue && '💉 Peptide dose today.']
+    .filter(Boolean);
+}
+
+// UTC ms of 00:00 London on dateStr (YYYY-MM-DD), BST or GMT.
+function londonMidnightMs(dateStr) {
+  const utc = Date.parse(`${dateStr}T00:00:00Z`);
+  const h = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: '2-digit', hourCycle: 'h23' })
+    .format(new Date(utc)));
+  return utc - (h > 12 ? h - 24 : h) * 3600000;
+}
+
+// Overnight CGM summary for the sleep fallback; null with under an hour of readings.
+function nightGlucoseSummary(readings, fromMs, toMs) {
+  const v = (readings || []).filter(r => r.time >= fromMs && r.time < toMs).map(r => Number(r.value)).filter(Number.isFinite);
+  if (v.length < 12) return null;
+  const mean = v.reduce((a, b) => a + b, 0) / v.length;
+  const sd = Math.sqrt(v.reduce((a, b) => a + (b - mean) ** 2, 0) / v.length);
+  return { low: Math.round(Math.min(...v) * 10) / 10, mean: Math.round(mean * 10) / 10, cv: Math.round((sd / mean) * 100) };
+}
+
+const Briefings = { sleepSynced, weighinDue, morningExtras, londonMidnightMs, nightGlucoseSummary, workoutLine, sameExercise, fitl00pSessionRow, DEFAULT_SCHEDULES, defaultSchedule, scheduleFor, isWeekend, morningTime, eveningTime, isDue,
   composeBriefing, fallbackNightPhrase };
 
 if (typeof module !== 'undefined' && module.exports) {

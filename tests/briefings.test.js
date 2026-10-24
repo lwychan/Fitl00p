@@ -164,3 +164,61 @@ test('workout line: top set compared with that exercise last time in either app'
   ];
   assert.equal(B.workoutLine(today, null, history), '🏋️ Wk1-4 Lower A (Mon): 5,000 kg; Hip Thrust top set +10 kg');
 });
+
+test('morning extras: weigh-in, Tirzepatide and peptide lines', () => {
+  assert.deepEqual(B.morningExtras({ weighinDue: true, tirzepatideDue: false, peptideDue: false }), ['⚖️ Weigh-in day.']);
+  assert.deepEqual(B.morningExtras({ weighinDue: false, tirzepatideDue: false, peptideDue: false }), []);
+  assert.deepEqual(B.morningExtras({ weighinDue: true, tirzepatideDue: true, peptideDue: true }),
+    ['⚖️ Weigh-in day.', '💉 Tirzepatide due today.', '💉 Peptide dose today.']);
+});
+
+test('weigh-in due: Gemma daily, Lewis on his weigh-in days, never once logged', () => {
+  assert.equal(B.weighinDue({ isGemma: true, weekday: 'Thu', days: null, loggedToday: false }), true);
+  assert.equal(B.weighinDue({ isGemma: false, weekday: 'Tue', days: null, loggedToday: false }), true);
+  assert.equal(B.weighinDue({ isGemma: false, weekday: 'Wed', days: null, loggedToday: false }), false);
+  assert.equal(B.weighinDue({ isGemma: false, weekday: 'Fri', days: [5], loggedToday: false }), true);
+  assert.equal(B.weighinDue({ isGemma: true, weekday: 'Thu', days: null, loggedToday: true }), false);
+});
+
+test('London midnight in UTC on both sides of the clock change', () => {
+  assert.equal(new Date(B.londonMidnightMs('2026-10-24')).toISOString(), '2026-10-23T23:00:00.000Z');
+  assert.equal(new Date(B.londonMidnightMs('2026-10-26')).toISOString(), '2026-10-26T00:00:00.000Z');
+});
+
+test('night glucose summary 00:00-06:00', () => {
+  const from = Date.UTC(2026, 9, 26), H = 3600000;
+  const rs = Array.from({ length: 72 }, (_, i) => ({ time: from + i * 5 * 60000, value: i === 30 ? 3.5 : 6 }));
+  const g = B.nightGlucoseSummary(rs, from, from + 6 * H);
+  assert.equal(g.low, 3.5);
+  assert.equal(g.mean, 6);
+  assert.equal(B.nightGlucoseSummary(rs.slice(0, 5), from, from + 6 * H), null);
+});
+
+test('under 3h of sleep counts as not fully synced and says how much arrived', () => {
+  assert.equal(B.sleepSynced(1.38), false);
+  assert.equal(B.sleepSynced(null), false);
+  assert.equal(B.sleepSynced(5.2), true);
+  assert.equal(B.fallbackNightPhrase({ partialHrs: 1.38 }), 'Only 1.4h of last night\'s sleep has synced so far');
+  assert.equal(B.fallbackNightPhrase({ partialHrs: 1.38, nightGlucose: { low: 5, mean: 6, cv: 10 } }),
+    'Only 1.4h of last night\'s sleep has synced so far — probably a settled night, glucose steady');
+});
+
+test('composer: a reason starting "and" is not doubled up', () => {
+  const b = B.composeBriefing([
+    item('sleep_short', 'sleep', 78, { headline: 'Short night: 5.5h' }),
+    item('recovery_below', 'recovery', 60, { reason: "and Recovery's only 37" }),
+    item('trend_hrv_down', 'trend', 50, { reason: "HRV's been down all week" }),
+  ], { slot: 'morning' });
+  assert.equal(b.body, "Short night: 5.5h and Recovery's only 37, HRV's been down all week.");
+});
+
+test('composer: a pinned note (sleep not synced) survives trimming; reasons go first', () => {
+  const note = "Only 1.4h of last night's sleep has synced so far — probably a settled night, glucose steady.";
+  const b = B.composeBriefing([
+    item('recovery_below', 'recovery', 60, { headline: 'Recovery 36', action: 'Train, but go lighter — technique work, fewer hard sets' }),
+    item('nutrition_weekly_on_track', 'nutrition', 20, { reason: 'on a steady 5,132 kcal deficit this week' }),
+  ], { slot: 'morning', pinned: [note], extras: ['💉 Tirzepatide due today.'] });
+  assert.ok(b.body.includes(note), b.body);
+  assert.ok(b.body.length <= 180, b.body.length);
+  assert.ok(b.body.startsWith('Recovery 36. Train, but go lighter'), b.body);
+});
