@@ -26,19 +26,20 @@ async function buildSummary(userId: string, todayStr: string, yesterdayStr: stri
   const windowStart = addDays(todayStr, -30);
 
   const [{ data: healthRows }, { data: logRows }, { data: profileRows }] = await Promise.all([
-    sbFetch(`/rest/v1/health_daily?user_id=eq.${userId}&log_date=gte.${windowStart}&log_date=lte.${todayStr}&select=log_date,hrv_ms,resting_hr,sleep_total_hrs,sleep_deep_hrs,sleep_rem_hrs,sleep_start,active_energy_kcal,exercise_mins,workout_hr_avg&order=log_date.asc`),
+    sbFetch(`/rest/v1/health_daily?user_id=eq.${userId}&log_date=gte.${windowStart}&log_date=lte.${todayStr}&select=log_date,hrv_ms,resting_hr,respiratory_rate,wrist_temp_dev,sleep_total_hrs,sleep_deep_hrs,sleep_rem_hrs,sleep_start,active_energy_kcal,exercise_mins,workout_hr_avg&order=log_date.asc`),
     sbFetch(`/rest/v1/daily_logs?user_id=eq.${userId}&log_date=eq.${yesterdayStr}&select=log_date,active_energy_kcal`),
-    sbFetch(`/rest/v1/profiles?id=eq.${userId}&select=age_years`),
+    sbFetch(`/rest/v1/profiles?id=eq.${userId}&select=age_years,recovery_weights`),
   ]);
 
   const health = (healthRows as any[]) || [];
   const yesterdayLog = ((logRows as any[]) || [])[0] || null;
   const ageYears = (profileRows as any[])?.[0]?.age_years;
+  const recoveryWeights = (profileRows as any[])?.[0]?.recovery_weights ?? null;
 
   const todayHealth     = health.find((h: any) => h.log_date === todayStr) || {};
   const yesterdayHealth = health.find((h: any) => h.log_date === yesterdayStr) || {};
 
-  const recovery = computeRecoveryScore(todayHealth, health);
+  const recovery = computeRecoveryScore(todayHealth, health, recoveryWeights);
   const sleep    = computeSleepScore(todayHealth, health);
   const strain   = computeStrainScore(yesterdayHealth, health, yesterdayLog, ageYears);
 

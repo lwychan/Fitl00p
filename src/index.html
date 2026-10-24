@@ -414,6 +414,18 @@
             <div class="score-detail__meta" id="scoreDetailMeta"></div>
             <div class="battery-factors" id="scoreDetailFactors"></div>
           </div>
+          <!-- Morning check-in: tunes Recovery's weights to how you feel (see loadRecoveryModel in app.js). -->
+          <div class="feel-checkin" id="feelCheckin" hidden>
+            <div class="feel-checkin__q" id="feelCheckinQ">How do you feel this morning?</div>
+            <div class="feel-checkin__opts" role="group" aria-label="How do you feel">
+              <button type="button" class="feel-checkin__btn" data-feel="1" aria-label="1: Awful" aria-pressed="false"><span aria-hidden="true">😫</span><small>Awful</small></button>
+              <button type="button" class="feel-checkin__btn" data-feel="2" aria-label="2: Rough" aria-pressed="false"><span aria-hidden="true">😕</span><small>Rough</small></button>
+              <button type="button" class="feel-checkin__btn" data-feel="3" aria-label="3: Okay" aria-pressed="false"><span aria-hidden="true">😐</span><small>Okay</small></button>
+              <button type="button" class="feel-checkin__btn" data-feel="4" aria-label="4: Good" aria-pressed="false"><span aria-hidden="true">🙂</span><small>Good</small></button>
+              <button type="button" class="feel-checkin__btn" data-feel="5" aria-label="5: Great" aria-pressed="false"><span aria-hidden="true">💪</span><small>Great</small></button>
+            </div>
+            <div class="feel-checkin__hint" id="feelCheckinHint"></div>
+          </div>
         </div>
 
         <!-- Daily habit checklist — Gemma's account only (gated client-
@@ -2103,6 +2115,7 @@
 <script src="diabetes-engine.js"></script>
 <script src="nightscout-adapter.js"></script>
 <script src="food-utils.js"></script>
+<script src="readiness-model.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

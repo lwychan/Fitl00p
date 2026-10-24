@@ -52,8 +52,8 @@ function consumedFor(dayLog: any, healthRow: any) {
 async function fetchUserContext(userId: string, todayStr: string) {
   const historyStart = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
   const [{ data: healthRows }, { data: profiles }, { data: dailyLogRows }, { data: foodLogRows }, { data: workouts }] = await Promise.all([
-    sbFetch(`/rest/v1/health_daily?user_id=eq.${userId}&log_date=gte.${historyStart}&log_date=lte.${todayStr}&select=log_date,steps,active_energy_kcal,exercise_mins,sleep_total_hrs,hrv_ms,resting_hr,weight_kg,dietary_energy_kcal&order=log_date.asc`),
-    sbFetch(`/rest/v1/profiles?id=eq.${userId}&select=age_years,sex`),
+    sbFetch(`/rest/v1/health_daily?user_id=eq.${userId}&log_date=gte.${historyStart}&log_date=lte.${todayStr}&select=log_date,steps,active_energy_kcal,exercise_mins,sleep_total_hrs,hrv_ms,resting_hr,respiratory_rate,wrist_temp_dev,weight_kg,dietary_energy_kcal&order=log_date.asc`),
+    sbFetch(`/rest/v1/profiles?id=eq.${userId}&select=age_years,sex,recovery_weights`),
     sbFetch(`/rest/v1/daily_logs?user_id=eq.${userId}&log_date=eq.${todayStr}&select=weight,cal_total,cal_apple,cal_mfp`),
     sbFetch(`/rest/v1/food_log?user_id=eq.${userId}&log_date=eq.${todayStr}&select=calories_kcal`),
     sbFetch(`/rest/v1/apple_health_workouts?user_id=eq.${userId}&started_at=gte.${todayStr}T00:00:00Z&select=avg_heart_rate,started_at,ended_at,active_energy_kcal`),
@@ -84,7 +84,7 @@ function getMetricValue(metricKey: string, ctx: any): number | null {
       return consumedFor(log, ctx.todayHealth);
     }
     case 'recovery_score':
-      return computeRecoveryScore(ctx.todayHealth, ctx.healthHistory).score;
+      return computeRecoveryScore(ctx.todayHealth, ctx.healthHistory, ctx.profile.recovery_weights).score;
     case 'sleep_score':
       return computeSleepScore(ctx.todayHealth, ctx.healthHistory).score;
     case 'strain_score':

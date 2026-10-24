@@ -666,6 +666,8 @@ const EXERCISE_LIST = [
    HELPERS
 ═══════════════════════════════════════════════════════════ */
 const todayISO = () => new Date().toISOString().slice(0, 10);
+// Recovery-score maths (src/readiness-model.js, unit-tested).
+const { personalBaseline, scoreVsPersonalBaseline, weightedSleepDebt, fitRecoveryWeights, spearman } = window.ReadinessModel;
 
 const fmtDate = iso => {
   if (!iso) return '';
@@ -2013,6 +2015,11 @@ async function _loadDashboardInner(signal) {
   }
 
   // ── Health widgets ────────────────────────────────────────
+  // Learned Recovery weights + measured max HR first (cached per day) —
+  // both feed the scores below. Never allowed to break the dashboard.
+  try { await loadRecoveryModel({ signal }); } catch (e) { console.warn('Recovery model load failed:', e?.message || e); }
+  renderFeelCheckin();
+
   // Sleep need (see computeSleepNeed) folds in yesterday's strain, so
   // that has to be computed first — same local-midnight boundary
   // todayWorkoutsRes above already uses, just shifted back one day, so
@@ -2360,8 +2367,9 @@ const SLEEP_NAP_THRESHOLD_HRS = 4;   // nights under this are naps — excluded 
 
 // f(strain): near-zero addition on a rest day, rising to ~1h17m after an
 // all-out (21) day — the harder yesterday was, the more sleep tonight
-// calls for. debt: shortfall vs baseline summed over the last 3 REAL
-// (non-nap) nights before today, capped so it can't compound forever.
+// calls for. debt: shortfall vs baseline over the last 7 REAL (non-nap)
+// nights before today, older nights counting less (see weightedSleepDebt
+// in src/readiness-model.js), capped so it can't compound forever.
 function computeSleepNeed(healthHistory, todayDate, yesterdayStrainScore) {
   const strainHours = yesterdayStrainScore != null
     ? 1.7 / (1 + Math.exp((17 - yesterdayStrainScore) / 3.5))
@@ -2370,9 +2378,8 @@ function computeSleepNeed(healthHistory, todayDate, yesterdayStrainScore) {
   const priorNights = (healthHistory || [])
     .filter(h => h.log_date < todayDate && h.sleep_total_hrs != null && h.sleep_total_hrs >= SLEEP_NAP_THRESHOLD_HRS)
     .sort((a, b) => b.log_date.localeCompare(a.log_date))
-    .slice(0, 3);
-  const shortfallSum = priorNights.reduce((sum, h) => sum + Math.max(0, SLEEP_NEED_BASELINE_HRS - h.sleep_total_hrs), 0);
-  const debtHours = Math.min(SLEEP_DEBT_CAP_HRS, 0.35 * shortfallSum);
+    .slice(0, 7);
+  const debtHours = weightedSleepDebt(priorNights.map(h => SLEEP_NEED_BASELINE_HRS - h.sleep_total_hrs), { cap: SLEEP_DEBT_CAP_HRS });
 
   const needHours = SLEEP_NEED_BASELINE_HRS + strainHours + debtHours;
   return {
@@ -2392,29 +2399,59 @@ function computeSleepNeed(healthHistory, todayDate, yesterdayStrainScore) {
 // not co-equal factors. Calorie balance deliberately isn't a factor
 // here — that's what the separate Nutrition score is for; folding it
 // into Recovery too would double-count the same signal.
-function computeRecoveryScore(health, healthHistory, sleepNeed) {
+//
+// Each input is scored against the person's own 30-day mean AND their own
+// normal day-to-day spread (z-score, see src/readiness-model.js): 50 = a
+// normal day, ±1 SD = ±20 points. Falls back to the older %-of-baseline
+// scoring with 5-6 days of history, and fixed tiers below that.
+//
+// `weights` defaults to whatever the morning check-in has learned for this
+// person (recoveryModel, see loadRecoveryModel) — RECOVERY_DEFAULT_WEIGHTS
+// until there are enough check-ins. `parts` (each factor's 0-100
+// sub-score) is what the check-in model is fitted on.
+const RECOVERY_DEFAULT_WEIGHTS = { hrv: 0.40, rhr: 0.25, rr: 0.10, sleep: 0.25 };
+const RECOVERY_TEMP_WEIGHT = 0.10; // not learned: Apple's reading is already baselined, and rarely moves
+// SD floors: stop a very steady fortnight turning tiny wobbles into big swings.
+const RECOVERY_SD_FLOOR = { hrv: 0.05 /* ln ms */, rhr: 1.0 /* bpm */, rr: 0.25 /* breaths/min */ };
+let recoveryModel = null; // { weights, n, blend, active, agreement } — see loadRecoveryModel
+
+function computeRecoveryScore(health, healthHistory, sleepNeed, weights = recoveryModel?.weights || RECOVERY_DEFAULT_WEIGHTS) {
   let totalScore = 0, totalWeight = 0;
   const factors = [];
+  const parts = {};
   const todayDate = health?.log_date;
+  const personal = (field, opts) => (todayDate ? personalBaseline(healthHistory, field, todayDate, opts) : null);
 
   const hrv = health?.hrv_ms;
   if (hrv != null) {
-    const baseline = baselineMean(healthHistory, 'hrv_ms', todayDate);
-    const hrvScore = baseline != null
-      ? scoreVsBaseline(hrv, baseline, 200, true)
-      : (hrv >= 100 ? 100 : hrv >= 80 ? 90 : hrv >= 60 ? 78 : hrv >= 40 ? 62 : hrv >= 25 ? 45 : hrv >= 15 ? 28 : 15);
-    totalScore += hrvScore * 0.40; totalWeight += 0.40;
-    factors.push({ label: 'HRV', val: `${Math.round(hrv)}ms`, pct: Math.round(hrvScore), cls: 'hrv' });
+    const stats = personal('hrv_ms', { log: true });
+    const baseline = stats ? null : baselineMean(healthHistory, 'hrv_ms', todayDate);
+    const hrvScore = stats
+      ? scoreVsPersonalBaseline(hrv, stats, true, RECOVERY_SD_FLOOR.hrv)
+      : baseline != null
+        ? scoreVsBaseline(hrv, baseline, 200, true)
+        : (hrv >= 100 ? 100 : hrv >= 80 ? 90 : hrv >= 60 ? 78 : hrv >= 40 ? 62 : hrv >= 25 ? 45 : hrv >= 15 ? 28 : 15);
+    if (hrvScore != null) {
+      parts.hrv = hrvScore;
+      totalScore += hrvScore * weights.hrv; totalWeight += weights.hrv;
+      const norm = stats ? ` (normal ${Math.round(Math.exp(stats.mean))})` : '';
+      factors.push({ label: 'HRV', val: `${Math.round(hrv)}ms${norm}`, pct: Math.round(hrvScore), cls: 'hrv' });
+    }
   }
 
   const rhr = health?.resting_hr;
   if (rhr != null) {
-    const baseline = baselineMean(healthHistory, 'resting_hr', todayDate);
-    const rhrScore = baseline != null
-      ? scoreVsBaseline(rhr, baseline, 300, false)
-      : (rhr < 50 ? 100 : rhr < 55 ? 92 : rhr < 60 ? 82 : rhr < 65 ? 70 : rhr < 70 ? 58 : rhr < 80 ? 42 : 25);
-    totalScore += rhrScore * 0.25; totalWeight += 0.25;
-    factors.push({ label: 'Resting HR', val: `${Math.round(rhr)}bpm`, pct: Math.round(rhrScore), cls: 'hr' });
+    const stats = personal('resting_hr');
+    const baseline = stats ? null : baselineMean(healthHistory, 'resting_hr', todayDate);
+    const rhrScore = stats
+      ? scoreVsPersonalBaseline(rhr, stats, false, RECOVERY_SD_FLOOR.rhr)
+      : baseline != null
+        ? scoreVsBaseline(rhr, baseline, 300, false)
+        : (rhr < 50 ? 100 : rhr < 55 ? 92 : rhr < 60 ? 82 : rhr < 65 ? 70 : rhr < 70 ? 58 : rhr < 80 ? 42 : 25);
+    parts.rhr = rhrScore;
+    totalScore += rhrScore * weights.rhr; totalWeight += weights.rhr;
+    const norm = stats ? ` (normal ${Math.round(stats.mean)})` : '';
+    factors.push({ label: 'Resting HR', val: `${Math.round(rhr)}bpm${norm}`, pct: Math.round(rhrScore), cls: 'hr' });
   }
 
   // A resting respiratory rate that's crept up above this person's own
@@ -2423,10 +2460,14 @@ function computeRecoveryScore(health, healthHistory, sleepNeed) {
   // — small weight since it's a supporting signal, not a primary one.
   const rr = health?.respiratory_rate;
   if (rr != null) {
-    const baseline = baselineMean(healthHistory, 'respiratory_rate', todayDate);
-    const rrScore = baseline != null ? scoreVsBaseline(rr, baseline, 40, false) : null;
+    const stats = personal('respiratory_rate');
+    const baseline = stats ? null : baselineMean(healthHistory, 'respiratory_rate', todayDate);
+    const rrScore = stats
+      ? scoreVsPersonalBaseline(rr, stats, false, RECOVERY_SD_FLOOR.rr)
+      : baseline != null ? scoreVsBaseline(rr, baseline, 40, false) : null;
     if (rrScore != null) {
-      totalScore += rrScore * 0.10; totalWeight += 0.10;
+      parts.rr = rrScore;
+      totalScore += rrScore * weights.rr; totalWeight += weights.rr;
       factors.push({ label: 'Respiratory rate', val: `${fmt1(rr)}/min`, pct: Math.round(rrScore), cls: 'hr' });
     }
   }
@@ -2441,7 +2482,7 @@ function computeRecoveryScore(health, healthHistory, sleepNeed) {
   const wristTemp = health?.wrist_temp_dev;
   if (wristTemp != null) {
     const tempScore = wristTemp <= 0.3 ? 100 : wristTemp <= 0.6 ? 80 : wristTemp <= 1.0 ? 55 : wristTemp <= 1.5 ? 30 : 10;
-    totalScore += tempScore * 0.10; totalWeight += 0.10;
+    totalScore += tempScore * RECOVERY_TEMP_WEIGHT; totalWeight += RECOVERY_TEMP_WEIGHT;
     factors.push({ label: 'Wrist temp', val: `${fmtSigned(wristTemp, 1)}°C`, pct: tempScore, cls: 'hr' });
   }
 
@@ -2461,17 +2502,36 @@ function computeRecoveryScore(health, healthHistory, sleepNeed) {
       sleepScore = Math.min(100, tieredSleepDurationScore(sleep) + Math.min(10, (deep + rem) * 5));
       factors.push({ label: 'Sleep', val: `${fmt1(sleep)}h`, pct: Math.round(sleepScore), cls: 'sleep' });
     }
-    totalScore += sleepScore * 0.25; totalWeight += 0.25;
+    parts.sleep = sleepScore;
+    totalScore += sleepScore * weights.sleep; totalWeight += weights.sleep;
   }
 
-  if (totalWeight === 0) return { score: null, label: '', factors: [] };
+  if (totalWeight === 0) return { score: null, label: '', factors: [], parts };
   const score = Math.round(totalScore / totalWeight);
-  const label = score >= 80 ? 'Well recovered — great day to push hard.' :
-                score >= 60 ? 'Good recovery — normal training is fine.' :
-                score >= 40 ? 'Below your usual — consider a lighter session.' :
+  // 50 = an ordinary day for this person (see the z-scoring above), so the
+  // bands sit around it — same 67/34 green/yellow/red lines targetStrainRange uses.
+  const label = score >= 67 ? 'Well recovered — great day to push hard.' :
+                score >= 50 ? 'Around your normal — train as planned.' :
+                score >= 34 ? 'Below your usual — consider a lighter session.' :
                 score >= 20 ? 'Low — prioritise recovery today.' :
                               'Poorly recovered — rest day recommended.';
-  return { score, label, factors };
+  if (weights !== RECOVERY_DEFAULT_WEIGHTS && recoveryModel?.active) {
+    const w = recoveryModel.weights, pc = v => Math.round(v * 100);
+    factors.push({
+      label: 'Tuned to you',
+      val: `${recoveryModel.n} check-ins · HRV ${pc(w.hrv)}% · RHR ${pc(w.rhr)}% · Sleep ${pc(w.sleep)}% · Breathing ${pc(w.rr)}%`,
+      pct: Math.round(recoveryModel.blend * 100), cls: 'consistency',
+    });
+  }
+  if (recoveryModel?.agreement != null) {
+    const r = recoveryModel.agreement;
+    factors.push({
+      label: 'Matches how you feel',
+      val: `${r >= 0.5 ? 'Strongly' : r >= 0.3 ? 'Moderately' : r >= 0.1 ? 'Weakly' : 'Not yet'} (r ${r.toFixed(2)}, ${recoveryModel.agreementN} days)`,
+      pct: Math.round(clamp(r, 0, 1) * 100), cls: 'consistency',
+    });
+  }
+  return { score, label, factors, parts };
 }
 
 // ── Sleep ────────────────────────────────────────────────────
@@ -2611,6 +2671,16 @@ const STRAIN_K_KCAL  = 0.00081;
 
 function tanakaHrMax(ageYears) { return 208 - 0.7 * (ageYears || 35); }
 
+// Age formulas are ±10bpm for an individual; a max HR you've actually hit
+// is better evidence. Uses the 2nd-highest workout max of the last 180 days
+// (one sensor spike can't move it), only when above the formula, and no
+// more than 15bpm above it. Set by loadRecoveryModel; null = formula only.
+let observedHrMax = null;
+function personalHrMax(ageYears) {
+  const formula = tanakaHrMax(ageYears);
+  return observedHrMax != null ? Math.max(formula, Math.min(observedHrMax, formula + 15)) : formula;
+}
+
 // Closes the loop between the two scores instead of leaving them as two
 // independent charts: how hard today "should" be, given how recovered
 // this morning's reading says the body actually is.
@@ -2627,7 +2697,7 @@ function computeStrainScore(health, healthHistory, log, workoutsToday, recoveryS
   if (dailyActiveKcal == null && !workouts.length) return { score: null, label: '', factors: [] };
 
   const restingHr = health?.resting_hr;
-  const hrMax = tanakaHrMax(profile?.age_years);
+  const hrMax = personalHrMax(profile?.age_years);
   const isFemale = profile?.sex === 'female';
 
   let cumulativeTrimp = 0;
@@ -3568,6 +3638,128 @@ el.scoreCarousel?.addEventListener('click', (e) => {
   if (btn) showScoreDetail(btn.dataset.key);
 });
 el.scoreDetailClose?.addEventListener('click', () => { el.scoreDetail.hidden = true; });
+
+/* ═══ MORNING CHECK-IN → PERSONALISED RECOVERY ══════════════
+   A 1-5 "how do you feel" tap each morning (readiness_checkins). Once
+   there are 14+, fitRecoveryWeights (src/readiness-model.js) learns which
+   of HRV / resting HR / breathing rate / sleep actually track how this
+   person feels, and Recovery uses those weights (blended with the
+   defaults until there are plenty of check-ins). The weights are also
+   saved to profiles.recovery_weights so the push notifications
+   (_shared/health-scores.ts) score Recovery the same way. */
+const FEEL_MIN_TO_TUNE = 14;
+const FEEL_LABELS = { 1: 'Awful', 2: 'Rough', 3: 'Okay', 4: 'Good', 5: 'Great' };
+let recoveryModelKey = null;  // user|day the model was last built for
+let feelCheckins = [];        // [{ log_date, feel }] oldest first, last 180 days
+
+async function loadRecoveryModel({ signal, force = false } = {}) {
+  if (!currentUser) return;
+  const today = todayISO();
+  const key = `${currentUser.id}|${today}`;
+  if (!force && recoveryModelKey === key) return;
+  const since = addDaysISO(today, -180);
+  const withSignal = q => (signal ? q.abortSignal(signal) : q);
+
+  const [ciRes, hrRes] = await Promise.all([
+    withSignal(db.from('readiness_checkins').select('log_date, feel')
+      .eq('user_id', currentUser.id).gte('log_date', since).order('log_date', { ascending: true })),
+    withSignal(db.from('apple_health_workouts').select('max_heart_rate')
+      .eq('user_id', currentUser.id).gte('started_at', since + 'T00:00:00Z')
+      .not('max_heart_rate', 'is', null).order('max_heart_rate', { ascending: false }).limit(2)),
+  ]);
+  if (ciRes.error) throw ciRes.error;
+  feelCheckins = ciRes.data || [];
+  const maxes = (hrRes.data || []).map(r => Number(r.max_heart_rate)).filter(Number.isFinite);
+  observedHrMax = maxes.length >= 2 ? maxes[1] : null;
+
+  recoveryModel = null;
+  if (feelCheckins.length >= 7) {
+    const first = feelCheckins[0].log_date;
+    const { data: rows, error } = await withSignal(db.from('health_daily')
+      .select('log_date, hrv_ms, resting_hr, respiratory_rate, sleep_total_hrs')
+      .eq('user_id', currentUser.id).gte('log_date', addDaysISO(first, -31)).order('log_date', { ascending: true }));
+    if (error) throw error;
+    const byDate = Object.fromEntries((rows || []).map(r => [r.log_date, r]));
+    const samples = feelCheckins.map(c => {
+      const day = byDate[c.log_date];
+      if (!day) return null;
+      const need = computeSleepNeed(rows, c.log_date, null);
+      return { feel: c.feel, parts: computeRecoveryScore(day, rows, need, RECOVERY_DEFAULT_WEIGHTS).parts };
+    }).filter(x => x && Object.keys(x.parts).length);
+
+    const fit = fitRecoveryWeights(samples, RECOVERY_DEFAULT_WEIGHTS, { minSamples: FEEL_MIN_TO_TUNE });
+    // Honest agreement score: each day is scored with weights fitted on
+    // the OTHER days only (leave-one-out), so it can't flatter itself.
+    const scoreWith = (w, parts) => {
+      let t = 0, tw = 0;
+      for (const k of Object.keys(w)) if (parts[k] != null) { t += parts[k] * w[k]; tw += w[k]; }
+      return tw ? t / tw : null;
+    };
+    const predicted = samples.map((s, i) => {
+      const others = samples.filter((_, j) => j !== i);
+      return scoreWith(fitRecoveryWeights(others, RECOVERY_DEFAULT_WEIGHTS, { minSamples: FEEL_MIN_TO_TUNE }).weights, s.parts);
+    });
+    const agreement = samples.length >= 7 ? spearman(predicted, samples.map(s => s.feel)) : null;
+    recoveryModel = { ...fit, agreement, agreementN: samples.length };
+
+    if (fit.active) {
+      const round = v => Math.round(v * 1000) / 1000;
+      const saved = {
+        hrv: round(fit.weights.hrv), rhr: round(fit.weights.rhr), rr: round(fit.weights.rr), sleep: round(fit.weights.sleep),
+        n: fit.n, blend: round(fit.blend), agreement: agreement == null ? null : round(agreement), fitted_on: today,
+      };
+      if (JSON.stringify(profile?.recovery_weights || null) !== JSON.stringify(saved)) {
+        const { error: pe } = await db.from('profiles').update({ recovery_weights: saved }).eq('id', currentUser.id);
+        if (pe) console.warn('Saving recovery weights failed:', pe.message);
+        else if (profile) profile.recovery_weights = saved;
+      }
+    }
+  }
+  recoveryModelKey = key;
+}
+
+function renderFeelCheckin() {
+  const box = $('feelCheckin');
+  if (!box || !currentUser) return;
+  const today = feelCheckins.find(c => c.log_date === todayISO());
+  box.hidden = false;
+  box.classList.toggle('feel-checkin--done', !!today);
+  box.querySelectorAll('.feel-checkin__btn').forEach(b => {
+    const on = !!today && Number(b.dataset.feel) === today.feel;
+    b.classList.toggle('is-selected', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+  $('feelCheckinQ').textContent = today ? `Feeling: ${FEEL_LABELS[today.feel]}` : 'How do you feel this morning?';
+  const n = feelCheckins.length;
+  $('feelCheckinHint').textContent = recoveryModel?.active
+    ? `Recovery is tuned to you from ${n} check-ins.${today ? ' Tap to change today’s.' : ''}`
+    : n < FEEL_MIN_TO_TUNE
+      ? `${n} of ${FEEL_MIN_TO_TUNE} check-ins — then Recovery starts tuning itself to you.`
+      : `${n} check-ins — not enough sleep/HRV data on those days to tune yet.`;
+}
+
+$('feelCheckin')?.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.feel-checkin__btn');
+  if (!btn || !currentUser) return;
+  const feel = Number(btn.dataset.feel);
+  const log_date = todayISO();
+  const prev = feelCheckins.slice();
+  feelCheckins = [...feelCheckins.filter(c => c.log_date !== log_date), { log_date, feel }];
+  renderFeelCheckin();
+  const { error } = await db.from('readiness_checkins')
+    .upsert({ user_id: currentUser.id, log_date, feel, updated_at: new Date().toISOString() }, { onConflict: 'user_id,log_date' });
+  if (error) {
+    feelCheckins = prev;
+    renderFeelCheckin();
+    showToast('Couldn’t save your check-in: ' + error.message, true);
+    return;
+  }
+  // Refit with today's answer and redraw the scores if the weights moved.
+  const before = JSON.stringify(recoveryModel?.weights || null);
+  try { await loadRecoveryModel({ force: true }); } catch (err) { console.warn(err); }
+  renderFeelCheckin();
+  if (JSON.stringify(recoveryModel?.weights || null) !== before) loadDashboard();
+});
 
 /* ═══════════════════════════════════════════════════════════
    HEALTH TILES

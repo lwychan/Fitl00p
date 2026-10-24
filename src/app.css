@@ -4625,3 +4625,29 @@ body { font-size: 15px; }
 }
 
 .tab-btn[hidden] { display: none; }
+
+/* Morning check-in (Recovery tuning) — inside the scores card. */
+.feel-checkin[hidden] { display: none; }
+.feel-checkin {
+  margin-top: 10px;
+  padding: 12px;
+  background: var(--surface-2);
+  border-radius: var(--r-md);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.feel-checkin__q { font-size: 14px; font-weight: 700; color: var(--ink); }
+.feel-checkin__opts { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.feel-checkin__btn {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  min-height: 52px; padding: 6px 2px;
+  border: 1.5px solid var(--border); border-radius: var(--r-md);
+  background: var(--surface); color: var(--ink-2);
+  font: inherit; font-size: 22px; line-height: 1; cursor: pointer;
+}
+.feel-checkin__btn small { font-size: 11px; color: var(--ink-3); }
+.feel-checkin__btn.is-selected { border-color: var(--blue); background: var(--blue-light); }
+.feel-checkin__btn.is-selected small { color: var(--ink); font-weight: 700; }
+.feel-checkin--done .feel-checkin__btn:not(.is-selected) { opacity: .55; }
+.feel-checkin__hint { font-size: 12px; color: var(--ink-3); line-height: 1.4; }

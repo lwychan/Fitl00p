@@ -4,6 +4,8 @@
 // numbers a person sees on the dashboard, rather than two copies that
 // could quietly drift apart.
 
+import ReadinessModel from './readiness-model.js';
+
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 function fmt1(n) { return Number(n).toFixed(1); }
 
@@ -31,46 +33,91 @@ function tieredSleepDurationScore(hrs) {
   return 15;
 }
 
-function computeRecoveryScore(health, healthHistory) {
+// Same scoring as app.js computeRecoveryScore: each input against this
+// person's own 30-day mean and normal spread (src/readiness-model.js,
+// shared here as ./readiness-model.js), weighted by what their morning
+// check-ins have taught the app (profiles.recovery_weights, saved by the
+// app) or the defaults. Sleep is scored against sleep need — without
+// yesterday's strain here (no workouts fetched), so it can sit a little
+// above the dashboard's figure after a very hard day.
+const RECOVERY_DEFAULT_WEIGHTS = { hrv: 0.40, rhr: 0.25, rr: 0.10, sleep: 0.25 };
+const RECOVERY_TEMP_WEIGHT = 0.10;
+const RECOVERY_SD_FLOOR = { hrv: 0.05, rhr: 1.0, rr: 0.25 };
+
+function recoveryWeightsFrom(saved) {
+  const w = saved || {};
+  const ok = ['hrv', 'rhr', 'rr', 'sleep'].every(k => Number.isFinite(Number(w[k])) && Number(w[k]) >= 0);
+  return ok ? { hrv: Number(w.hrv), rhr: Number(w.rhr), rr: Number(w.rr), sleep: Number(w.sleep) } : RECOVERY_DEFAULT_WEIGHTS;
+}
+
+function computeRecoveryScore(health, healthHistory, savedWeights = null) {
+  const weights = recoveryWeightsFrom(savedWeights);
   let totalScore = 0, totalWeight = 0;
   const factors = [];
   const todayDate = health?.log_date;
+  const personal = (field, opts?) => (todayDate ? ReadinessModel.personalBaseline(healthHistory, field, todayDate, opts) : null);
 
   const hrv = health?.hrv_ms;
   if (hrv != null) {
-    const baseline = baselineMean(healthHistory, 'hrv_ms', todayDate);
-    const hrvScore = baseline != null
-      ? scoreVsBaseline(hrv, baseline, 200, true)
-      : (hrv >= 100 ? 100 : hrv >= 80 ? 90 : hrv >= 60 ? 78 : hrv >= 40 ? 62 : hrv >= 25 ? 45 : hrv >= 15 ? 28 : 15);
-    totalScore += hrvScore * 0.35; totalWeight += 0.35;
-    factors.push({ label: 'HRV', val: `${Math.round(hrv)}ms`, pct: Math.round(hrvScore), cls: 'hrv' });
+    const stats = personal('hrv_ms', { log: true });
+    const baseline = stats ? null : baselineMean(healthHistory, 'hrv_ms', todayDate);
+    const hrvScore = stats
+      ? ReadinessModel.scoreVsPersonalBaseline(hrv, stats, true, RECOVERY_SD_FLOOR.hrv)
+      : baseline != null
+        ? scoreVsBaseline(hrv, baseline, 200, true)
+        : (hrv >= 100 ? 100 : hrv >= 80 ? 90 : hrv >= 60 ? 78 : hrv >= 40 ? 62 : hrv >= 25 ? 45 : hrv >= 15 ? 28 : 15);
+    if (hrvScore != null) {
+      totalScore += hrvScore * weights.hrv; totalWeight += weights.hrv;
+      factors.push({ label: 'HRV', val: `${Math.round(hrv)}ms`, pct: Math.round(hrvScore), cls: 'hrv' });
+    }
   }
 
   const rhr = health?.resting_hr;
   if (rhr != null) {
-    const baseline = baselineMean(healthHistory, 'resting_hr', todayDate);
-    const rhrScore = baseline != null
-      ? scoreVsBaseline(rhr, baseline, 300, false)
-      : (rhr < 50 ? 100 : rhr < 55 ? 92 : rhr < 60 ? 82 : rhr < 65 ? 70 : rhr < 70 ? 58 : rhr < 80 ? 42 : 25);
-    totalScore += rhrScore * 0.25; totalWeight += 0.25;
+    const stats = personal('resting_hr');
+    const baseline = stats ? null : baselineMean(healthHistory, 'resting_hr', todayDate);
+    const rhrScore = stats
+      ? ReadinessModel.scoreVsPersonalBaseline(rhr, stats, false, RECOVERY_SD_FLOOR.rhr)
+      : baseline != null
+        ? scoreVsBaseline(rhr, baseline, 300, false)
+        : (rhr < 50 ? 100 : rhr < 55 ? 92 : rhr < 60 ? 82 : rhr < 65 ? 70 : rhr < 70 ? 58 : rhr < 80 ? 42 : 25);
+    totalScore += rhrScore * weights.rhr; totalWeight += weights.rhr;
     factors.push({ label: 'Resting HR', val: `${Math.round(rhr)}bpm`, pct: Math.round(rhrScore), cls: 'hr' });
   }
 
+  const rr = health?.respiratory_rate;
+  if (rr != null) {
+    const stats = personal('respiratory_rate');
+    const baseline = stats ? null : baselineMean(healthHistory, 'respiratory_rate', todayDate);
+    const rrScore = stats
+      ? ReadinessModel.scoreVsPersonalBaseline(rr, stats, false, RECOVERY_SD_FLOOR.rr)
+      : baseline != null ? scoreVsBaseline(rr, baseline, 40, false) : null;
+    if (rrScore != null) {
+      totalScore += rrScore * weights.rr; totalWeight += weights.rr;
+      factors.push({ label: 'Respiratory rate', val: `${fmt1(rr)}/min`, pct: Math.round(rrScore), cls: 'hr' });
+    }
+  }
+
+  const wristTemp = health?.wrist_temp_dev;
+  if (wristTemp != null) {
+    const tempScore = wristTemp <= 0.3 ? 100 : wristTemp <= 0.6 ? 80 : wristTemp <= 1.0 ? 55 : wristTemp <= 1.5 ? 30 : 10;
+    totalScore += tempScore * RECOVERY_TEMP_WEIGHT; totalWeight += RECOVERY_TEMP_WEIGHT;
+    factors.push({ label: 'Wrist temp', val: `${fmt1(wristTemp)}°C`, pct: tempScore, cls: 'hr' });
+  }
+
   const sleep = health?.sleep_total_hrs;
-  if (sleep != null) {
-    let sleepScore = tieredSleepDurationScore(sleep);
-    const deep = health?.sleep_deep_hrs || 0;
-    const rem  = health?.sleep_rem_hrs  || 0;
-    sleepScore = Math.min(100, sleepScore + Math.min(10, (deep + rem) * 5));
-    totalScore += sleepScore * 0.40; totalWeight += 0.40;
-    factors.push({ label: 'Sleep', val: `${fmt1(sleep)}h`, pct: Math.round(sleepScore), cls: 'sleep' });
+  if (sleep != null && todayDate) {
+    const need = computeSleepNeed(healthHistory, todayDate, null);
+    const sleepScore = clamp((sleep / need.needHours) * 100, 0, 100);
+    totalScore += sleepScore * weights.sleep; totalWeight += weights.sleep;
+    factors.push({ label: 'Sleep', val: `${fmt1(sleep)}h / ${fmt1(need.needHours)}h needed`, pct: Math.round(sleepScore), cls: 'sleep' });
   }
 
   if (totalWeight === 0) return { score: null, label: '', factors: [] };
   const score = Math.round(totalScore / totalWeight);
-  const label = score >= 80 ? 'Well recovered — great day to push hard.' :
-                score >= 60 ? 'Good recovery — normal training is fine.' :
-                score >= 40 ? 'Below your usual — consider a lighter session.' :
+  const label = score >= 67 ? 'Well recovered — great day to push hard.' :
+                score >= 50 ? 'Around your normal — train as planned.' :
+                score >= 34 ? 'Below your usual — consider a lighter session.' :
                 score >= 20 ? 'Low — prioritise recovery today.' :
                               'Poorly recovered — rest day recommended.';
   return { score, label, factors };
@@ -227,9 +274,8 @@ function computeSleepNeed(healthHistory, todayDate, strainScore) {
   const priorNights = (healthHistory || [])
     .filter(h => h.log_date < todayDate && h.sleep_total_hrs != null && h.sleep_total_hrs >= SLEEP_NAP_THRESHOLD_HRS)
     .sort((a, b) => b.log_date.localeCompare(a.log_date))
-    .slice(0, 3);
-  const shortfallSum = priorNights.reduce((sum, h) => sum + Math.max(0, SLEEP_NEED_BASELINE_HRS - h.sleep_total_hrs), 0);
-  const debtHours = Math.min(SLEEP_DEBT_CAP_HRS, 0.35 * shortfallSum);
+    .slice(0, 7);
+  const debtHours = ReadinessModel.weightedSleepDebt(priorNights.map(h => SLEEP_NEED_BASELINE_HRS - h.sleep_total_hrs), { cap: SLEEP_DEBT_CAP_HRS });
 
   const needHours = SLEEP_NEED_BASELINE_HRS + strainHours + debtHours;
   return { needHours, baselineHours: SLEEP_NEED_BASELINE_HRS, strainHours, debtHours };
@@ -238,9 +284,9 @@ function computeSleepNeed(healthHistory, todayDate, strainScore) {
 // Short "what to do about it" clause, keyed off the Recovery tier.
 function loadSuggestion(recoveryScore) {
   if (recoveryScore == null) return null;
-  if (recoveryScore >= 80) return { word: 'push hard', reason: 'well recovered' };
-  if (recoveryScore >= 60) return { word: 'train normally', reason: 'good recovery' };
-  if (recoveryScore >= 40) return { word: 'go light', reason: 'recovery below usual' };
+  if (recoveryScore >= 67) return { word: 'push hard', reason: 'well recovered' };
+  if (recoveryScore >= 50) return { word: 'train normally', reason: 'good recovery' };
+  if (recoveryScore >= 34) return { word: 'go light', reason: 'recovery below usual' };
   if (recoveryScore >= 20) return { word: 'active recovery', reason: 'low recovery' };
   return { word: 'rest day', reason: 'poorly recovered' };
 }
