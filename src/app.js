@@ -3875,11 +3875,29 @@ async function loadBodyBattery(healthHistory) {
     if (!$('bbModal')?.hidden) renderBodyBatteryModal();
     refreshInsights();
     pushBodyBatteryToWidgets();
+    saveReadinessSnapshot();
   } catch (err) {
     console.warn('Body Battery failed:', err?.message || err);
   } finally {
     bbLoading = false;
   }
+}
+
+// Today's Body Battery / strain for the evening briefing and the morning
+// sleep-data fallback (the server can't compute Body Battery itself).
+// One row per local day, latest wins; failures only log.
+async function saveReadinessSnapshot() {
+  if (!bbState || !currentUser) return;
+  const d = new Date();
+  const snapDate = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const level = bbLevelNow();
+  const { error } = await db.from('readiness_snapshots').upsert({
+    snap_date: snapDate, taken_at: d.toISOString(),
+    battery: level == null ? null : Math.round(level),
+    strain: insightInputs?.strain?.score ?? null,
+    battery_parts: bbState.result.parts,
+  }, { onConflict: 'user_id,snap_date' });
+  if (error) console.warn('readiness snapshot failed:', error.message);
 }
 
 // Level now, ticked on from the last full compute at its current rate.
