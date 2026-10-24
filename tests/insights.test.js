@@ -138,11 +138,12 @@ test('evaluateInsights fills rule parts, defaults slot to app', () => {
   assert.equal(plain.slot, 'app');
 });
 
-test('briefing phrases: every briefing rule has a part; safety rules held for review', () => {
+test('briefing phrases: every briefing rule has a part; approved safety rules are in briefings', () => {
   const byId = Object.fromEntries(RULES.map(r => [r.id, r]));
   for (const r of RULES) {
     if (['morning', 'evening', 'both'].includes(r.slot)) assert.ok(r.headline || r.reason || r.action, r.id);
-    if (['glucose', 'health', 'diabetes'].includes(r.category)) assert.equal(r.slot || 'app', 'app', r.id);
+    // Safety phrases approved by the owner 2026-10-24: they now appear in briefings.
+    if (['glucose', 'health', 'diabetes'].includes(r.category)) assert.notEqual(r.slot || 'app', 'app', r.id);
   }
   assert.equal(byId.recovery_red.headline, 'Recovery {recovery}');
   assert.equal(byId.recovery_red.action, 'Take it easy — light walk today');
