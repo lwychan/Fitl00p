@@ -28,3 +28,11 @@ The dashboard's Insights card (and the Body Battery popup's suggestions) come fr
 1. Edit `supabase/seed/insight-rules.json` (metrics a rule can use are listed in `METRICS` in `src/insights.js`).
 2. `node scripts/build-insight-rules.mjs` — validates every rule and regenerates `supabase/sql/insight_rules_seed.sql`.
 3. Run that SQL against the project. The app picks the change up on next launch — no app release needed.
+
+## Diabetes engine revert
+
+The pre-learning diabetes engine is archived in `archive/diabetes-engine-v1/` (tag `diabetes-engine-v1`). Nothing loads it; the build and `npm test` ignore it.
+
+- Check the archive still passes: `node scripts/revert-diabetes-engine.mjs --check`
+- Revert (copies v1 over `src/diabetes-engine.js` and `tests/diabetes-engine.test.js`, syncs shared copies, runs `npm test`): `node scripts/revert-diabetes-engine.mjs`
+- After a real revert, redeploy: Supabase functions `diabetes-sync` and `notify-glucose-forecast`; unschedule pg_cron job `diabetes-learn`; push main + TestFlight.
