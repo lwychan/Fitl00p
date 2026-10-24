@@ -173,6 +173,81 @@ async function morningBriefing(userId: string, profile: any, prefs: Record<strin
   return Briefings.composeBriefing(itemsFor(rules, ctx, 'morning'), { slot: 'morning', extras, pinned });
 }
 
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const weekdayOf = (dateStr: string) => WEEKDAYS[new Date(dateStr + 'T12:00:00Z').getUTCDay()];
+
+// Tonight's sleep need (same as the dashboard: 8h + today's strain + debt) —
+// a light query, run every 15 min in the evening window to find the time.
+async function sleepNeedTonight(userId: string, profile: any, todayStr: string) {
+  const [{ data: healthRows }, { data: workoutRows }, { data: maxRows }] = await Promise.all([
+    sbFetch(`/rest/v1/health_daily?user_id=eq.${userId}&log_date=gte.${addDays(todayStr, -10)}&log_date=lte.${todayStr}&select=log_date,sleep_total_hrs,resting_hr,steps,active_energy_kcal&order=log_date.asc`),
+    sbFetch(`/rest/v1/apple_health_workouts?user_id=eq.${userId}&started_at=gte.${todayStr}T00:00:00Z&select=workout_type,avg_heart_rate,started_at,ended_at,active_energy_kcal`),
+    sbFetch(`/rest/v1/apple_health_workouts?user_id=eq.${userId}&started_at=gte.${addDays(todayStr, -180)}T00:00:00Z&max_heart_rate=not.is.null&select=max_heart_rate&order=max_heart_rate.desc&limit=2`),
+  ]);
+  const health = (healthRows as any[]) || [];
+  const today = health.find(h => h.log_date === todayStr) || null;
+  const strain = computeStrainScoreTrimp(today, null, (workoutRows as any[]) || [], profile.age_years, profile.sex === 'female', (maxRows as any[])?.[1]?.max_heart_rate ?? null);
+  return computeSleepNeed(health, todayStr, strain.score);
+}
+
+// Today's session (Hevy or fitl00p-logged), the last one of the same routine,
+// and earlier sessions from both apps for top-set comparisons.
+async function workoutForToday(userId: string, todayStr: string) {
+  const since = addDays(todayStr, -120);
+  const [{ data: hevy }, { data: sessions }] = await Promise.all([
+    sbFetch(`/rest/v1/hevy_workouts?user_id=eq.${userId}&started_at=gte.${since}&select=id,title,routine_id,started_at,volume_kg,exercises&order=started_at.desc`),
+    sbFetch(`/rest/v1/workout_sessions?user_id=eq.${userId}&session_date=gte.${since}&select=id,split_type,session_date,started_at,workout_exercises(name,workout_sets(reps,weight,unit))&order=session_date.desc`),
+  ]);
+  const rows = [
+    ...((hevy as any[]) || []).map(h => ({ ...h, day: londonDay(h.started_at) })),
+    ...((sessions as any[]) || []).map(s => ({
+      ...Briefings.fitl00pSessionRow(s, (s.workout_exercises || []).map((e: any) => ({ name: e.name, sets: e.workout_sets || [] }))),
+      day: s.session_date, started_at: s.started_at || `${s.session_date}T12:00:00Z`,
+    })),
+  ].sort((a, b) => String(b.started_at).localeCompare(String(a.started_at)));
+  const today = rows.find(r => r.day === todayStr) || null;
+  if (!today) return null;
+  const earlier = rows.filter(r => r.day < todayStr);
+  const previous = earlier.find(r => r.routine_id && r.routine_id === today.routine_id) || null;
+  return Briefings.workoutLine(today, previous, earlier);
+}
+const londonDay = (iso: string) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London' }).format(new Date(iso));
+
+async function medsPending(userId: string, todayStr: string) {
+  const { data: meds } = await sbFetch(`/rest/v1/oral_meds?user_id=eq.${userId}&is_active=eq.true&select=id,name`);
+  if (!(meds as any[])?.length) return [];
+  const { data: taken } = await sbFetch(`/rest/v1/oral_med_doses?taken_at=gte.${new Date(Briefings.londonMidnightMs(todayStr)).toISOString()}&select=med_id`);
+  const done = new Set(((taken as any[]) || []).map(t => t.med_id));
+  return (meds as any[]).filter(m => !done.has(m.id)).map(m => m.name);
+}
+
+async function eveningBriefing(userId: string, profile: any, prefs: Record<string, any>, now: any, rules: any[], need: any, wakeMin: number) {
+  const today = now.dateStr;
+  const { ctx, strainToday } = await buildContext(userId, profile, today, now.hour);
+  const { data: snaps } = await sbFetch(`/rest/v1/readiness_snapshots?user_id=eq.${userId}&snap_date=eq.${today}&select=battery,strain`);
+  const snap = (snaps as any[])?.[0];
+  if (snap?.battery != null) ctx.battery = snap.battery; // no snapshot today → no Body Battery lines
+  const strain = strainToday.score ?? (snap?.strain != null ? Number(snap.strain) : null);
+  if (strain != null) {
+    ctx.strain = strain;
+    if (ctx.strain_target_hi != null) ctx.strain_over = Math.round((strain - ctx.strain_target_hi) * 10) / 10;
+  }
+  ctx.sleep_need = need.needHours;
+  ctx.sleep_debt = need.debtHours;
+
+  const isGemma = userId === GEMMA_USER_ID;
+  const pending = prefs.oral_meds?.enabled !== false ? await medsPending(userId, today) : [];
+  const extras = [
+    await workoutForToday(userId, today),
+    pending.length ? `💊 ${pending.join(', ')} not logged yet.` : null,
+    !isGemma && prefs.peptide?.enabled !== false && await peptideDueToday(userId, today) ? '💉 Peptide not logged yet today.' : null,
+  ].filter(Boolean) as string[];
+  return Briefings.composeBriefing(itemsFor(rules, ctx, 'evening'), {
+    slot: 'evening', extras,
+    headlineOverride: Briefings.bedtimeLine({ needHours: need.needHours, wakeMin, strainHours: need.strainHours, debtHours: need.debtHours }),
+  });
+}
+
 Deno.serve(async () => {
   if (!SB_URL || !SB_SERVICE) return new Response('Supabase env vars missing', { status: 500 });
   const now = londonNow();
@@ -211,6 +286,24 @@ Deno.serve(async () => {
           await recordBody(userId, 'morning', now.dateStr, b.body);
         } else result.morning.skipped++;
       } catch (e) { result.errors.push(`morning ${userId.slice(0, 8)}: ${(e as Error).message}`); }
+    }
+
+    // Evening: only look inside the 19:00-23:00 window it's clamped to.
+    if (prefs.evening_briefing?.enabled !== false && nowMin >= 1133 && nowMin <= 1387) {
+      try {
+        const need = await sleepNeedTonight(userId, profile, now.dateStr);
+        const tomorrow = weekdayOf(addDays(now.dateStr, 1));
+        const target = Briefings.eveningTime({ needHours: need.needHours, schedule, tomorrowWeekday: tomorrow });
+        if (Briefings.isDue(target, nowMin)) {
+          if (await claim(userId, 'evening', now.dateStr)) {
+            const wakeMin = Briefings.wakeTime(schedule, tomorrow);
+            const b = await eveningBriefing(userId, profile, prefs, now, await loadRules(), need, wakeMin);
+            const pushed = await sendToSubscriptions(byUser[userId], { title: b.title, body: b.body, url: '/', tag: 'briefing-evening' });
+            result.evening.sent += pushed.sent; result.evening.failed += pushed.failed;
+            await recordBody(userId, 'evening', now.dateStr, b.body);
+          } else result.evening.skipped++;
+        }
+      } catch (e) { result.errors.push(`evening ${userId.slice(0, 8)}: ${(e as Error).message}`); }
     }
   }
   if (result.errors.length) console.error('notify-briefings:', result.errors.join(' | '));

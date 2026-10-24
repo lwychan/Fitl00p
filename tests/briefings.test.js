@@ -222,3 +222,27 @@ test('composer: a pinned note (sleep not synced) survives trimming; reasons go f
   assert.ok(b.body.length <= 180, b.body.length);
   assert.ok(b.body.startsWith('Recovery 36. Train, but go lighter'), b.body);
 });
+
+test('bedtime line: wake minus sleep need, with the main reason', () => {
+  assert.equal(B.bedtimeLine({ needHours: 8.4, wakeMin: 330, strainHours: 0.1, debtHours: 1.2 }),
+    'In bed by 21:06 (8.4h — catching up on sleep debt).');
+  assert.equal(B.bedtimeLine({ needHours: 8.6, wakeMin: 450, strainHours: 0.6, debtHours: 0 }),
+    "In bed by 22:54 (8.6h — after today's strain).");
+  assert.equal(B.bedtimeLine({ needHours: 8, wakeMin: 450, strainHours: 0, debtHours: 0 }), 'In bed by 23:30 (8h).');
+});
+
+test('evening: the bedtime line leads, and no Body Battery mention without a snapshot', () => {
+  const I = require('../src/insights.js');
+  const rules = [{ id: 'battery_evening_low', category: 'battery', severity: 'info', priority: 50, slot: 'evening',
+    conditions: [{ m: 'battery', op: 'between', v: [26, 30] }], title: 't', body: 'b', reason: 'Body Battery {battery}%' }];
+  const without = B.composeBriefing(I.evaluateInsights(rules, { hour: 20 }), { slot: 'evening', headlineOverride: 'In bed by 21:06.' });
+  assert.equal(without.body, 'In bed by 21:06.');
+  const withSnap = B.composeBriefing(I.evaluateInsights(rules, { hour: 20, battery: 28 }), { slot: 'evening', headlineOverride: 'In bed by 21:06.' });
+  assert.equal(withSnap.body, 'In bed by 21:06. Body Battery 28%.');
+});
+
+test('wake time for tomorrow: Lewis 05:30 weekdays, 07:30 weekends', () => {
+  assert.equal(B.wakeTime(B.scheduleFor(LEWIS), 'Mon'), 330);
+  assert.equal(B.wakeTime(B.scheduleFor(LEWIS), 'Sun'), 450);
+  assert.equal(B.wakeTime(B.scheduleFor(GEMMA), 'Mon'), 450);
+});

@@ -42,6 +42,10 @@ function scheduleFor(userId, saved) {
 const isWeekend = weekday => weekday === 'Sat' || weekday === 'Sun';
 const pick = (pair, weekday) => toMin(isWeekend(weekday) ? pair.weekend : pair.weekday);
 
+function wakeTime(schedule, weekday) {
+  return pick(schedule.wake, weekday);
+}
+
 function morningTime(schedule, weekday) {
   return pick(schedule.morning, weekday);
 }
@@ -51,6 +55,19 @@ function morningTime(schedule, weekday) {
 function eveningTime({ needHours, schedule, tomorrowWeekday }) {
   const bed = pick(schedule.wake, tomorrowWeekday) + 1440 - Math.round(needHours * 60);
   return Math.min(1380, Math.max(1140, bed - 60));
+}
+
+const hhmm = min => {
+  const m = ((Math.round(min) % 1440) + 1440) % 1440;
+  return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+};
+const hrs1 = h => String(Math.round(h * 10) / 10);
+
+// Evening headline: tomorrow's wake time minus tonight's sleep need
+// (computeSleepNeed), with the main reason it's longer than usual.
+function bedtimeLine({ needHours, wakeMin, strainHours = 0, debtHours = 0 }) {
+  const why = debtHours > 0.5 ? ' — catching up on sleep debt' : strainHours > 0.5 ? " — after today's strain" : '';
+  return `In bed by ${hhmm(wakeMin - needHours * 60)} (${hrs1(needHours)}h${why}).`;
 }
 
 // Cron runs every 15 min, so a target is due within ±7 min of now.
@@ -231,7 +248,7 @@ function nightGlucoseSummary(readings, fromMs, toMs) {
   return { low: Math.round(Math.min(...v) * 10) / 10, mean: Math.round(mean * 10) / 10, cv: Math.round((sd / mean) * 100) };
 }
 
-const Briefings = { sleepSynced, weighinDue, morningExtras, londonMidnightMs, nightGlucoseSummary, workoutLine, sameExercise, fitl00pSessionRow, DEFAULT_SCHEDULES, defaultSchedule, scheduleFor, isWeekend, morningTime, eveningTime, isDue,
+const Briefings = { wakeTime, bedtimeLine, sleepSynced, weighinDue, morningExtras, londonMidnightMs, nightGlucoseSummary, workoutLine, sameExercise, fitl00pSessionRow, DEFAULT_SCHEDULES, defaultSchedule, scheduleFor, isWeekend, morningTime, eveningTime, isDue,
   composeBriefing, fallbackNightPhrase };
 
 if (typeof module !== 'undefined' && module.exports) {
