@@ -1585,17 +1585,9 @@ function computeForecastCore(input, now = Date.now()) {
   // Learned model: an in-progress workout of a learned type drops at its
   // learned rate for the rest of the session (within the horizon), and the
   // forecast is shifted by this block's learned bias (capped ±1.0 mmol/L).
-  let liveExerciseDropMmol = 0, forecastBiasShift = 0;
-  if (applied?.exerciseOngoing && applied.exerciseDropPerMin > 0) {
-    const remainingMin = clamp((applied.exerciseOngoing.endMs - nowMs) / 60000, 0, HYPO_FORECAST_HORIZON_MIN);
-    liveExerciseDropMmol = applied.exerciseDropPerMin * remainingMin;
-    reasons.push(`${applied.exerciseOngoing.workoutType} in progress: about ${fmt1(liveExerciseDropMmol)} mmol/L more drop before it ends (${applied.exerciseOngoing.n} sessions)`);
-  }
-  const bias = applied ? modelForecastBias(mOpts.model, nowMs) : null;
-  if (bias && bias.bias !== 0) {
-    forecastBiasShift = -bias.bias;
-    reasons.push(`forecast adjusted ${forecastBiasShift > 0 ? '+' : ''}${fmt1(forecastBiasShift)} mmol/L — at this time of day it has run ${bias.bias > 0 ? 'high' : 'low'} (${bias.n} checks)`);
-  }
+  const { liveExerciseDropMmol, forecastBiasShift, reasons: modelReasons } =
+    modelForecastTerms(applied, mOpts.model, nowMs, HYPO_FORECAST_HORIZON_MIN);
+  reasons.push(...modelReasons);
 
   // Retrospective correction: how far off the model's insulin+carb-only
   // prediction was over the last 30 minutes, extrapolated forward (and
@@ -1714,7 +1706,7 @@ function hyperForecast2h(input, now = Date.now()) {
 // model-predictive forecast) and deliberately not extended past 2-3h,
 // where compounding assumptions make it far less trustworthy.
 function projectedGlucoseCurve(input, now = Date.now(), horizonMinutes = HYPO_FORECAST_HORIZON_MIN, stepMinutes = 15) {
-  const { glucoseHistory = [], boluses = [], corrections = [], settings = {} } = input || {};
+  const { glucoseHistory = [], boluses = [], corrections = [], activities = {}, settings = {} } = input || {};
   const nowMs = toMs(now);
   const curveOpts = insulinCurveOpts(settings);
 
@@ -1722,18 +1714,25 @@ function projectedGlucoseCurve(input, now = Date.now(), horizonMinutes = HYPO_FO
   if (ctx.stale || ctx.effectiveGlucose == null) return [];
 
   const resolvedCorrections = resolveCorrections(corrections, glucoseHistory, boluses, now);
-  const factorResult = resolveCorrectionFactor(resolvedCorrections, settings, modelOpts(input, now));
+  const mOpts = modelOpts(input, now);
+  const factorResult = resolveCorrectionFactor(resolvedCorrections, settings, mOpts);
   if (factorResult.factor == null) return [];
 
-  const carbRatio = modelCarbRatio(input, now) || Number(settings.carbRatio) || null;
+  const applied = mOpts.model ? applyModel(mOpts.model, nowMs, mOpts) : null;
+  const carbRatio = (applied && applied.carbRatio > 0 ? applied.carbRatio : null) || Number(settings.carbRatio) || null;
   const rc = retrospectiveCorrection(input, now);
+  // Same terms as computeForecastCore, per step, so the chart's 2h point is the alert's forecast.
+  const workoutProfiles = buildWorkoutTypeProfiles(activities.workouts, glucoseHistory);
   const points = [];
   for (let t = 0; t <= horizonMinutes; t += stepMinutes) {
     const insulinDropMmol = insulinActionWithin(boluses, corrections, nowMs, t, curveOpts) * factorResult.factor;
     const carbAbsorptionGrams = carbAbsorptionWithin(boluses, nowMs, t);
     const carbRiseMmol = carbRatio ? (carbAbsorptionGrams / carbRatio) * factorResult.factor : 0;
     const retrospectiveEffect = retrospectiveEffectAt(rc.discrepancy, t);
-    const value = Math.max(1, ctx.effectiveGlucose - insulinDropMmol + carbRiseMmol + retrospectiveEffect);
+    const openWorkoutDropMmol = openWorkoutDropWithin(workoutProfiles, activities.workouts, nowMs, t);
+    const m = modelForecastTerms(applied, mOpts.model, nowMs, t);
+    const value = clamp(ctx.effectiveGlucose - insulinDropMmol + carbRiseMmol - openWorkoutDropMmol
+      - m.liveExerciseDropMmol + retrospectiveEffect + m.forecastBiasShift, 1, FORECAST_GLUCOSE_MAX_MMOL);
     points.push({ ms: nowMs + t * 60000, minutesFromNow: t, value });
   }
   return points;
@@ -2366,6 +2365,7 @@ function suggestMealDose(input, newCarbs, now = Date.now()) {
       carbRatio: applied.carbRatio,
       sampleSize: applied.crSampleSize,
       multiplier: applied.multiplier,
+      fromModel: true,
       reasons: applied.crReasons,
       withheldReason: null,
     };
@@ -2536,7 +2536,10 @@ function suggestMacroMealDose(input, meal, now = Date.now()) {
     const byFat = log.filter(m => Number.isFinite(Number(m.fat)) && Math.abs(Number(m.fat) - fat) <= tolerance);
     const comparable = useNameMatch ? byName : byFat;
 
-    if (comparable.length >= MACRO_HISTORY_MIN_SAMPLE) {
+    // The old meal-outcome nudge only on the no-model path: a learned carb
+    // ratio already comes from hindsight doses, so nudging it again would
+    // double-count (and could add up to 20% more insulin).
+    if (!carbBase.fromModel && comparable.length >= MACRO_HISTORY_MIN_SAMPLE) {
       const situation = {
         glucoseHistory: input.glucoseHistory, boluses: input.boluses, corrections: input.corrections,
         curveOpts: insulinCurveOpts(settings), nowTrend: ctx.trendPerMinute, nowIob: ctx.iob,
@@ -4203,6 +4206,7 @@ function fitModel(episodes, pumpProfile, opts = {}) {
 const MODEL_FRESH_MS          = 48 * 3600000;
 const MODEL_BOOST_APPLY_MAX   = 1.3;
 const MODEL_FORECAST_BIAS_MAX = 1.0;   // mmol/L
+const MODEL_FORECAST_BIAS_MIN_N = 10;  // a block's bias needs this many scored forecasts
 const MODEL_LATE_RISE_RATE    = 0.5;
 const MODEL_LATE_RISE_MIN_N   = 5;
 
@@ -4302,11 +4306,34 @@ function applyModel(model, atMs, opts = {}) {
   };
 }
 
-// The current block's learned forecast bias (predicted − actual), capped ±1.0 mmol/L.
+// The current block's learned forecast bias (predicted − actual), capped ±1.0 mmol/L;
+// null with fewer than MODEL_FORECAST_BIAS_MIN_N scored forecasts.
 function modelForecastBias(model, atMs) {
   const h = londonParts(toMs(atMs)).hour;
   const row = (model?.forecastBias || []).find(b => h >= b.from && h < b.to);
-  return row && isNum(row.bias) ? { bias: clamp(row.bias, -MODEL_FORECAST_BIAS_MAX, MODEL_FORECAST_BIAS_MAX), n: row.n } : null;
+  if (!row || !isNum(row.bias) || !((row.n || 0) >= MODEL_FORECAST_BIAS_MIN_N)) return null;
+  return { bias: clamp(row.bias, -MODEL_FORECAST_BIAS_MAX, MODEL_FORECAST_BIAS_MAX), n: row.n };
+}
+
+// The learned model's extra forecast terms at t minutes ahead — shared by
+// computeForecastCore (t = the 2h horizon) and projectedGlucoseCurve (each
+// step) so the chart and the alert agree. An in-progress workout of a
+// learned type drops at its learned rate for min(t, time left in it); the
+// block's forecast bias is a 2h bias, so it ramps in linearly to full at 2h.
+function modelForecastTerms(applied, model, nowMs, t) {
+  const out = { liveExerciseDropMmol: 0, forecastBiasShift: 0, reasons: [] };
+  if (!applied) return out;
+  if (applied.exerciseOngoing && applied.exerciseDropPerMin > 0) {
+    const remainingMin = clamp((applied.exerciseOngoing.endMs - nowMs) / 60000, 0, t);
+    out.liveExerciseDropMmol = applied.exerciseDropPerMin * remainingMin;
+    out.reasons.push(`${applied.exerciseOngoing.workoutType} in progress: about ${fmt1(out.liveExerciseDropMmol)} mmol/L more drop before it ends (${applied.exerciseOngoing.n} sessions)`);
+  }
+  const bias = modelForecastBias(model, nowMs);
+  if (bias && bias.bias !== 0) {
+    out.forecastBiasShift = -bias.bias * clamp(t / HYPO_FORECAST_HORIZON_MIN, 0, 1);
+    out.reasons.push(`forecast adjusted ${-bias.bias > 0 ? '+' : ''}${fmt1(-bias.bias)} mmol/L — at this time of day it has run ${bias.bias > 0 ? 'high' : 'low'} (${bias.n} checks)`);
+  }
+  return out;
 }
 
 // What applyModel needs from an engine input, beyond the model itself.

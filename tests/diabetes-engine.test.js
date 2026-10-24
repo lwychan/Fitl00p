@@ -265,3 +265,48 @@ test('forecastAccuracyByBlock groups forecast errors by London block', () => {
   assert.deepEqual(Object.keys(rows[0]).sort(), ['bias', 'from', 'label', 'n', 'to']);
   assert.ok(rows.every(r => r.n > 0 && Math.abs(r.bias) < 1e-9));
 });
+
+test('forecast bias needs n >= 10', () => {
+  const input = (bias, n) => ({ glucoseHistory: flat(8), boluses: [], corrections: [], settings: SETTINGS,
+    model: mkModel({ forecastBias: [{ label: '12:00–15:00', from: 12, to: 15, bias, n }] }) });
+  const a = E.hypoForecast2h(input(0, 30), NOW);
+  close(E.hypoForecast2h(input(-2.5, 9), NOW).forecastGlucose, a.forecastGlucose);
+  close(E.hypoForecast2h(input(-2.5, 10), NOW).forecastGlucose - a.forecastGlucose, 1.0);
+});
+
+test('chart curve 2h point equals the alert forecast (with and without a live learned workout)', () => {
+  const run = { workoutType: 'Run', startTime: minsAgo(30), endTime: new Date(NOW + 40 * 60000).toISOString() };
+  for (const workouts of [[], [run]]) {
+    const input = { glucoseHistory: flat(9), boluses: [{ time: minsAgo(40), units: 2, carbs: 30 }], corrections: [],
+      settings: SETTINGS, activities: { workouts },
+      model: mkModel({ exercise: { Run: { dropPerMin: 0.04, n: 6 } }, forecastBias: [{ label: '12:00–15:00', from: 12, to: 15, bias: 0.6, n: 20 }] }) };
+    const curve = E.projectedGlucoseCurve(input, NOW);
+    const f = E.hypoForecast2h(input, NOW);
+    const last = curve[curve.length - 1];
+    assert.equal(last.minutesFromNow, 120);
+    close(last.value, f.forecastGlucose, 1e-9);
+    if (workouts.length) close(f.liveExerciseDropMmol, 0.04 * 40);
+  }
+});
+
+test('learned carb ratio is not nudged by past meal outcomes', () => {
+  // three past "Pasta" meals that all ran high -> the old path nudges the dose up
+  const H = 3600000;
+  const past = [2, 3, 4].map(d => NOW - d * 24 * H);
+  const glucoseHistory = [
+    ...past.flatMap(ms => [0, 1, 2, 3].map(h => ({ time: new Date(ms + h * H).toISOString(), value: 13 }))),
+    ...flat(6),
+  ];
+  const macroMealLog = past.map(ms => ({ time: new Date(ms).toISOString(), mealName: 'Pasta', carbs: 60, fat: 5, actualDose: 6 }));
+  const base = { glucoseHistory, boluses: [], corrections: [], settings: SETTINGS, macroMealLog };
+  const meal = { carbs: 60, fat: 5, protein: 10, mealName: 'Pasta' };
+  const old = E.suggestMacroMealDose(base, meal, NOW);
+  assert.equal(old.personalized, true);
+  assert.ok(old.carbUnits > 6, `no-model path should still nudge (${old.carbUnits})`);
+  const r = E.suggestMacroMealDose({ ...base, model: mkModel() }, meal, NOW);
+  assert.equal(r.personalized, false);
+  assert.equal(r.nudgePct, 0);
+  assert.equal(r.carbUnits, 6);            // 60 / 10 exactly
+  assert.equal(r.suggestedUnits, 6);       // glucose at target, no IOB, single dose
+  assert.ok(r.reasons.includes('carb ratio 10.0 at this time of day (18 meals)'), r.reasons.join(' | '));
+});
