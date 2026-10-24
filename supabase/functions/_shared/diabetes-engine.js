@@ -4031,6 +4031,166 @@ function scoreNight(input, nightStartMs, opts = {}) {
   };
 }
 
+/* ── fitModel: episodes -> the learned model ──────────────────────
+   The model drives dose SUGGESTIONS, so its safety rules are binding:
+   only clean (confounded === null) episodes count; evidence for MORE
+   insulin (ISF or CR below pump) needs n >= 10, for less n >= 5; every
+   value stays inside pump x [0.7, 1.3]; a value moves at most 10% per
+   day since the previous model; exercise effects can only ever predict
+   lower glucose / more sensitivity. Pure, deterministic, JSON-safe. */
+const MODEL_VERSION           = 2;
+const MODEL_N_LESS_INSULIN    = 5;
+const MODEL_N_MORE_INSULIN    = 10;
+const MODEL_BAND_LO           = 0.7;
+const MODEL_BAND_HI           = 1.3;
+const MODEL_RATE_PER_DAY      = 0.10;
+const MODEL_EXERCISE_MIN_N    = 3;
+const MODEL_BOOST_MIN_NIGHTS  = 5;
+const MODEL_BOOST_HOURS       = 24;
+const MODEL_MODIFIER_MIN_N    = 10;
+const MODEL_SITE_AGE_HOURS    = 48;
+const MODEL_ILLNESS_RHR_Z     = 1.5;
+const MODEL_SHORT_SLEEP_HRS   = 6;
+
+const isNum = v => typeof v === 'number' && Number.isFinite(v);
+
+// Weighted mean, n (episode count), weight sum and SE (weighted sd / sqrt(effective n)).
+function weightedStats(items) {
+  const n = items.length;
+  const sw = items.reduce((s, x) => s + x.w, 0);
+  if (!n || !(sw > 0)) return { n, sw: 0, mean: null, se: null };
+  const m = items.reduce((s, x) => s + x.w * x.v, 0) / sw;
+  const sw2 = items.reduce((s, x) => s + x.w * x.w, 0);
+  const nEff = sw * sw / sw2;
+  const variance = items.reduce((s, x) => s + x.w * (x.v - m) ** 2, 0) / sw;
+  return { n, sw, mean: m, se: n >= 2 && nEff > 1 ? Math.sqrt(variance * nEff / (nEff - 1) / nEff) : null };
+}
+
+// One block parameter (ISF or CR — for both, a higher value = less insulin).
+function fitBlockParam(items, all, pump, prevValue, daysSincePrev, shrinkK) {
+  const b = weightedStats(items);
+  const out = { value: pump, pump, n: b.n, source: 'pump', outsideBand: false, se: b.se };
+  if (!isNum(pump) || !(pump > 0)) return { ...out, value: null, pump: null };
+  const usable = (value, n) => isNum(value) && n >= (value > pump ? MODEL_N_LESS_INSULIN : MODEL_N_MORE_INSULIN);
+  let value = null;
+  if (b.mean != null && all.mean != null) {
+    const shrunk = (b.sw * b.mean + shrinkK * all.mean) / (b.sw + shrinkK);
+    if (usable(shrunk, b.n)) { value = shrunk; out.source = 'learned'; }
+  }
+  if (value == null && usable(all.mean, all.n)) { value = all.mean; out.source = 'pooled'; }
+  if (value == null) value = pump;
+  const lo = pump * MODEL_BAND_LO, hi = pump * MODEL_BAND_HI;
+  if (value < lo || value > hi) { out.outsideBand = true; value = clamp(value, lo, hi); }
+  // rate limit vs the previous model: move toward the new value, by at most 10%/day
+  if (isNum(prevValue) && prevValue > 0 && isNum(daysSincePrev)) {
+    const cap = MODEL_RATE_PER_DAY * Math.max(0, daysSincePrev);
+    value = clamp(value, prevValue * (1 - cap), prevValue * (1 + cap));
+    value = clamp(value, lo, hi);   // a changed pump profile still bounds the result
+  }
+  out.value = value;
+  return out;
+}
+
+// Condition modifier: correction ISF (relative to the pump ISF at the
+// episode's start) with vs without the condition. Active only with >= 10
+// each side and |diff| > 2 SE; effect = mean ratio with / without.
+function fitModifier(corrs, pumpProfile, cond) {
+  const w = [], wo = [];
+  for (const ep of corrs) {
+    const c = cond(ep.context || {});
+    if (c == null) continue;
+    const pump = profileValueAt(pumpProfile, ep.startMs, 'correctionFactor');
+    const rel = pump > 0 ? ep.fit.isf / pump : ep.fit.isf;
+    (c ? w : wo).push(rel);
+  }
+  const off = { active: false, effect: 1, n: w.length, nWithout: wo.length };
+  if (w.length < MODEL_MODIFIER_MIN_N || wo.length < MODEL_MODIFIER_MIN_N) return off;
+  const mW = mean(w), mO = mean(wo);
+  const se = Math.sqrt(stddev(w, mW) ** 2 / w.length + stddev(wo, mO) ** 2 / wo.length);
+  if (!(mO > 0) || !(Math.abs(mW - mO) > 2 * se)) return off;
+  return { active: true, effect: mW / mO, n: w.length, nWithout: wo.length };
+}
+
+const finiteOrNull = v => (isNum(v) ? v : null);
+
+// episodes: from scoreCorrectionEpisode / scoreMealEpisode / scoreExerciseEpisode / scoreNight.
+// ISF per block from clean corrections (fit.isf), CR from clean meals (fit.carbRatio), bucketed by
+// the London hour of the episode start; weights 0.5^(age / halfLifeDays); block value shrunk toward
+// the all-day mean by its weight sum: (sum w * blockMean + k * allDay) / (sum w + k).
+// Without a pump profile there is no band to guard with, so values are null (source 'pump').
+function fitModel(episodes, pumpProfile, opts = {}) {
+  const { nowMs: nowIn = Date.now(), prevModel = null, halfLifeDays = 30, shrinkK = 5 } = opts;
+  const nowMs = toMs(nowIn);
+  const clean = (episodes || []).filter(ep => ep && ep.confounded === null && isNum(toMs(ep.startMs)));
+  const weight = ep => 0.5 ** (Math.max(0, nowMs - toMs(ep.startMs)) / DAY_MS / halfLifeDays);
+  // a workout in the 24h before the start = inside the post-exercise boost window, which
+  // exercise.boost learns and applies separately: keep those out of ISF/CR (no double counting)
+  const exercised = ep => (ep.context?.exercise24h?.minutes || 0) > 0 || (ep.context?.exercise24h?.types?.length || 0) > 0;
+  const items = (kind, get) => clean.filter(ep => ep.kind === kind && !exercised(ep) && isNum(get(ep)) && get(ep) > 0)
+    .map(ep => ({ ep, v: get(ep), w: weight(ep), hour: hourOfDay(toMs(ep.startMs)) }));
+  const isfItems = items('correction', ep => ep.fit?.isf);
+  const crItems = items('meal', ep => ep.fit?.carbRatio);
+  const allIsf = weightedStats(isfItems), allCr = weightedStats(crItems);
+
+  const table = prescribedRegimenTable(pumpProfile) || REGIMEN_TOD_BUCKETS.map(() => ({}));
+  const prevFitted = prevModel ? toMs(prevModel.fittedAt) : null;
+  const daysSincePrev = prevFitted != null ? (nowMs - prevFitted) / DAY_MS : null;
+  const blocks = REGIMEN_TOD_BUCKETS.map((bk, i) => {
+    const prev = prevModel?.blocks?.find(b => b.label === bk.label);
+    const inBlock = xs => xs.filter(x => x.hour >= bk.from && x.hour < bk.to);
+    return {
+      label: bk.label, from: bk.from, to: bk.to,
+      isf: fitBlockParam(inBlock(isfItems), allIsf, finiteOrNull(table[i].correctionFactor), prev?.isf?.value, daysSincePrev, shrinkK),
+      carbRatio: fitBlockParam(inBlock(crItems), allCr, finiteOrNull(table[i].carbRatio), prev?.carbRatio?.value, daysSincePrev, shrinkK),
+    };
+  });
+
+  // exercise: per workout type, median of clean episodes (one unlogged snack can't swing it),
+  // never a rise
+  const exercise = {};
+  const byType = new Map();
+  for (const ep of clean) {
+    if (ep.kind !== 'exercise' || !ep.workoutType || !isNum(ep.fit?.dropPerMin)) continue;
+    if (!byType.has(ep.workoutType)) byType.set(ep.workoutType, []);
+    byType.get(ep.workoutType).push(ep.fit.dropPerMin);
+  }
+  for (const type of [...byType.keys()].sort()) {
+    const v = byType.get(type);
+    if (v.length >= MODEL_EXERCISE_MIN_N) exercise[type] = { dropPerMin: Math.max(0, median(v)), n: v.length };
+  }
+  // post-exercise boost: median night isfRatio with a workout in the 24h before 00:00 / without
+  const nights = clean.filter(ep => ep.kind === 'night' && isNum(ep.fit?.isfRatio));
+  const after = nights.filter(exercised).map(ep => ep.fit.isfRatio);
+  const without = nights.filter(ep => !exercised(ep)).map(ep => ep.fit.isfRatio);
+  const boostOk = after.length >= MODEL_BOOST_MIN_NIGHTS && without.length >= MODEL_BOOST_MIN_NIGHTS && median(without) > 0;
+  exercise.boost = { multiplier: boostOk ? Math.max(1, median(after) / median(without)) : 1,
+    n: after.length, nWithout: without.length, hours: MODEL_BOOST_HOURS };
+
+  const corrs = isfItems.map(x => x.ep);
+  const modifiers = {
+    siteAge: fitModifier(corrs, pumpProfile, c => (isNum(c.siteAgeHours) ? c.siteAgeHours >= MODEL_SITE_AGE_HOURS : null)),
+    illness: fitModifier(corrs, pumpProfile, c => (isNum(c.rhrZ) ? c.rhrZ >= MODEL_ILLNESS_RHR_Z : null)),
+    shortSleep: fitModifier(corrs, pumpProfile, c => (isNum(c.sleepHrs) ? c.sleepHrs < MODEL_SHORT_SLEEP_HRS : null)),
+  };
+
+  // delayed rise: meals that are clean or late-absorption (other labels can't tell a late rise
+  // from a snack); high fat = logged fat >= 20 g, other = logged fat < 20 g or no macro log
+  const riseMeals = (episodes || []).filter(ep => ep && ep.kind === 'meal' && (ep.confounded === null || ep.confounded === 'late-absorption'));
+  const rate = xs => ({ rate: xs.length ? xs.filter(ep => ep.delayedRise === true).length / xs.length : null, n: xs.length });
+  const highFat = ep => isNum(ep.macros?.fat) && ep.macros.fat >= MEAL_LATE_FAT_G;
+
+  return {
+    version: MODEL_VERSION,
+    fittedAt: nowMs,
+    blocks,
+    allDay: { isf: allIsf.mean, carbRatio: allCr.mean, nIsf: allIsf.n, nCr: allCr.n },
+    exercise,
+    modifiers,
+    meals: { delayedRiseHighFat: rate(riseMeals.filter(highFat)), delayedRiseOther: rate(riseMeals.filter(ep => !highFat(ep))) },
+    forecastBias: [],
+  };
+}
+
 const DiabetesEngine = {
   // constants
   IOB_PEAK_MINUTES,
@@ -4123,6 +4283,7 @@ const DiabetesEngine = {
   scoreMealEpisode,
   scoreExerciseEpisode,
   scoreNight,
+  fitModel,
 };
 
 // Dual environment: CommonJS (Node/Netlify functions) or a plain <script>
