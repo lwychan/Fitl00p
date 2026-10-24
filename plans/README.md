@@ -58,3 +58,7 @@ Not planned (small enough to do directly, or needs a separate decision): 5 (CSP 
 ## Not audited
 
 iOS Swift (`HealthBackgroundSync.swift`, widgets, Watch app), diabetes maths beyond the tested dose path, `sw.js` caching in depth, most dashboard rendering code, on-device performance, Supabase Auth settings (whether sign-up is actually open; leaked-password protection is known to be off).
+
+## Queued (2026-10-24)
+
+- **Diabetes engine learning** — next project after the notifications redesign (docs/superpowers/specs/2026-10-24-notifications-design.md). Findings to design from: learning only sees 14 days (nothing persisted; store each correction/meal outcome once); meal ratio imitates past doses (learn from hindsight "ideal" dose instead); "ran high" = any reading > 8.5 in 3h (too crude); correction factor ignores prior IOB + Control-IQ basal changes and is read at 3h; single all-day factor though sensitivityMap exists; forecast bias measured but never applied; learning untested. Roll out side by side (shadow suggestions) before switching. Needs its own brainstorm + design.
