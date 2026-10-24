@@ -3407,9 +3407,15 @@ function prepareDoses(doses) {
   return (doses || []).map(d => ({ ...d, time: toMs(d.time), ms: toMs(d.time) }))
     .filter(d => d.ms != null).sort((a, b) => a.ms - b.ms);
 }
+// macroMealLog { time | eaten_at, fat, protein } -> sorted { ms, fat, protein } (null when not logged)
+function prepareMacroMeals(log) {
+  const num = v => (v != null && Number.isFinite(Number(v)) ? Number(v) : null);
+  return (log || []).map(m => ({ ms: toMs(m.time ?? m.eaten_at), fat: num(m.fat ?? m.fat_g), protein: num(m.protein ?? m.protein_g) }))
+    .filter(m => m.ms != null).sort((x, y) => x.ms - y.ms);
+}
 function prepareLearningInput(input) {
   if (input && input.__prepared === true) return input;
-  const { glucoseHistory = [], boluses = [], corrections = [], basalDoses = [], activities = {} } = input || {};
+  const { glucoseHistory = [], boluses = [], corrections = [], basalDoses = [], activities = {}, macroMealLog = [] } = input || {};
   const glucose = [];
   for (const r of glucoseHistory) {
     const ms = toMs(r.time), value = Number(r.value);
@@ -3425,6 +3431,7 @@ function prepareLearningInput(input) {
     corrections: prepareDoses(corrections),
     basal: prepareBasal(basalDoses),
     activities: activities || {},
+    macroMeals: prepareMacroMeals(macroMealLog),
   };
 }
 
@@ -3584,6 +3591,73 @@ function hasCompressionLow(rows) {
   return false;
 }
 
+/* ── Shared episode machinery (corrections + meals) ─────────── */
+
+// Readings after the start, and the starting glucose: the last reading
+// within 10 min before the start, else the event's own logged value.
+function episodeReadings(P, startMs, endMs, loggedStart) {
+  const readings = sliceByMs(P.glucose, startMs - 10 * 60000, endMs);
+  const before = readings.filter(r => r.ms <= startMs);
+  const after = readings.filter(r => r.ms > startMs);
+  const g0 = before.length && startMs - before[before.length - 1].ms <= 10 * 60000
+    ? before[before.length - 1].value
+    : (loggedStart != null && Number.isFinite(Number(loggedStart)) ? Number(loggedStart) : null);
+  return { after, g0 };
+}
+
+// Every logged insulin dose absorbing in the window (incl. prior IOB and
+// auto-boluses) and every logged carb bolus. The episode's own dose may
+// already be in boluses or corrections; it is added once if not.
+function episodeDoses(P, startMs, endMs, own) {
+  const units = Number(own.units) || 0;
+  const lookback = startMs - IOB_DURATION_MINUTES * 60000;
+  const bol = sliceByMs(P.boluses, lookback, endMs);
+  const corr = sliceByMs(P.corrections, lookback, endMs);
+  const included = [...bol, ...corr].some(d => d.ms === startMs && Number(d.units) === units);
+  const doses = [...bol, ...corr, ...(included ? [] : [own])];
+  const meals = sliceByMs(P.boluses, startMs - COB_DURATION_MINUTES * 60000, endMs).filter(d => (Number(d.carbs) || 0) > 0);
+  if (!included && (Number(own.carbs) || 0) > 0) meals.push({ ...own, time: startMs, ms: startMs });
+  return { lookback, doses, meals };
+}
+
+// Per reading, what the model says was absorbed between the start and that
+// reading (model time CGM_LAG_MINUTES behind the reading): I = insulin units
+// from logged doses, B = basal-deviation units, C = logged carb grams.
+function episodeTerms(P, pumpProfile, startMs, endMs, after, { lookback, doses, meals }) {
+  const basalChunks = basalDeviationChunks(P.basal, pumpProfile, lookback, endMs);
+  const lagMs = CGM_LAG_MINUTES * 60000, s0 = startMs - lagMs;
+  const chunkStart = basalChunks.map(c => c.units * iobFraction(Math.max(0, (s0 - c.ms) / 60000)));
+  return after.map(r => {
+    const tEnd = r.ms - lagMs;   // a reading shows glucose from ~lag min earlier
+    let B = 0;
+    for (let i = 0; i < basalChunks.length; i++) {
+      const c = basalChunks[i];
+      if (c.ms >= tEnd) continue;
+      B += chunkStart[i] - c.units * iobFraction((tEnd - c.ms) / 60000);
+    }
+    return { tMin: (r.ms - startMs) / 60000, value: r.value,
+      I: insulinEffectBetween(doses, [], s0, tEnd), B, C: carbEffectBetween(meals, s0, tEnd) };
+  });
+}
+
+// Least squares y ~= coef * x through the origin over rows with a finite y;
+// sets each row's residual. rmse is over all rows.
+function fitThroughOrigin(rows) {
+  let sxy = 0, sxx = 0;
+  for (const r of rows) if (Number.isFinite(r.y)) { sxy += r.x * r.y; sxx += r.x * r.x; }
+  const coef = sxx > 0 ? sxy / sxx : null;
+  let sse = 0;
+  for (const r of rows) { r.res = coef == null ? NaN : r.y - coef * r.x; if (Number.isFinite(r.res)) sse += r.res * r.res; }
+  return { coef, rmse: rows.length && coef != null ? Math.sqrt(sse / rows.length) : null };
+}
+
+// Longest CGM gap (min) inside the window, incl. up to its end.
+function episodeMaxGap(after, startMs, endMs) {
+  let maxGap = 0, prevMs = startMs;
+  for (const r of after) { maxGap = Math.max(maxGap, (r.ms - prevMs) / 60000); prevMs = r.ms; }
+  return Math.max(maxGap, (endMs - prevMs) / 60000);
+}
+
 // Whole-curve fit of one correction. Over the window, glucose change
 //   delta(t) ~= isf * (-I(t) - B(t) + C(t)/CR)
 // is linear in isf (I: insulin absorbed from ALL logged doses incl. prior
@@ -3610,69 +3684,113 @@ function scoreCorrectionEpisode(input, correction, opts = {}) {
 
   const P = prepareLearningInput(input);
   const context = episodeContext(P, startMs, { pumpProfile, siteChanges, health });
-  const readings = sliceByMs(P.glucose, startMs - 10 * 60000, endMs);
-  const before = readings.filter(r => r.ms <= startMs);
-  const after = readings.filter(r => r.ms > startMs);
-  const g0 = before.length && startMs - before[before.length - 1].ms <= 10 * 60000
-    ? before[before.length - 1].value
-    : (correction.startGlucose != null && Number.isFinite(Number(correction.startGlucose)) ? Number(correction.startGlucose) : null);
+  const { after, g0 } = episodeReadings(P, startMs, endMs, correction.startGlucose);
   if (context.startGlucose == null) context.startGlucose = g0;
 
   const cr = profileValueAt(pumpProfile, startMs, 'carbRatio');
   const missingProfile = !(cr > 0) || !hasProfileField(pumpProfile, 'basalRate');
+  const win = episodeDoses(P, startMs, endMs, correction);
 
-  // every logged insulin source; the episode's own dose may already be in boluses or corrections
-  const lookback = startMs - IOB_DURATION_MINUTES * 60000;
-  const bol = sliceByMs(P.boluses, lookback, endMs);
-  const corr = sliceByMs(P.corrections, lookback, endMs);
-  const included = [...bol, ...corr].some(d => d.ms === startMs && Number(d.units) === units);
-  const doses = [...bol, ...corr, ...(included ? [] : [correction])];
-  const meals = sliceByMs(P.boluses, startMs - COB_DURATION_MINUTES * 60000, endMs).filter(d => (Number(d.carbs) || 0) > 0);
-
-  const rows = [];
-  let isf = null, rmse = null;
+  let rows = [], isf = null, rmse = null;
   if (!missingProfile) {
-    const basalChunks = basalDeviationChunks(P.basal, pumpProfile, lookback, endMs);
-    const lagMs = CGM_LAG_MINUTES * 60000, s0 = startMs - lagMs;
-    const chunkStart = basalChunks.map(c => c.units * iobFraction(Math.max(0, (s0 - c.ms) / 60000)));
-    for (const r of after) {
-      const tEnd = r.ms - lagMs;   // a reading shows glucose from ~lag min earlier
-      const I = insulinEffectBetween(doses, [], s0, tEnd);
-      let B = 0;
-      for (let i = 0; i < basalChunks.length; i++) {
-        const c = basalChunks[i];
-        if (c.ms >= tEnd) continue;
-        B += chunkStart[i] - c.units * iobFraction((tEnd - c.ms) / 60000);
-      }
-      const C = carbEffectBetween(meals, s0, tEnd) / cr;
-      const tMin = (r.ms - startMs) / 60000;
-      rows.push({ tMin, x: -I - B + C, y: g0 == null ? NaN : r.value - g0 });
-    }
-    let sxy = 0, sxx = 0;
-    for (const r of rows) if (Number.isFinite(r.y)) { sxy += r.x * r.y; sxx += r.x * r.x; }
-    isf = sxx > 0 ? sxy / sxx : null;
-    let sse = 0;
-    for (const r of rows) { r.res = isf == null ? NaN : r.y - isf * r.x; if (Number.isFinite(r.res)) sse += r.res * r.res; }
-    rmse = rows.length && isf != null ? Math.sqrt(sse / rows.length) : null;
+    rows = episodeTerms(P, pumpProfile, startMs, endMs, after, win)
+      .map(t => ({ tMin: t.tMin, x: -t.I - t.B + t.C / cr, y: g0 == null ? NaN : t.value - g0 }));
+    ({ coef: isf, rmse } = fitThroughOrigin(rows));
   }
   const fit = { isf, rmse, n: missingProfile ? after.length : rows.length };
 
   const expected = Math.floor(windowMin / EPISODE_STEP_MIN);
-  let maxGap = 0, prevMs = startMs;
-  for (const r of after) { maxGap = Math.max(maxGap, (r.ms - prevMs) / 60000); prevMs = r.ms; }
-  maxGap = Math.max(maxGap, (endMs - prevMs) / 60000);
-
   let confounded = null;
   if (correction.auto) confounded = 'auto-bolus';
   else if (missingProfile) confounded = 'missing-profile';
   else if (rows.length < EPISODE_MIN_READING_SHARE * expected) confounded = 'too-few-readings';
-  else if (maxGap > EPISODE_MAX_GAP_MIN || g0 == null || isf == null) confounded = 'sensor-gap';
-  else if (meals.some(b => b.ms >= startMs)) confounded = 'carbs-in-window';
+  else if (episodeMaxGap(after, startMs, endMs) > EPISODE_MAX_GAP_MIN || g0 == null || isf == null) confounded = 'sensor-gap';
+  else if (win.meals.some(b => b.ms >= startMs)) confounded = 'carbs-in-window';
   else if (hasCompressionLow(rows)) confounded = 'compression-low';
   else if (hasUnexplainedRise(rows)) confounded = 'unexplained-rise';
   else if (!(isf >= MIN_RELIABLE_FACTOR && isf <= MAX_RELIABLE_FACTOR)) confounded = 'implausible-fit';
 
   return { kind: 'correction', startMs, units, context, fit, confounded };
+}
+
+const MEAL_CR_MIN_G         = 2;    // g/U: a fitted carb ratio outside [2, 60] is implausible
+const MEAL_CR_MAX_G         = 60;
+const MEAL_STACK_MIN        = 90;   // another carb bolus this close -> stacked-meal
+const MEAL_DELAYED_PEAK_MIN = 150;  // highest reading later than this -> delayedRise
+const MEAL_MACRO_MATCH_MIN  = 20;   // macroMealLog entry within this of the bolus
+
+// Whole-curve fit of one meal bolus, in hindsight. With ISF known
+// (opts.isfAt(startMs); falls back to the pump correction factor),
+//   delta(t) + isf * (I(t) + B(t)) ~= isf * C(t) * (1/CR)
+// is linear in 1/CR, so least squares is closed form (same terms and lag as
+// scoreCorrectionEpisode). Every logged carb absorbing in the window (incl.
+// an earlier meal's tail) shares the fitted ratio.
+// idealUnits = carbs / fitted CR is the dose that would have been right;
+// deltaUnits = idealUnits - units. peakMin = minutes to the highest reading;
+// delayedRise = that peak came after 150 min (fat/protein-slowed meal).
+// Confounders as scoreCorrectionEpisode, except carbs in the window are the
+// point here: instead 'stacked-meal' when another carb bolus is within 90 min.
+// Missing/implausible ISF or no basal schedule -> 'missing-profile';
+// a fitted CR <= 0, non-finite or outside [2, 60] g/U -> 'implausible-fit'.
+function scoreMealEpisode(input, bolus, opts = {}) {
+  const { pumpProfile = null, isfAt = null, nowMs = Date.now(), windowMin = 300, siteChanges = null, health = null } = opts;
+  const startMs = toMs(bolus?.time);
+  const carbs = Number(bolus?.carbs) || 0;
+  const units = Math.max(0, Number(bolus?.units) || 0);
+  if (startMs == null || carbs <= 0) return null;
+  const endMs = startMs + windowMin * 60000;
+  if (toMs(nowMs) < endMs) return null;
+
+  const P = prepareLearningInput(input);
+  const context = episodeContext(P, startMs, { pumpProfile, siteChanges, health });
+  const { after, g0 } = episodeReadings(P, startMs, endMs, bolus.startGlucose);
+  if (context.startGlucose == null) context.startGlucose = g0;
+
+  const isfRaw = typeof isfAt === 'function' ? Number(isfAt(startMs)) : profileValueAt(pumpProfile, startMs, 'correctionFactor');
+  const isf = isfRaw >= MIN_RELIABLE_FACTOR && isfRaw <= MAX_RELIABLE_FACTOR ? isfRaw : null;
+  const missingProfile = isf == null || !hasProfileField(pumpProfile, 'basalRate');
+  const win = episodeDoses(P, startMs, endMs, bolus);
+
+  let rows = [], carbRatio = null, rmse = null;
+  if (!missingProfile) {
+    rows = episodeTerms(P, pumpProfile, startMs, endMs, after, win)
+      .map(t => ({ tMin: t.tMin, x: isf * t.C, y: g0 == null ? NaN : t.value - g0 + isf * (t.I + t.B) }));
+    const f = fitThroughOrigin(rows);
+    rmse = f.rmse;
+    carbRatio = f.coef != null && Number.isFinite(1 / f.coef) ? 1 / f.coef : null;
+  }
+  const plausible = carbRatio != null && carbRatio >= MEAL_CR_MIN_G && carbRatio <= MEAL_CR_MAX_G;
+  const idealUnits = carbRatio > 0 ? carbs / carbRatio : null;
+
+  let peakMin = null, peak = -Infinity;
+  for (const r of after) if (r.value > peak) { peak = r.value; peakMin = (r.ms - startMs) / 60000; }
+
+  let macros = null, bestDt = Infinity;
+  for (const m of sliceByMs(P.macroMeals, startMs - MEAL_MACRO_MATCH_MIN * 60000, startMs + MEAL_MACRO_MATCH_MIN * 60000)) {
+    const dt = Math.abs(m.ms - startMs);
+    if (dt < bestDt) { bestDt = dt; macros = { fat: m.fat, protein: m.protein }; }
+  }
+
+  const stacked = sliceByMs(P.boluses, startMs - MEAL_STACK_MIN * 60000, startMs + MEAL_STACK_MIN * 60000)
+    .some(d => d.ms !== startMs && (Number(d.carbs) || 0) > 0);
+  const expected = Math.floor(windowMin / EPISODE_STEP_MIN);
+  let confounded = null;
+  if (bolus.auto) confounded = 'auto-bolus';
+  else if (missingProfile) confounded = 'missing-profile';
+  else if (rows.length < EPISODE_MIN_READING_SHARE * expected) confounded = 'too-few-readings';
+  else if (episodeMaxGap(after, startMs, endMs) > EPISODE_MAX_GAP_MIN || g0 == null) confounded = 'sensor-gap';
+  else if (stacked) confounded = 'stacked-meal';
+  else if (hasCompressionLow(rows)) confounded = 'compression-low';
+  else if (hasUnexplainedRise(rows)) confounded = 'unexplained-rise';
+  else if (!plausible) confounded = 'implausible-fit';
+
+  return {
+    kind: 'meal', startMs, carbs, units, context,
+    fit: { carbRatio, rmse, n: missingProfile ? after.length : rows.length, peakMin, idealUnits },
+    deltaUnits: idealUnits == null ? null : idealUnits - units,
+    macros, delayedRise: peakMin != null && peakMin > MEAL_DELAYED_PEAK_MIN,
+    confounded,
+  };
 }
 
 const DiabetesEngine = {
@@ -3764,6 +3882,7 @@ const DiabetesEngine = {
   basalDeviationUnits,
   episodeContext,
   scoreCorrectionEpisode,
+  scoreMealEpisode,
 };
 
 // Dual environment: CommonJS (Node/Netlify functions) or a plain <script>

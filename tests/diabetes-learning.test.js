@@ -247,3 +247,123 @@ test('duplicate readings and a dose logged in boluses are not double-counted', (
   const epB = E.scoreCorrectionEpisode(viaBolus, c, { pumpProfile: p.pumpProfile, nowMs: simEnd });
   assert.ok(Math.abs(epB.fit.isf - ep.fit.isf) < 1e-9, `${epB.fit.isf} vs ${ep.fit.isf}`);
 });
+
+/* ── Task 4: meal episodes (hindsight dose) ─────────────────────────── */
+// ISF comes from truth so the meal fit isolates CR learning.
+const mealOpts = (p, nowMs) => ({ pumpProfile: p.pumpProfile, isfAt: ms => p.truth.isfByHour(londonHour(ms)), nowMs });
+const loggedMeals = p => p.boluses.filter(b => !b.auto && b.carbs > 0);
+const P60 = E.prepareLearningInput(simInput(sim60));
+let _meals = null;   // scored lazily, once
+function meals60() {
+  if (!_meals) {
+    const all = loggedMeals(sim60).map(b => ({ b, ep: E.scoreMealEpisode(P60, b, mealOpts(sim60, simEnd)) }));
+    _meals = { all, clean: all.filter(({ b, ep }) => ep && ep.confounded === null && !inBoost(sim60, b.time, b.time + 5 * H)) };
+  }
+  return _meals;
+}
+const trueCr = (p, ms) => p.truth.carbRatioByHour(londonHour(ms));
+const crErr = ({ b, ep }) => Math.abs(ep.fit.carbRatio - trueCr(sim60, b.time)) / trueCr(sim60, b.time);
+
+test('meal CR recovered within 15% per block', () => {
+  const { all: mealEpisodes, clean: cleanMealEpisodes } = meals60();
+  assert.ok(cleanMealEpisodes.length >= 40, `only ${cleanMealEpisodes.length} clean meal episodes`);
+  const tested = [];
+  const report = [];
+  for (let blk = 0; blk < 8; blk++) {
+    const e = cleanMealEpisodes.filter(x => Math.floor(londonHour(x.b.time) / 3) === blk).map(crErr);
+    report.push(e.length ? `${blk * 3}h:${(meanOf(e) * 100).toFixed(1)}%(n=${e.length})` : `${blk * 3}h:-`);
+    if (e.length >= 5) tested.push({ blk, err: meanOf(e), n: e.length });
+  }
+  const conf = {};
+  for (const { ep } of mealEpisodes) if (ep && ep.confounded) conf[ep.confounded] = (conf[ep.confounded] || 0) + 1;
+  console.log(`meal CR per block: ${report.join(' ')}; confounded ${JSON.stringify(conf)}`);
+  assert.ok(tested.length >= 4, `only ${tested.length} blocks with >= 5 clean meals`);
+  for (const { blk, err, n } of tested) assert.ok(err <= 0.15, `block ${blk * 3}h: ${(err * 100).toFixed(1)}% (n=${n})`);
+  for (const { b, ep } of cleanMealEpisodes) {
+    assert.strictEqual(ep.kind, 'meal');
+    assert.strictEqual(ep.carbs, b.carbs);
+    assert.strictEqual(ep.units, b.units);
+    assert.ok(Number.isFinite(ep.fit.rmse) && ep.fit.n > 0 && Number.isFinite(ep.fit.peakMin));
+    assert.ok(Math.abs(ep.fit.idealUnits - b.carbs / ep.fit.carbRatio) < 1e-9);
+    assert.ok(Math.abs(ep.deltaUnits - (ep.fit.idealUnits - b.units)) < 1e-9);
+  }
+});
+
+test('under-dosed meal -> idealUnits > units', () => {
+  const cleanMealEpisodes = meals60().clean;
+  // The patient doses from the pump CR (20% above the 24h-mean truth), so a full-dose
+  // morning meal (truth CR 8) gets ~70% of what it needed.
+  const at70 = cleanMealEpisodes.filter(({ b }) => {
+    const share = b.units / (b.carbs / trueCr(sim60, b.time));
+    return share >= 0.65 && share <= 0.75;
+  });
+  assert.ok(at70.length >= 5, `only ${at70.length} clean meals dosed at ~70%`);
+  const ratios = at70.map(({ b, ep }) => ep.fit.idealUnits / b.units);
+  console.log(`~70%-dosed meals n=${at70.length}: idealUnits/units mean ${meanOf(ratios).toFixed(2)} [${ratios.map(r => r.toFixed(2)).join(' ')}]`);
+  for (const { b, ep } of at70) assert.ok(ep.fit.idealUnits > b.units && ep.deltaUnits > 0);
+  const m = meanOf(ratios);
+  assert.ok(m >= 1.3 && m <= 1.55, `mean idealUnits/units ${m.toFixed(2)}`);
+});
+
+const simFat = simulatePatient({ days: 60, seed: 1, fatMeals: { rate: 0.3, fat: 40, delayMin: 60, durationMin: 300 } });
+const simFatEnd = simFat.glucoseHistory[simFat.glucoseHistory.length - 1].time;
+
+test('high-fat meal peaks late -> delayedRise', () => {
+  const P = E.prepareLearningInput({ ...simInput(simFat), macroMealLog: simFat.macroMealLog });
+  const fatTimes = new Set(simFat.truth.fatMeals.map(m => m.time));
+  const underdosed = new Set(simFat.truth.underdosedMeals.map(m => m.time));
+  // well-dosed meals (no deliberate under-dose), nothing unlogged/stacked/missing in the window
+  const usable = loggedMeals(simFat).filter(b => !underdosed.has(b.time) &&
+    !simFat.truth.snacks.some(s => s.time > b.time - 3 * H && s.time < b.time + 5 * H) &&
+    !inBoost(simFat, b.time, b.time + 5 * H))
+    .map(b => ({ b, ep: E.scoreMealEpisode(P, b, mealOpts(simFat, simFatEnd)) }))
+    .filter(({ ep }) => ep && !['stacked-meal', 'sensor-gap', 'too-few-readings', 'compression-low'].includes(ep.confounded));
+  const fat = usable.filter(({ b }) => fatTimes.has(b.time)), plain = usable.filter(({ b }) => !fatTimes.has(b.time));
+  assert.ok(fat.length >= 5 && plain.length >= 10, `fat ${fat.length}, plain ${plain.length}`);
+  const fatLate = fat.filter(({ ep }) => ep.delayedRise).length, plainLate = plain.filter(({ ep }) => ep.delayedRise).length;
+  console.log(`delayedRise: fat ${fatLate}/${fat.length} (peaks ${fat.map(x => x.ep.fit.peakMin).join(',')}), plain ${plainLate}/${plain.length}`);
+  assert.ok(fatLate / fat.length >= 0.8, `fat meals flagged ${fatLate}/${fat.length}`);
+  assert.ok(plainLate / plain.length <= 0.2, `plain meals flagged ${plainLate}/${plain.length}`);
+  for (const { ep } of fat) assert.deepStrictEqual(ep.macros, { fat: 40, protein: ep.macros.protein });
+  for (const { ep } of fat) assert.strictEqual(ep.delayedRise, ep.fit.peakMin > 150);
+});
+
+test('meal episode: null until elapsed, stacked-meal, missing profile, macros null without a log', () => {
+  const cleanMealEpisodes = meals60().clean;
+  const b = cleanMealEpisodes[0].b;
+  assert.strictEqual(E.scoreMealEpisode(P60, b, mealOpts(sim60, b.time + 299 * 60000)), null);
+  assert.ok(E.scoreMealEpisode(P60, b, mealOpts(sim60, b.time + 300 * 60000)));
+  assert.strictEqual(cleanMealEpisodes[0].ep.macros, null);
+  // a second carb bolus 60 min later -> stacked
+  const extra = { time: b.time + 60 * 60000, units: 1, carbs: 20 };
+  const stacked = E.scoreMealEpisode({ ...simInput(sim60), boluses: [...sim60.boluses, extra] }, b, mealOpts(sim60, simEnd));
+  assert.strictEqual(stacked.confounded, 'stacked-meal');
+  // no ISF and no profile -> missing-profile, no fitted CR
+  const ep = E.scoreMealEpisode(P60, b, { nowMs: simEnd });
+  assert.strictEqual(ep.confounded, 'missing-profile');
+  assert.strictEqual(ep.fit.carbRatio, null);
+  assert.strictEqual(ep.fit.idealUnits, null);
+  const noIsf = E.scoreMealEpisode(P60, b, { pumpProfile: sim60.pumpProfile, isfAt: () => NaN, nowMs: simEnd });
+  assert.strictEqual(noIsf.confounded, 'missing-profile');
+  // the auto flag is never learned from; no carbs -> not a meal
+  assert.strictEqual(E.scoreMealEpisode(P60, { ...b, auto: true }, mealOpts(sim60, simEnd)).confounded, 'auto-bolus');
+  assert.strictEqual(E.scoreMealEpisode(P60, { ...b, carbs: 0 }, mealOpts(sim60, simEnd)), null);
+});
+
+test('meal fits never carry an implausible CR when clean (seeds 1-7 x 90 days)', () => {
+  let clean = 0, implausible = 0;
+  for (const p of sim90) {
+    const P = E.prepareLearningInput(simInput(p));
+    const nowMs = p.glucoseHistory[p.glucoseHistory.length - 1].time;
+    for (const b of loggedMeals(p)) {
+      const ep = E.scoreMealEpisode(P, b, mealOpts(p, nowMs));
+      if (!ep) continue;
+      if (ep.confounded === 'implausible-fit') implausible++;
+      if (ep.confounded !== null) continue;
+      clean++;
+      assert.ok(ep.fit.carbRatio >= 2 && ep.fit.carbRatio <= 60, `clean meal with CR ${ep.fit.carbRatio}`);
+    }
+  }
+  console.log(`meals seeds 1-7 x 90d: ${clean} clean, ${implausible} implausible-fit`);
+  assert.ok(clean > 300);
+});

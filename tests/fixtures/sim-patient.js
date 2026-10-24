@@ -49,6 +49,11 @@ function simulatePatient(opts = {}) {
     ],
     snackAfterCorrectionRate = 0.2,   // share of corrections followed by an unlogged snack 30-90 min later
     noiseSd = 0.3, sensorLagMin = 8,
+    // OPT-IN high-fat meals (off by default; outputs are unchanged when off):
+    // { rate, fat, delayMin, durationMin } -> that share of logged meals is high-fat: its carbs
+    // start absorbing delayMin late and spread over durationMin (vs 180). Also emits
+    // macroMealLog { time, carbs, fat, protein } for every logged meal, and truth.fatMeals.
+    fatMeals = null,
   } = opts;
   const rand = mulberry32(seed);
   const randn = () => Math.sqrt(-2 * Math.log(rand() + 1e-12)) * Math.cos(2 * Math.PI * rand());
@@ -86,6 +91,21 @@ function simulatePatient(opts = {}) {
       comp: rand() < compressionLowRate * 5 ? Math.round((60 + rand() * 240) / 5) * 5 : -1 });
   }
   const pendingSnacks = [];
+  // fat decisions draw from their own stream so the main stream is untouched by the option
+  const fatRand = fatMeals ? mulberry32(seed ^ 0x5fa7) : null;
+  const fatDecCache = new Map();
+  const fatDec = (delayMin, durationMin) => {   // per-step fraction absorbed, delayed + stretched
+    const key = delayMin + ':' + durationMin;
+    if (!fatDecCache.has(key)) {
+      const dec = [];
+      for (let k = 0; k < Math.ceil((delayMin + durationMin) / STEP); k++) {
+        dec.push(E.cobFraction(k * STEP - delayMin, durationMin) - E.cobFraction((k + 1) * STEP - delayMin, durationMin));
+      }
+      fatDecCache.set(key, dec);
+    }
+    return fatDecCache.get(key);
+  };
+  const macroMealLog = [], fatMealTruth = [];
 
   const addIns = (i, units, hour, basal) => insDoses.push({ i, units, isf: isfByHour(hour), basal: !!basal });
   for (let i = 0; i < steps; i++) {
@@ -111,7 +131,18 @@ function simulatePatient(opts = {}) {
       const cr = carbRatioByHour(hour), units = Math.max(0.5, Math.round(m.carbs / pumpCr / boost * m.frac * (1 + 0.05 * randn()) * 20) / 20); // patient doses from the (wrong) pump CR
       out.boluses.push({ time: t, units, carbs: m.carbs, mealName: null });
       addIns(i, units, hour);
-      carbDoses.push({ i, g: m.carbs, perG: isfByHour(hour) / cr });
+      let dec = null;
+      if (fatMeals) {
+        const isFat = fatRand() < (fatMeals.rate ?? 0.3);
+        const fat = isFat ? (fatMeals.fat ?? 40) : 8 + Math.round(fatRand() * 8);
+        macroMealLog.push({ time: t, carbs: m.carbs, fat, protein: 15 + Math.round(fatRand() * 20) });
+        if (isFat) {
+          const delayMin = fatMeals.delayMin ?? 60, durationMin = fatMeals.durationMin ?? 300;
+          dec = fatDec(delayMin, durationMin);
+          fatMealTruth.push({ time: t, carbs: m.carbs, fat, delayMin, durationMin });
+        }
+      }
+      carbDoses.push(dec ? { i, g: m.carbs, perG: isfByHour(hour) / cr, dec } : { i, g: m.carbs, perG: isfByHour(hour) / cr });
       lastMeal = i;
       if (m.frac < 1) underdosedMeals.push({ time: t, carbs: m.carbs, fraction: +m.frac.toFixed(2) });
     }
@@ -166,9 +197,9 @@ function simulatePatient(opts = {}) {
       if (i >= w.s && i < w.e) d -= w.ex.dropPerMin * STEP * (g < 4.5 ? Math.max(0, g - 3.5) : 1); // liver response blunts the drop only when low (<4.5)
     }
     for (const x of insDoses) { const k = i - x.i; if (k < 48) d -= x.units * x.isf * boost * insDec[k]; }
-    for (const x of carbDoses) { const k = i - x.i; if (k < 36) d += x.g * x.perG * carbDec[k]; }
+    for (const x of carbDoses) { const k = i - x.i, dec = x.dec || carbDec; if (k < dec.length) d += x.g * x.perG * dec[k]; }
     while (insDoses.length && i - insDoses[0].i >= 47) insDoses.shift();
-    while (carbDoses.length && i - carbDoses[0].i >= 35) carbDoses.shift();
+    while (carbDoses.length && i - carbDoses[0].i >= (carbDoses[0].dec || carbDec).length - 1) carbDoses.shift();
     while (exWin.length && i > exWin[0].until) exWin.shift();
     // glucagon-style counter-regulation: soft floor below 3.0 mmol/L (keeps true glucose off the hard clamp)
     if (g + d < 3.0) d = (3.0 - g) + (d - (3.0 - g)) * 0.2;
@@ -184,12 +215,14 @@ function simulatePatient(opts = {}) {
     time: String(h).padStart(2, '0') + ':00', correctionFactor: +meanIsf.toFixed(3),
     carbRatio: +(meanCr * 1.2).toFixed(3), basalRate: scheduledBasalByHour(h) })) };
 
-  return {
+  const result = {
     glucoseHistory: out.glucoseHistory, boluses: out.boluses, corrections: out.corrections,
     basalDoses: out.basalDoses, activities: { workouts: out.workouts }, pumpProfile,
     truth: { isfByHour, carbRatioByHour, scheduledBasalByHour, exercise, snacks: out.snacks,
       compressionLows: out.compressionLows, underdosedMeals, clampedCount, pumpIsf: meanIsf, pumpCarbRatioFactor: 1.2 },
   };
+  if (fatMeals) { result.macroMealLog = macroMealLog; result.truth.fatMeals = fatMealTruth; }
+  return result;
 }
 
 module.exports = { simulatePatient, mulberry32, londonHour };
