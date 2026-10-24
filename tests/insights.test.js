@@ -137,3 +137,21 @@ test('evaluateInsights fills rule parts, defaults slot to app', () => {
   assert.equal(plain.headline, null);
   assert.equal(plain.slot, 'app');
 });
+
+test('briefing phrases: every briefing rule has a part; safety rules held for review', () => {
+  const byId = Object.fromEntries(RULES.map(r => [r.id, r]));
+  for (const r of RULES) {
+    if (['morning', 'evening', 'both'].includes(r.slot)) assert.ok(r.headline || r.reason || r.action, r.id);
+    if (['glucose', 'health', 'diabetes'].includes(r.category)) assert.equal(r.slot || 'app', 'app', r.id);
+  }
+  assert.equal(byId.recovery_red.headline, 'Recovery {recovery}');
+  assert.equal(byId.recovery_red.action, 'Take it easy — light walk today');
+  assert.equal(byId.recovery_green.headline, "You've recovered well ({recovery})");
+  assert.equal(byId.recovery_green.action, 'Push hard today');
+  assert.equal(byId.sleep_very_short.reason, 'after only {sleep_hrs:1}h sleep');
+  assert.equal(byId.trend_hrv_down.reason, "HRV's been down all week");
+  for (const id of ['recovery_red', 'sleep_very_short', 'trend_hrv_down', 'strain_yesterday_big', 'battery_woke_low', 'weight_stall'])
+    assert.ok(['morning', 'both'].includes(byId[id].slot), id);
+  for (const id of ['strain_over_target_low_recovery', 'battery_evening_low', 'nutrition_under_evening', 'activity_steps_behind', 'sleep_debt_high', 'trend_short_nights'])
+    assert.ok(['evening', 'both'].includes(byId[id].slot), id);
+});

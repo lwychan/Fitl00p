@@ -110,3 +110,11 @@ test('fallback phrase only says what is known', () => {
   assert.equal(B.fallbackNightPhrase({ snapshot: { battery: 40, takenAt: '2026-10-23T22:40:00Z' } }),
     'No sleep data from last night yet (bed ~23:40 on 40%)');
 });
+
+test('composer: a reason that is not a joining clause follows a dash', () => {
+  const b = B.composeBriefing([
+    item('recovery_normal', 'recovery', 30, { headline: 'Recovery 55' }),
+    item('trend_hrv_down', 'trend', 70, { reason: "HRV's been down all week" }),
+  ], { slot: 'morning' });
+  assert.equal(b.body, "Recovery 55 — HRV's been down all week.");
+});

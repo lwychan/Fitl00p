@@ -65,6 +65,9 @@ const SAFETY = ['glucose', 'health', 'diabetes'];
 const ends = s => /[.!?]$/.test(s);
 const sentence = s => (ends(s) ? s : `${s}.`);
 const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
+// Reasons starting with one of these read straight on from a headline
+// ("Recovery 31 after only 4.9h sleep"); others follow a dash.
+const JOINS = /^(after|with|on|despite|and|but|as|from|following|plus|so|while)\b/;
 
 // items = evaluateInsights output (highest priority first) with rule parts.
 // Body: "<headline> <reason1>, and <reason2>. <Action>." + one line per extra,
@@ -90,7 +93,7 @@ function composeBriefing(items, { slot, extras = [], maxChars = 180, headlineOve
     if (!headline) first = reasons.length ? sentence(cap(reasons.join(', and '))) : (slot === 'evening' ? 'Nothing new to flag tonight.' : 'Good morning, nothing new to flag today.');
     else if (!reasons.length) first = sentence(headline);
     else if (ends(headline)) first = `${headline} ${sentence(cap(reasons.join(', and ')))}`;
-    else first = sentence(`${headline} ${reasons.join(', and ')}`);
+    else first = sentence(`${headline}${JOINS.test(reasons[0]) ? ' ' : ' — '}${reasons.join(', and ')}`);
     const lines = [actionItem ? `${first} ${sentence(actionItem.action)}` : first, ...extraLines];
     return lines.join('\n');
   };
