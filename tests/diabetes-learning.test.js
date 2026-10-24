@@ -75,3 +75,109 @@ test('sim patient: realistic lows and no clamping of true glucose', () => {
   assert.ok(low < 0.05, `share <3.9 = ${low}`);
   assert.strictEqual(sim60.truth.clampedCount, 0);
 });
+
+/* ── Task 3: correction episodes (whole-curve fit) ─────────────────── */
+const E = require('../src/diabetes-engine.js');
+
+function simInput(p) {
+  return { glucoseHistory: p.glucoseHistory, boluses: p.boluses, corrections: p.corrections,
+    basalDoses: p.basalDoses, activities: p.activities };
+}
+const simEnd = sim60.glucoseHistory[sim60.glucoseHistory.length - 1].time;
+const simEpisodes = sim60.corrections.map(c => ({ c,
+  ep: E.scoreCorrectionEpisode(simInput(sim60), c, { pumpProfile: sim60.pumpProfile, nowMs: simEnd }) }));
+// post-workout sensitivity boost is learned separately; keep its windows out of ISF recovery
+function inBoost(p, startMs, endMs) {
+  return p.activities.workouts.some(w =>
+    startMs < w.endTime + p.truth.exercise[w.workoutType].hours * H && endMs > w.startTime);
+}
+const cleanSimEpisodes = simEpisodes.filter(({ c, ep }) =>
+  ep && ep.confounded === null && !inBoost(sim60, c.time, c.time + 4 * H));
+const isfErr = ({ c, ep }) => Math.abs(ep.fit.isf - sim60.truth.isfByHour(londonHour(c.time))) / sim60.truth.isfByHour(londonHour(c.time));
+const meanOf = a => a.reduce((s, x) => s + x, 0) / a.length;
+
+test('correction ISF recovered within 15% of truth at its hour', () => {
+  assert.ok(cleanSimEpisodes.length >= 30, `only ${cleanSimEpisodes.length} clean episodes`);
+  const err = meanOf(cleanSimEpisodes.map(isfErr));
+  const byBlock = Array.from({ length: 8 }, (_, b) => {
+    const e = cleanSimEpisodes.filter(x => Math.floor(londonHour(x.c.time) / 3) === b).map(isfErr);
+    return e.length ? `${b * 3}h:${(meanOf(e) * 100).toFixed(1)}%(n=${e.length})` : `${b * 3}h:-`;
+  });
+  console.log(`ISF mean abs err ${(err * 100).toFixed(1)}% over ${cleanSimEpisodes.length}; ${byBlock.join(' ')}`);
+  assert.ok(err <= 0.15, `mean abs % error ${(err * 100).toFixed(1)}`);
+  for (const { ep } of cleanSimEpisodes) {
+    assert.strictEqual(ep.kind, 'correction');
+    assert.ok(Number.isFinite(ep.fit.rmse) && ep.fit.n > 0);
+  }
+});
+
+test('prior IOB does not bias ISF (beats v1 single-reading method)', () => {
+  // the sim sizes corrections net of IOB, so few have >= 1u on board: pool five patients
+  const withIob = [];
+  for (const seed of [1, 2, 3, 4, 5]) {
+    const p = seed === 1 ? sim60 : simulatePatient({ days: 60, seed });
+    const nowMs = p.glucoseHistory[p.glucoseHistory.length - 1].time;
+    for (const c of p.corrections) {
+      const ep = E.scoreCorrectionEpisode(simInput(p), c, { pumpProfile: p.pumpProfile, nowMs });
+      if (!ep || ep.confounded !== null || inBoost(p, c.time, c.time + 4 * H) || ep.context.iob < 1) continue;
+      const truth = p.truth.isfByHour(londonHour(c.time));
+      // v1 resolveCorrection, reproduced inline: (start - reading nearest 3h after) / units
+      const target = c.time + 3 * H;
+      let best = null;
+      for (const r of p.glucoseHistory) if (!best || Math.abs(r.time - target) < Math.abs(best.time - target)) best = r;
+      withIob.push({ newErr: Math.abs(ep.fit.isf - truth) / truth, oldErr: Math.abs((c.startGlucose - best.value) / c.units - truth) / truth });
+    }
+  }
+  assert.ok(withIob.length >= 10, `only ${withIob.length} episodes with IOB >= 1u`);
+  const newErr = meanOf(withIob.map(x => x.newErr)), oldErr = meanOf(withIob.map(x => x.oldErr));
+  console.log(`IOB>=1u episodes n=${withIob.length}: new ${(newErr * 100).toFixed(1)}%, v1 ${(oldErr * 100).toFixed(1)}%`);
+  assert.ok(newErr <= 0.15, `new method ${(newErr * 100).toFixed(1)}%`);
+  assert.ok(oldErr > 0.25, `v1 method only ${(oldErr * 100).toFixed(1)}% off`);
+  assert.ok(newErr < oldErr);
+});
+
+test('unlogged snack flagged as unexplained-rise', () => {
+  // A snack needs ~90 min inside the 4h window to show as a sustained rise, so "overlapping"
+  // = eaten 0-150 min after the dose. Episodes already confounded by an earlier rule
+  // (logged carbs in the window, compression low, sensor gap) keep that label instead.
+  const overlapping = simEpisodes.filter(({ c, ep }) => ep &&
+    !['carbs-in-window', 'compression-low', 'sensor-gap', 'too-few-readings'].includes(ep.confounded) &&
+    sim60.truth.snacks.some(s => s.time >= c.time && s.time <= c.time + 150 * 60000));
+  assert.ok(overlapping.length >= 10, `only ${overlapping.length} snack-overlapping episodes`);
+  const flagged = overlapping.filter(({ ep }) => ep.confounded === 'unexplained-rise').length;
+  console.log(`snack-overlapping: ${flagged}/${overlapping.length} unexplained-rise; others: ${overlapping.filter(({ ep }) => ep.confounded !== 'unexplained-rise').map(({ ep }) => ep.confounded).join(',')}`);
+  assert.ok(flagged / overlapping.length >= 0.8, `${flagged}/${overlapping.length}`);
+});
+
+test('auto-bolus never learned from', () => {
+  const c = sim60.corrections[5];
+  const ep = E.scoreCorrectionEpisode(simInput(sim60), { ...c, auto: true }, { pumpProfile: sim60.pumpProfile, nowMs: simEnd });
+  assert.strictEqual(ep.confounded, 'auto-bolus');
+});
+
+test('scoreCorrectionEpisode is null until the window has elapsed', () => {
+  const c = sim60.corrections[5];
+  assert.strictEqual(E.scoreCorrectionEpisode(simInput(sim60), c, { pumpProfile: sim60.pumpProfile, nowMs: c.time + 239 * 60000 }), null);
+  assert.ok(E.scoreCorrectionEpisode(simInput(sim60), c, { pumpProfile: sim60.pumpProfile, nowMs: c.time + 240 * 60000 }));
+});
+
+test('basalDeviationUnits: 1h at temp 0 vs scheduled 0.8 -> -0.8', () => {
+  const t0 = Date.UTC(2026, 0, 6, 1);   // 01:00 London (GMT)
+  const profile = { default: [{ time: '00:00', basalRate: 0.8 }, { time: '06:00', basalRate: 0.9 }] };
+  const dev = E.basalDeviationUnits([{ time: t0, units: 0, durationMin: 60, rate: 0 }], profile, t0, t0 + H);
+  assert.ok(Math.abs(dev - -0.8) < 1e-9, `got ${dev}`);
+  // no temp records -> pump ran the schedule -> no deviation
+  assert.strictEqual(E.basalDeviationUnits([], profile, t0, t0 + H), 0);
+});
+
+test('episodeContext fills what it can and nulls the rest', () => {
+  const c = sim60.corrections[5];
+  const ctx = E.episodeContext(simInput(sim60), c.time, { pumpProfile: sim60.pumpProfile });
+  assert.strictEqual(ctx.hour, londonHour(c.time));
+  assert.strictEqual(typeof ctx.weekend, 'boolean');
+  assert.ok(Number.isFinite(ctx.iob) && Number.isFinite(ctx.cob) && Number.isFinite(ctx.startGlucose));
+  assert.ok(Array.isArray(ctx.exercise24h.types) && Array.isArray(ctx.exercise48h.types));
+  assert.strictEqual(ctx.siteAgeHours, null);
+  assert.strictEqual(ctx.rhrZ, null);
+  assert.strictEqual(ctx.sleepHrs, null);
+});
