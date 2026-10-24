@@ -9,11 +9,14 @@ const hr = (from, to, bpm, everyMin = 5) =>
   Array.from({ length: Math.floor((to - from) / (everyMin * 60000)) }, (_, i) => ({ t: from + i * everyMin * 60000, bpm }));
 const base = { restingHr: 60, hrMax: 185, isFemale: false };
 
-test('a good 7.5h night takes 25 to ~80; a short night charges much less', () => {
+test('nights match Garmin: 6.5h from 5% wakes ~55%, 7.5h from 25% ~70%, a short night much less', () => {
   const night = h => B.simulate({ ...base, start: T0, now: T0 + h * H, startLevel: 25,
     sleeps: [{ start: T0, end: T0 + h * H, asleepHrs: h, quality: 1 }] }).level;
   const full = night(7.5);
-  assert.ok(full > 76 && full < 84, `full ${full}`);
+  assert.ok(full > 66 && full < 73, `full ${full}`);
+  const typical = B.simulate({ ...base, start: T0, now: T0 + 6.5 * H, startLevel: 5,
+    sleeps: [{ start: T0, end: T0 + 6.5 * H, asleepHrs: 6.5, quality: 1 }] }).level;
+  assert.ok(typical > 51 && typical < 60, `typical ${typical}`); // Garmin median: woke 55%
   assert.ok(night(4) < full - 15);
 });
 

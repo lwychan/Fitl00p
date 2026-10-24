@@ -5,7 +5,7 @@
 // do publish is the shape, which this follows:
 //   - sleep is the main charge, faster when the battery is low, better
 //     when overnight HRV is high / resting HR low vs your normal
-//     (a good night adds roughly 40-60);
+//     (a good night adds roughly 40-60; calibrated to Lewis's Garmin data);
 //   - exercise drains by intensity (here: Banister TRIMP from heart rate,
 //     ~25 for a hard hour);
 //   - awake time drains slowly, faster when heart rate is raised and HRV is
@@ -19,13 +19,17 @@ const FLOOR = 5, CEIL = 100;
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 const K = {
-  sleepPerHr: 0.176,      // fraction of the gap to 100 refilled per hour of sleep (q = 1): 7.5h takes 25 -> ~80
+  // Calibrated 2026-10-24 against Lewis's Garmin export (236 nights, 229 days,
+  // 82 workouts, Feb-Dec 2025): median overnight rate 0.118 (calm nights
+  // 0.150, restless 0.081), awake drain 2.7%/h incl. workouts, workout
+  // drain 0.221 per TRIMP.
+  sleepPerHr: 0.118,      // fraction of the gap to 100 refilled per hour of sleep (q = 1): 6.5h from 5% -> ~56% (Garmin: 55%)
   restPerMin: 0.0005,     // calm awake rest: fraction of the gap per minute (~1.5%/hr at 50)
   restHrr: 0.08,          // below this heart-rate-reserve fraction, awake time counts as rest
-  awakeBase: 0.02,        // %/min drain for any awake minute above rest (~1.2%/hr)
+  awakeBase: 0.035,       // %/min drain for any awake minute above rest (~2.1%/hr; Garmin awake median 2.4%/h excl. workouts)
   stressSlope: 0.5,       // extra drain per minute = stressSlope * (hrr - restHrr)^1.3
-  unknownPerMin: 0.035,   // awake with no recent heart-rate reading (~2.1%/hr)
-  exercisePerTrimp: 0.22, // workout drain per Banister TRIMP unit (60 min at HRR 0.73 ~ 114 TRIMP ~ -25)
+  unknownPerMin: 0.04,    // awake with no recent heart-rate reading (~2.4%/hr)
+  exercisePerTrimp: 0.22, // workout drain per Banister TRIMP unit (Garmin: 0.221; 60 min at HRR 0.73 ~ 114 TRIMP ~ -25)
   hrStaleMin: 20,         // a heart-rate sample stays "current" this long
 };
 
