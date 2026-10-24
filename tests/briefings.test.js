@@ -271,3 +271,16 @@ test('21:00 meds push only when the evening briefing already went earlier (or is
   assert.equal(B.medsPushDue({ nowMin: 1260, pending: 0, eveningSent: true, eveningEnabled: true }), false);
   assert.equal(B.medsPushDue({ nowMin: 1200, pending: 1, eveningSent: true, eveningEnabled: true }), false);
 });
+
+test('glucose alerts: low says IOB and carbs; high names the factor source; never while low or falling', () => {
+  const low = B.glucoseAlert('low', { forecastGlucose: 4.1, iob: 1.8, carbsGrams: 15, trendPerMinute: -0.05, currentGlucose: 6.2 });
+  assert.deepEqual(low, { title: '⬇️ Low predicted', body: 'Dropping to ~4.1 in 2h — 1.8u still active, have 15g fast carbs ready.' });
+  const hi = { forecastGlucose: 14.2, iob: 1.8, suggestedUnits: 1.2, factorSource: 'observed', factorSampleSize: 12, trendPerMinute: 0.03, currentGlucose: 11 };
+  assert.equal(B.glucoseAlert('high', hi).body,
+    'Heading to ~14.2 in 2h, 1.8u active — consider ~1.20u correction (based on your last 12 corrections).');
+  assert.ok(B.glucoseAlert('high', { ...hi, factorSource: 'pump-setting' }).body.includes('(using your set factor)'));
+  assert.equal(B.glucoseAlert('high', { ...hi, trendPerMinute: -0.02 }), null);
+  assert.equal(B.glucoseAlert('high', { ...hi, currentGlucose: 3.6 }), null);
+  assert.equal(B.glucoseAlert('low', { forecastGlucose: 4.1, iob: 0, trendPerMinute: -0.05, currentGlucose: 6 }).body,
+    'Dropping to ~4.1 in 2h — have fast carbs ready.');
+});

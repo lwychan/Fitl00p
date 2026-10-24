@@ -1603,6 +1603,11 @@ function computeForecastCore(input, now = Date.now()) {
     insulinDropMmol, carbRiseMmol, openWorkoutDropMmol,
     retrospectiveEffect, retrospectiveDiscrepancy: rc.discrepancy,
     factor, factorSampleSize: factorResult.sampleSize,
+    // For the alert wording: which factor the suggestion used ('observed' =
+    // learned from past corrections, 'pump-setting' = the configured one),
+    // insulin on board, and the current trend.
+    factorSource: factorResult.source, iob: ctx.iob, trendPerMinute: ctx.trendPerMinute,
+    currentGlucose: ctx.currentGlucose,
   };
 }
 // computeForecastCore's withheld branches key the dosingContext as

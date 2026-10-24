@@ -32,6 +32,7 @@
 
 import { sendToSubscriptions, sbFetch, GEMMA_USER_ID } from '../_shared/webpush.ts';
 import DiabetesEngine from '../_shared/diabetes-engine.js';
+import Briefings from '../_shared/briefings.js';
 import { fetchNightscoutInput } from '../_shared/nightscout-fetch.ts';
 
 const SB_URL     = Deno.env.get('SUPABASE_URL');
@@ -63,20 +64,16 @@ async function sbDelete(path: string) {
   }).catch(() => {});
 }
 
+// Wording lives in Briefings.glucoseAlert (src/briefings.js, unit-tested):
+// the low alert shows insulin on board and the carbs to have ready; the high
+// alert suggests a correction using the LEARNED factor when there's enough
+// history (and says so), never while low or falling — null means don't send.
 function buildLowMessage(forecast: any, input: any) {
   const advice = DiabetesEngine.preventativeCarbAdvice(forecast.forecastGlucose, 120, forecast.factor, input.settings);
-  const carbsText = advice.gramsNeeded > 0 ? `~${advice.gramsNeeded}g fast carbs` : 'fast-acting carbs';
-  return {
-    title: '⬇️ Low predicted',
-    body: `Glucose heading toward ~${forecast.forecastGlucose.toFixed(1)} mmol/L in the next 2h — try ${carbsText} now.`,
-  };
+  return Briefings.glucoseAlert('low', { ...forecast, carbsGrams: advice.gramsNeeded });
 }
 function buildHighMessage(forecast: any) {
-  const doseText = forecast.suggestedUnits > 0 ? `~${forecast.suggestedUnits.toFixed(2)}u correction` : 'a correction';
-  return {
-    title: '⬆️ High predicted',
-    body: `Glucose heading toward ~${forecast.forecastGlucose.toFixed(1)} mmol/L in the next 2h — consider ${doseText} (check IOB first).`,
-  };
+  return Briefings.glucoseAlert('high', forecast);
 }
 
 // Decides whether this direction's current tier is worth a fresh push,
@@ -151,7 +148,9 @@ Deno.serve(async () => {
       }
       if (!decision.shouldNotify) continue;
 
-      const { title, body } = buildMessage(forecast);
+      const msg = buildMessage(forecast);
+      if (!msg) continue;
+      const { title, body } = msg;
       const payload = { title, body, url: '/', tag: `glucose-forecast-${direction}` };
       const pushed = await sendToSubscriptions(userSubs, payload);
       sent += pushed.sent; failed += pushed.failed;

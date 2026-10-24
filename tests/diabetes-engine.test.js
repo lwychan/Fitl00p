@@ -84,3 +84,14 @@ test('a recent dose still acting withholds a new correction (stacking)', () => {
   // A dose past the stacking window doesn't block it.
   assert.equal(suggest(ctx(), factor(2), [{ time: minsAgo(300), units: 4 }]).withheldReason, null);
 });
+
+test('forecast result says which factor it used, plus IOB and trend', () => {
+  const glucoseHistory = Array.from({ length: 12 }, (_, i) => ({ time: minsAgo(55 - i * 5), value: 12 + i * 0.1 }));
+  const r = E.hyperForecast2h({ glucoseHistory, boluses: [], corrections: [],
+    settings: { correctionFactor: 2.5, carbRatio: 10, targetHigh: 10, idealTarget: 6 } }, NOW);
+  assert.equal(r.withheldReason, null);
+  assert.equal(r.factorSource, 'pump-setting');
+  assert.equal(r.iob, 0);
+  assert.ok(r.trendPerMinute > 0);
+  assert.equal(r.ctx, undefined);
+});

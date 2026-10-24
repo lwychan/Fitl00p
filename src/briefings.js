@@ -215,6 +215,31 @@ function workoutLine(today, previous, history = []) {
   return line;
 }
 
+// ---- Glucose forecast alerts ------------------------------------------------
+
+const u1 = n => (Math.round(n * 10) / 10).toFixed(1);
+
+// Wording for the real-time forecast pushes. The high alert keeps a
+// correction SUGGESTION (owner's decision): "consider", always with insulin
+// on board, naming whether the factor was learned from past corrections or
+// is the configured one — and never while low or falling.
+function glucoseAlert(kind, f) {
+  if (!f || f.forecastGlucose == null) return null;
+  const iob = Number(f.iob) || 0;
+  if (kind === 'low') {
+    const carbs = f.carbsGrams > 0 ? `${Math.round(f.carbsGrams)}g fast carbs` : 'fast carbs';
+    const active = iob >= 0.05 ? `${u1(iob)}u still active, ` : '';
+    return { title: '⬇️ Low predicted', body: `Dropping to ~${u1(f.forecastGlucose)} in 2h — ${active}have ${carbs} ready.` };
+  }
+  if (f.currentGlucose != null && f.currentGlucose < 3.9) return null;
+  if (f.trendPerMinute != null && f.trendPerMinute < 0) return null;
+  const source = f.factorSource === 'observed'
+    ? `based on your last ${f.factorSampleSize} corrections` : 'using your set factor';
+  const dose = f.suggestedUnits > 0 ? `consider ~${Number(f.suggestedUnits).toFixed(2)}u correction (${source})`
+    : 'no correction needed yet with what\'s active';
+  return { title: '⬆️ High predicted', body: `Heading to ~${u1(f.forecastGlucose)} in 2h, ${u1(iob)}u active — ${dose}.` };
+}
+
 // ---- Reminder cadence -----------------------------------------------------
 
 const TIRZEPATIDE_NUDGE_MINUTES = [720, 900, 1020, 1140]; // 12:00, 15:00, 17:00, 19:00
@@ -270,7 +295,7 @@ function nightGlucoseSummary(readings, fromMs, toMs) {
   return { low: Math.round(Math.min(...v) * 10) / 10, mean: Math.round(mean * 10) / 10, cv: Math.round((sd / mean) * 100) };
 }
 
-const Briefings = { TIRZEPATIDE_NUDGE_MINUTES, PEPTIDE_NUDGE_MINUTE, nudgeDue, medsPushDue, wakeTime, bedtimeLine, sleepSynced, weighinDue, morningExtras, londonMidnightMs, nightGlucoseSummary, workoutLine, sameExercise, fitl00pSessionRow, DEFAULT_SCHEDULES, defaultSchedule, scheduleFor, isWeekend, morningTime, eveningTime, isDue,
+const Briefings = { glucoseAlert, TIRZEPATIDE_NUDGE_MINUTES, PEPTIDE_NUDGE_MINUTE, nudgeDue, medsPushDue, wakeTime, bedtimeLine, sleepSynced, weighinDue, morningExtras, londonMidnightMs, nightGlucoseSummary, workoutLine, sameExercise, fitl00pSessionRow, DEFAULT_SCHEDULES, defaultSchedule, scheduleFor, isWeekend, morningTime, eveningTime, isDue,
   composeBriefing, fallbackNightPhrase };
 
 if (typeof module !== 'undefined' && module.exports) {
