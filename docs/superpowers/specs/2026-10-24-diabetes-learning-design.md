@@ -41,7 +41,7 @@ All learning lives in `src/diabetes-engine.js` (pure UMD, ~176 KB, shared to the
    Each candidate is a *modifier* that is only switched on when the stored episodes show a real, consistent effect for Lewis. Otherwise it's ignored.
 7. **Correct the forecast with its own track record.** Apply the measured forecast bias, by time of day and capped, and keep grading it.
 8. **Say what it used.** Every suggestion names the learned values behind it and how much evidence they rest on, e.g. "sensitivity 2.6 at this time of day (from 18 corrections), +20% after this morning's run". This extends the existing "based on your last N corrections" alert wording.
-9. **Prove it works before it's used.** Run the new model side by side with the current one ("shadow"). Score both against what actually happened, and switch only when the new one is shown to be better (see Rollout).
+9. **Prove it works before it goes live, and keep a way back.** Owner's decision: the new engine *replaces* the original in the build (no live side-by-side run). The original is archived intact, out of the build, ready to restore in one step (see Rollout). Before the switch it must pass the simulated-patient tests *and* an offline replay against Lewis's own stored history (Claude's call, below).
 10. **Tested learning.** A simulated patient with known, hidden values (sensitivity by time of day, carb ratio, exercise effect, noise, Control-IQ-like basal changes) generates synthetic data. The learning must recover those values within tolerance. This is the core test suite, alongside regression tests of the safety rules.
 
 ## Non-goals
@@ -65,7 +65,7 @@ All learning lives in `src/diabetes-engine.js` (pure UMD, ~176 KB, shared to the
   Each is flagged and excluded, never averaged in.
 - Silent big jumps: a learned value moving a lot overnight without it being visible.
 - Hiding uncertainty: a confident-looking number from 2 episodes.
-- Breaking what works today: forecasts, alerts and charts must keep working throughout. The new model only replaces the old after the shadow period.
+- Breaking what works today: forecasts, alerts and charts must keep working throughout. The new engine goes live only after the offline replay, and the original can be restored in one step.
 - Any suggestion during a low or while falling (already enforced, must stay).
 
 ## Safety constraints (Claude's calls — owner to confirm)
@@ -90,7 +90,7 @@ All learning lives in `src/diabetes-engine.js` (pure UMD, ~176 KB, shared to the
 
 ### New pieces
 
-- **`src/diabetes-learning.js`** (new UMD module, shared to the server like the others, unit-tested). Keeping it out of the 176 KB engine is my call. Pure functions:
+- **In `src/diabetes-engine.js` itself (owner's decision: overwrite the existing module).** The new learning *replaces* the old learning code in place — `resolveCorrection`'s single-reading read, `personalCorrectionFactor`, the imitation-based ratio in `suggestMealDose`, and the display-only `sensitivityMap` — rather than living in a separate module. Pure functions:
   - `scoreCorrectionEpisode(...)`, `scoreMealEpisode(...)`, `scoreExerciseEpisode(...)`, `scoreNight(...)`: take a window of readings, doses, basal and activity, and return a scored episode. Each includes the context it happened in and its confounder flags.
   - `fitModel(episodes, pumpProfile, now)`: returns the learned model:
     - sensitivity and carb ratio per time block, each with an evidence count and confidence;
@@ -101,7 +101,6 @@ All learning lives in `src/diabetes-engine.js` (pure UMD, ~176 KB, shared to the
 - **Tables:**
   - `dx_episodes`: one row per user per episode, written once, with episode kind, start time, context and outcome.
   - `dx_model`: one row per user per fitted model version, keeping history so changes are visible and reversible.
-  - `dx_shadow`: paired old and new suggestions and forecasts, with the outcome filled in later.
   - RLS own-rows for the app to read; writes are service role only.
 - **`diabetes-learn` Edge Function**, scheduled nightly (e.g. 03:30 London):
   1. pulls Nightscout since the last run (the first run backfills as far as Nightscout and Apple Health go, ideally ~90 days);
@@ -115,12 +114,12 @@ All learning lives in `src/diabetes-engine.js` (pure UMD, ~176 KB, shared to the
 ### Existing pieces that change
 
 - `resolveCorrectionFactor` / `computeForecastCore` / `suggestCorrectionDose` / `suggestMealDose` / `preventativeCarbAdvice` / `projectedGlucoseCurve` read the learned model (via `applyModel`) when one is available and active. Otherwise they behave exactly as today.
-- `notify-glucose-forecast` loads the user's latest model and logs shadow pairs during the shadow period.
+- `notify-glucose-forecast` loads the user's latest model.
 - The Diabetes tab shows the learned curves:
   - sensitivity and carb ratio by time of day against the pump settings;
   - exercise effects;
   - forecast accuracy;
-  - the shadow scoreboard, plus a "what changed this week" list.
+  - live accuracy since the switch, plus a "what changed this week" list.
 
   Layout is left to the builder, following the existing Diabetes tab style.
 
@@ -146,16 +145,27 @@ Episodes with a large residual or too few readings are flagged as confounded and
 
 Time of day (London), weekday/weekend, IOB and COB at start, basal deviation during, starting glucose and trend, exercise in the previous 24h and 48h (type, minutes, TRIMP/strain), and infusion site age. From fitl00p's health data: last night's sleep, recovery and resting-HR z-score. Meal macros from fitl00p's food log when matched. Sensor age and gaps.
 
-## Rollout (Claude's calls)
+## Rollout (owner's decisions, with Claude's calls marked)
 
-1. **Backfill and score:** build the episode store and model and show them on the Diabetes tab as information only. Nothing changes dosing yet. Lewis can see "what the evidence says" next to his pump settings.
-2. **Shadow:**
-   - The forecast and suggestion paths compute both old and new values.
-   - Only the old ones are shown or pushed.
-   - Both are scored against reality: forecast error at 30/60/120 min, and for suggestions, how far the eventual glucose ended up from target.
-   - Minimum **14 days and 20 scored episodes**.
-3. **Switch** when the new model is at least as accurate overall *and* has fewer lows predicted late. The owner confirms the switch. After that, the alert and briefing wording names the learned values (goal 8).
-4. Old code paths stay as the fallback whenever the model is missing, stale (not refitted in 48h) or withheld.
+1. **Archive the original (owner).**
+   - Before anything changes, copy the current engine *and its tests* to `archive/diabetes-engine-v1/`: `diabetes-engine.js` and `diabetes-engine.test.js`.
+   - Also tag the commit `diabetes-engine-v1`.
+   - The archive is **not** in the build: not loaded by `index.html`, not in `sync-shared.mjs`, not run by `npm test`, not deployed.
+2. **Replace (owner).** The new learning is written into `src/diabetes-engine.js` in place of the old learning code. Everything that calls the engine keeps the same function names and result shapes, so the app, the forecast alerts, `diabetes-sync` and the briefings need no rework.
+3. **Prove offline before going live (Claude's call).**
+   - Replay a past period using only data available at each moment (stored episodes plus Nightscout history). Compare the new engine's forecasts against the archived original's:
+     - error at 30, 60 and 120 minutes;
+     - lows predicted late.
+   - The new engine must be at least as accurate overall and no worse on late lows.
+   - The comparison report is saved in the repo.
+   - This uses the archive as a test fixture only; it still never ships.
+4. **Go live.** Deploy, then push `main` with the owner's OK. Alert and briefing wording names the learned values (goal 8). The Diabetes tab tracks live accuracy from then on, using the existing `forecastAccuracy` grading.
+5. **Revert in one step (owner).**
+   - `scripts/revert-diabetes-engine.mjs` copies the archived engine back over `src/diabetes-engine.js`, runs `sync-shared` and the archived tests.
+   - Afterwards, redeploy the affected functions and rebuild.
+   - Learned tables (`dx_episodes`, `dx_model`) are left in place and simply unused by the original, so going forward again later loses nothing.
+   - The steps are written into CLAUDE.md.
+6. **Fallback inside the new engine:** whenever the model is missing, stale (not refitted in 48h) or withheld, use the pump settings, exactly as the original did with too little history.
 
 ## Constraints
 
@@ -174,15 +184,15 @@ Time of day (London), weekday/weekend, IOB and COB at start, basal deviation dur
 - Exact fitting method (least squares, Bayesian shrinkage, how many time blocks; 8 three-hour blocks to match `REGIMEN_TOD_BUCKETS` is a sensible start). Confidence measures, and residual thresholds for "confounded".
 - Table columns and indexes; how the model version history is pruned.
 - How the simulated patient is built (it should include noise, sensor lag, Control-IQ-like basal changes, and unlogged snacks so the confounder detection is tested).
-- Diabetes tab layout for the learned curves and the shadow scoreboard.
+- Diabetes tab layout for the learned curves and the live-accuracy view.
 - Whether each candidate modifier (site age, illness, sleep) clears its evidence bar. The test is a consistent effect across ≥10 episodes each way, with the effect larger than its uncertainty.
 
 ## Calls made in this design (for the owner to check)
 
-1. A separate `src/diabetes-learning.js` module rather than growing the 176 KB engine.
+1. **Owner:** overwrite the existing module (`src/diabetes-engine.js`); the old learning code is replaced in place, not kept in a separate file.
 2. Guard band of ±30% around pump settings for dosing use; outside that it's a review finding only.
 3. Asymmetric evidence thresholds: 5 episodes to suggest less insulin, 10 to suggest more. Learned values move at most 10% per day.
 4. Exercise effects can only reduce suggestions or forecast lower, never increase.
 5. Nightly learning at ~03:30 London; first run backfills ~90 days.
-6. Shadow period of at least 14 days and 20 scored episodes. The switch needs the owner's confirmation.
+6. **Owner:** no live side-by-side run. The original is archived out of the build and restorable in one step. **Claude's call:** an offline replay against Lewis's stored history must show the new engine forecasts at least as well (and no worse on late lows) before it goes live.
 7. Candidate modifiers (site age, illness or poor recovery, short sleep) only switch on when Lewis's own data shows a consistent effect.
