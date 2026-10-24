@@ -1,4 +1,4 @@
-// src/diabetes-engine.js, nightscout-adapter.js and readiness-model.js are the single source
+// src/diabetes-engine.js, nightscout-adapter.js, readiness-model.js and insights.js are the single source
 // of truth. The Edge Functions need ES modules, so this writes
 // supabase/functions/_shared/<name>.js from them: same code, with the
 // browser/CommonJS export swapped for `export default`.
@@ -11,6 +11,7 @@ const MODULES = [
   { name: 'diabetes-engine',    global: 'DiabetesEngine' },
   { name: 'nightscout-adapter', global: 'NightscoutAdapter' },
   { name: 'readiness-model',    global: 'ReadinessModel' },
+  { name: 'insights',           global: 'Insights' },
 ];
 const check = process.argv.includes('--check');
 let stale = false;
