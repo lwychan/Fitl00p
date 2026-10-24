@@ -3846,7 +3846,12 @@ async function loadBodyBattery(healthHistory) {
       const row = hist.find(h => h.log_date === day);
       s.hrvZ = row ? bbZScore(hist, 'hrv_ms', day, row.hrv_ms, true, 0.05) : null;
       s.rhrZ = row ? bbZScore(hist, 'resting_hr', day, row.resting_hr, false, 1) : null;
-      s.quality = bbSleepQuality(s.hrvZ, s.rhrZ);
+      const startD = new Date(s.start);
+      let bedHour = startD.getHours() + startD.getMinutes() / 60;
+      if (bedHour < 12) bedHour += 24; // after midnight
+      // A hard previous day recharges less — only known for last night.
+      const prevStrain = s.end > midnight.getTime() - 6 * 3600000 ? insightInputs?.strainYday ?? null : null;
+      s.quality = bbSleepQuality(s.hrvZ, s.rhrZ, { bedHour, prevStrain });
     }
 
     const today = hist.find(h => h.log_date === hkLocalDateStr(now)) || {};

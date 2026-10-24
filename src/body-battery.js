@@ -1,15 +1,20 @@
 'use strict';
 
-// Garmin-style Body Battery (5-100), simulated minute by minute from
-// Apple Watch data. Garmin/Firstbeat don't publish their formula; what they
-// do publish is the shape, which this follows:
-//   - sleep is the main charge, faster when the battery is low, better
-//     when overnight HRV is high / resting HR low vs your normal
-//     (a good night adds roughly 40-60; calibrated to Lewis's Garmin data);
-//   - exercise drains by intensity (here: Banister TRIMP from heart rate,
-//     ~25 for a hard hour);
-//   - awake time drains slowly, faster when heart rate is raised and HRV is
-//     low (stress/activity); calm rest recharges a little;
+// fitl00p's own Body Battery (5-100), simulated minute by minute from
+// Apple Watch data. Not a copy of Garmin's formula (unpublished) — the logic
+// follows what Lewis's own Garmin history (Feb-Dec 2025: 236 nights, 229
+// days, 82 workouts) shows actually drives the score:
+//   - overnight recharge is mostly about sleep QUALITY (Garmin's sleep
+//     stress ~ overnight HRV: r = -0.87), not length (r = 0.15). Charge is
+//     roughly steady per hour of sleep (~7-8%/h), scaled by quality, and
+//     reduced by a late bedtime (after midnight ~20% slower) and a hard
+//     previous day (r = -0.32);
+//   - awake drain is proportional to how full you are (r = 0.90: ~3.3%/h
+//     on days you wake above 60%, ~1.4%/h below 40%) — it slows as it
+//     empties; stress/steps add little (|r| <= 0.2), so raised heart rate
+//     only adds a modest extra; calm rest recharges a little;
+//   - workouts drain by effort (Banister TRIMP from heart rate; ~0.22 per
+//     TRIMP, which matched that history);
 //   - 5 is the floor, 100 the ceiling.
 // Pure functions — unit-tested in tests/body-battery.test.js.
 (function () {
@@ -19,17 +24,12 @@ const FLOOR = 5, CEIL = 100;
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 const K = {
-  // Calibrated 2026-10-24 against Lewis's Garmin export (236 nights, 229 days,
-  // 82 workouts, Feb-Dec 2025): median overnight rate 0.118 (calm nights
-  // 0.150, restless 0.081), awake drain 2.7%/h incl. workouts, workout
-  // drain 0.221 per TRIMP.
-  sleepPerHr: 0.118,      // fraction of the gap to 100 refilled per hour of sleep (q = 1): 6.5h from 5% -> ~56% (Garmin: 55%)
-  restPerMin: 0.0005,     // calm awake rest: fraction of the gap per minute (~1.5%/hr at 50)
+  sleepGainPerHr: 7.5,    // % per hour asleep on a normal-quality night (6.5h from 5% -> ~54%)
+  awakeDrainPerHr: 0.08,  // fraction of the CURRENT level lost per awake hour (at 60%: ~4.8/h, at 20%: ~1.6/h)
+  restPerMin: 0.0004,     // calm awake rest: fraction of the gap to 100 regained per minute (~1.5%/h at 60)
   restHrr: 0.08,          // below this heart-rate-reserve fraction, awake time counts as rest
-  awakeBase: 0.035,       // %/min drain for any awake minute above rest (~2.1%/hr; Garmin awake median 2.4%/h excl. workouts)
-  stressSlope: 0.5,       // extra drain per minute = stressSlope * (hrr - restHrr)^1.3
-  unknownPerMin: 0.04,    // awake with no recent heart-rate reading (~2.4%/hr)
-  exercisePerTrimp: 0.22, // workout drain per Banister TRIMP unit (Garmin: 0.221; 60 min at HRR 0.73 ~ 114 TRIMP ~ -25)
+  stressSlope: 0.25,      // modest extra %/min drain = stressSlope * (hrr - restHrr)^1.3 (stress mattered little)
+  exercisePerTrimp: 0.22, // workout drain per Banister TRIMP unit (60 min at HRR 0.73 ~ 114 TRIMP ~ -25)
   hrStaleMin: 20,         // a heart-rate sample stays "current" this long
 };
 
@@ -38,10 +38,16 @@ function trimpPerMinute(hrr, isFemale) {
   return isFemale ? hrr * 0.86 * Math.exp(1.67 * hrr) : hrr * 0.64 * Math.exp(1.92 * hrr);
 }
 
-// Overnight charge quality from last night's HRV / resting HR z-scores
-// (vs your own baseline; + = better HRV, + = higher RHR). 1 = a normal night.
-function sleepQuality(hrvZ, rhrZ) {
-  return clamp(1 + 0.15 * (hrvZ || 0) - 0.10 * (rhrZ || 0), 0.5, 1.3);
+// Overnight charge quality, 1 = a normal night. Overnight HRV vs your normal
+// is the main driver (calm nights recharged ~2x restless ones); resting HR
+// a little; a bedtime after midnight and a hard previous day (strain 0-21)
+// each take some off. bedHour: local clock hour sleep started (e.g. 23.5;
+// times after midnight as 24.5 etc).
+function sleepQuality(hrvZ, rhrZ, { bedHour = null, prevStrain = null } = {}) {
+  let q = 1 + 0.30 * (hrvZ || 0) - 0.10 * (rhrZ || 0);
+  if (bedHour != null && bedHour > 23.5) q *= 1 - 0.2 * Math.min(1, (bedHour - 23.5) / 1.5);
+  if (prevStrain != null && prevStrain > 10) q *= 1 - 0.15 * Math.min(1, (prevStrain - 10) / 8);
+  return clamp(q, 0.4, 1.6);
 }
 
 // Heart rate at time t from sorted samples [{ t, bpm }]: the latest sample
@@ -90,19 +96,19 @@ function simulate(opts) {
     if (sleep) {
       const spanHrs = Math.max(0.25, (sleep.end - sleep.start) / 3600000);
       const efficiency = clamp((sleep.asleepHrs ?? spanHrs) / spanHrs, 0.3, 1);
-      const perMin = 1 - Math.exp(-K.sleepPerHr * (sleep.quality ?? 1) * efficiency / 60);
-      d = (CEIL - L) * perMin; kind = 'sleep';
+      d = (K.sleepGainPerHr / 60) * (sleep.quality ?? 1) * efficiency; kind = 'sleep';
     } else if (wIdx >= 0) {
       const bpm = hrAt(t) ?? workouts[wIdx].avgHr;
-      d = bpm != null ? -K.exercisePerTrimp * trimpPerMinute(hrrOf(bpm), isFemale) : -K.unknownPerMin;
+      d = bpm != null ? -K.exercisePerTrimp * trimpPerMinute(hrrOf(bpm), isFemale) : -(K.awakeDrainPerHr / 60) * L * 2;
       kind = 'exercise';
     } else {
       const bpm = hrAt(t);
-      if (bpm == null) { d = -K.unknownPerMin; kind = 'awake'; }
+      const base = -(K.awakeDrainPerHr / 60) * L; // drain slows as the battery empties
+      if (bpm == null) { d = base; kind = 'awake'; }
       else {
         const hrr = hrrOf(bpm);
         if (hrr < K.restHrr) { d = (CEIL - L) * K.restPerMin; kind = 'rest'; }
-        else { d = -(K.awakeBase + K.stressSlope * Math.pow(hrr - K.restHrr, 1.3)) * stressFactor; kind = 'stress'; }
+        else { d = base - K.stressSlope * Math.pow(hrr - K.restHrr, 1.3) * stressFactor; kind = 'stress'; }
       }
     }
 
@@ -117,7 +123,7 @@ function simulate(opts) {
   }
   if (levelAtBreakdown == null) levelAtBreakdown = L;
   series.push({ t: now, level: L });
-  const ratePerHr = recent.length ? (recent.reduce((a, b) => a + b, 0) / recent.length) * 60 : -K.unknownPerMin * 60;
+  const ratePerHr = recent.length ? (recent.reduce((a, b) => a + b, 0) / recent.length) * 60 : -K.awakeDrainPerHr * L;
   return { level: L, levelAtBreakdown, series, parts, workouts: perWorkout.filter(w => w.delta !== 0), ratePerHr };
 }
 

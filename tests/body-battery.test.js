@@ -9,21 +9,29 @@ const hr = (from, to, bpm, everyMin = 5) =>
   Array.from({ length: Math.floor((to - from) / (everyMin * 60000)) }, (_, i) => ({ t: from + i * everyMin * 60000, bpm }));
 const base = { restingHr: 60, hrMax: 185, isFemale: false };
 
-test('nights match Garmin: 6.5h from 5% wakes ~55%, 7.5h from 25% ~70%, a short night much less', () => {
-  const night = h => B.simulate({ ...base, start: T0, now: T0 + h * H, startLevel: 25,
-    sleeps: [{ start: T0, end: T0 + h * H, asleepHrs: h, quality: 1 }] }).level;
-  const full = night(7.5);
-  assert.ok(full > 66 && full < 73, `full ${full}`);
-  const typical = B.simulate({ ...base, start: T0, now: T0 + 6.5 * H, startLevel: 5,
-    sleeps: [{ start: T0, end: T0 + 6.5 * H, asleepHrs: 6.5, quality: 1 }] }).level;
-  assert.ok(typical > 51 && typical < 60, `typical ${typical}`); // Garmin median: woke 55%
-  assert.ok(night(4) < full - 15);
+const night = (h, from, quality = 1) => B.simulate({ ...base, start: T0, now: T0 + h * H, startLevel: from,
+  sleeps: [{ start: T0, end: T0 + h * H, asleepHrs: h, quality }] }).level;
+
+test('a normal night gains steadily per hour (6.5h from 5% wakes mid-50s), a short night much less', () => {
+  const typical = night(6.5, 5);
+  assert.ok(typical > 50 && typical < 58, `typical ${typical}`); // Lewis's Garmin median: woke 55%
+  assert.ok(night(4, 5) < typical - 15);
+  assert.ok(Math.abs((night(6, 20) - 20) - (night(6, 50) - 50)) < 0.5); // steady, not faster when low
+  assert.equal(night(12, 60), 100);
 });
 
-test('sleep charges faster when the battery is low', () => {
-  const gain = from => B.simulate({ ...base, start: T0, now: T0 + 6 * H, startLevel: from,
-    sleeps: [{ start: T0, end: T0 + 6 * H, asleepHrs: 6, quality: 1 }] }).level - from;
-  assert.ok(gain(20) > gain(70));
+test('sleep quality drives recharge far more than length', () => {
+  assert.ok(night(6.5, 5, B.sleepQuality(1.5, 0)) - night(6.5, 5, B.sleepQuality(-1.5, 0)) > 25);
+  assert.ok(night(6.5, 5, B.sleepQuality(-1.5, 0)) < night(5, 5, B.sleepQuality(1.5, 0)));
+  assert.ok(B.sleepQuality(0, 0, { bedHour: 24.5 }) < B.sleepQuality(0, 0, { bedHour: 22.5 }));
+  assert.ok(B.sleepQuality(0, 0, { prevStrain: 17 }) < B.sleepQuality(0, 0, { prevStrain: 6 }));
+});
+
+test('awake drain slows as the battery empties', () => {
+  const lose = from => from - B.simulate({ ...base, start: T0, now: T0 + H, startLevel: from }).level;
+  assert.ok(lose(70) > 2 * lose(30));
+  const evening = B.simulate({ ...base, start: T0, now: T0 + 17.5 * H, startLevel: 55 }).level;
+  assert.ok(evening > 8 && evening < 20, `evening ${evening}`);
 });
 
 test('a hard hour of exercise drains roughly 25', () => {
@@ -58,7 +66,7 @@ test('contributions add up exactly to the change since bedtime, and it never lea
 test('sleepQuality and zones', () => {
   assert.equal(B.sleepQuality(0, 0), 1);
   assert.ok(B.sleepQuality(2, -1) > 1.2);
-  assert.equal(B.sleepQuality(-10, 10), 0.5);
+  assert.equal(B.sleepQuality(-10, 10), 0.4);
   assert.equal(B.zoneOf(80).key, 'high');
   assert.equal(B.zoneOf(51).key, 'medium');
   assert.equal(B.zoneOf(26).key, 'low');
