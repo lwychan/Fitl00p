@@ -162,13 +162,16 @@ async function encryptPayload(payloadBytes: Uint8Array<ArrayBuffer>, p256dhB64: 
 // NOT NULL, so they hold the placeholder 'apns'). sendWebPush() below
 // routes those rows here, so every notify-* caller works unchanged.
 //
-// Secrets: APNS_KEY_ID, APNS_TEAM_ID, APNS_P8 (full .p8 file contents,
-// PEM armour included), APNS_TOPIC (bundle id). TestFlight/App Store
-// builds are distribution-signed (aps-environment=production), so the
-// default host is production; APNS_HOST overrides for a dev build.
-const APNS_KEY_ID  = Deno.env.get('APNS_KEY_ID');
-const APNS_TEAM_ID = Deno.env.get('APNS_TEAM_ID');
-const APNS_P8      = Deno.env.get('APNS_P8');
+// Config: key ID + team ID aren't secret (defaults below: Apple key
+// "FitLoop APNs"); the .p8 private key (full file contents, PEM armour
+// included) comes from the APNS_P8 secret if set, else Vault 'apns_p8' via
+// the service-role-only RPC get_apns_p8() (see supabase/sql/apns_p8.sql —
+// Edge Function secrets were unavailable). APNS_TOPIC = bundle id.
+// TestFlight/App Store builds are distribution-signed
+// (aps-environment=production), so the default host is production;
+// APNS_HOST overrides for a dev build.
+const APNS_KEY_ID  = Deno.env.get('APNS_KEY_ID') || '562J9DG675';
+const APNS_TEAM_ID = Deno.env.get('APNS_TEAM_ID') || 'EH5PN32N9S';
 const APNS_TOPIC   = Deno.env.get('APNS_TOPIC') || 'com.lwychan.fitl00p';
 const APNS_HOST    = Deno.env.get('APNS_HOST') || 'https://api.push.apple.com';
 
@@ -176,11 +179,32 @@ const APNS_HOST    = Deno.env.get('APNS_HOST') || 'https://api.push.apple.com';
 // expires them after 60 — reuse one per isolate for 50 min.
 let apnsJwt: { token: string; issuedAt: number } | null = null;
 
+// Resolved once per isolate; null when neither source has it.
+let apnsP8: Promise<string | null> | null = null;
+function getApnsP8(): Promise<string | null> {
+  apnsP8 ??= (async () => {
+    const env = Deno.env.get('APNS_P8');
+    if (env) return env;
+    const url = Deno.env.get('SUPABASE_URL'), svc = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+    if (!url || !svc) return null;
+    try {
+      const res = await fetch(`${url}/rest/v1/rpc/get_apns_p8`, {
+        method: 'POST',
+        headers: { apikey: svc, Authorization: `Bearer ${svc}`, 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      const key = res.ok ? await res.json() : null;
+      return typeof key === 'string' && key.includes('PRIVATE KEY') ? key : null;
+    } catch { return null; }
+  })();
+  return apnsP8;
+}
+
 async function getApnsJwt(): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   if (apnsJwt && now - apnsJwt.issuedAt < 50 * 60) return apnsJwt.token;
 
-  const pem = APNS_P8!.replace(/-----[^-]+-----/g, '').replace(/\s+/g, '');
+  const pem = (await getApnsP8())!.replace(/-----[^-]+-----/g, '').replace(/\s+/g, '');
   const der = base64urlToBytes(pem); // accepts standard base64 too
   const key = await crypto.subtle.importKey(
     'pkcs8', der, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']
@@ -199,8 +223,9 @@ async function sendApns(
   deviceToken: string,
   payload: { title?: string; body?: string; url?: string; tag?: string }
 ): Promise<{ status: number; body: string }> {
-  if (!APNS_KEY_ID || !APNS_TEAM_ID || !APNS_P8) {
-    throw new Error('APNs keys not configured');
+  if (!(await getApnsP8())) {
+    apnsP8 = null; // look again next time — it may have been added since
+    throw new Error('APNs key not configured (APNS_P8 secret or Vault apns_p8)');
   }
   const res = await fetch(`${APNS_HOST}/3/device/${deviceToken}`, {
     method: 'POST',
