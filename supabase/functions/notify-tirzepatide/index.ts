@@ -1,24 +1,17 @@
-// Scheduled: cron fires hourly (covering both UTC equivalents of the
-// BST/GMT offset) across the 09:00-21:00 Europe/London window, every
-// day — but only actually sends once 7 days have passed since the last
-// logged dose (see isDue below), not on a fixed weekday. A dose taken
-// late one week (say, Saturday instead of Friday) correctly pushes the
-// following week's reminder to the next Saturday too, rather than
-// snapping back to "always Friday" regardless of when the last one
-// actually happened. Once due, keeps re-firing hourly — across multiple
-// days if it comes to that, not just the one "due" day — until a fresh
-// injection has been logged, then goes quiet until next due.
-//
-// Ported from src/netlify/functions/notify-tirzepatide.js — mechanical
-// translation to Deno.serve; logic unchanged.
+// Scheduled every 15 min, 11:00-19:59 London (cron notify-tirzepatide).
+// Once a week's passed since the last logged dose, the morning briefing says
+// "Tirzepatide due today"; this sends the separate nudges at 12:00, 15:00,
+// 17:00 and 19:00 (Briefings.TIRZEPATIDE_NUDGE_MINUTES) — only while today's
+// dose isn't logged, each at most once (briefing_log). Logging it stops them.
+// A dose taken late one week moves the next week's due day with it.
 
 import { sendToSubscriptions, sbFetch, londonNow, londonDateStrOf, GEMMA_USER_ID } from '../_shared/webpush.ts';
+import { claim, recordBody, sentKinds } from '../_shared/briefing-log.ts';
+import Briefings from '../_shared/briefings.js';
 
 const SB_URL     = Deno.env.get('SUPABASE_URL');
 const SB_SERVICE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 
-const WINDOW_START_HOUR = 9;
-const WINDOW_END_HOUR   = 21; // last hour this still fires on
 
 const TZ_SITE_LABELS: Record<string, string> = {
   left_thigh: 'left thigh', right_thigh: 'right thigh',
@@ -89,8 +82,8 @@ async function buildReminder(userId: string, todayDateStr: string) {
 
 Deno.serve(async () => {
   const now = londonNow();
-  const inWindow = now.hour >= WINDOW_START_HOUR && now.hour <= WINDOW_END_HOUR;
-  if (!inWindow) return new Response('outside 09:00-21:00 London — skipping');
+  const nowMin = now.hour * 60 + now.minute;
+  if (!Briefings.TIRZEPATIDE_NUDGE_MINUTES.some((m: number) => Briefings.isDue(m, nowMin))) return new Response('not a nudge time');
   if (!SB_URL || !SB_SERVICE) return new Response('Supabase env vars missing', { status: 500 });
 
   const { data: subs } = await sbFetch('/rest/v1/push_subscriptions?select=user_id,endpoint,p256dh,auth_key');
@@ -108,10 +101,14 @@ Deno.serve(async () => {
     if (userId === GEMMA_USER_ID) { skipped++; continue; } // doesn't use Tirzepatide
     if (prefsByUser[userId]?.enabled === false) { skipped++; continue; }
     const body = await buildReminder(userId, now.dateStr);
-    if (!body) { skipped++; continue; }
-    const payload = { title: '💉', body, url: '/', tag: 'tirzepatide-reminder' };
+    if (!body) { skipped++; continue; } // logged today, or not due yet
+    const kind = Briefings.nudgeDue({ nudgeMinutes: Briefings.TIRZEPATIDE_NUDGE_MINUTES, nowMin, loggedToday: false,
+      sentKinds: await sentKinds(sbFetch, userId, now.dateStr), kind: 'tirzepatide_nudge' });
+    if (!kind || !(await claim(userId, kind, now.dateStr))) { skipped++; continue; }
+    const payload = { title: '💉 Tirzepatide', body, url: '/', tag: 'tirzepatide-reminder' };
     const pushed = await sendToSubscriptions(userSubs, payload);
     sent += pushed.sent; failed += pushed.failed;
+    await recordBody(userId, kind, now.dateStr, body);
   }
   return new Response(JSON.stringify({ sent, failed, skipped }));
 });

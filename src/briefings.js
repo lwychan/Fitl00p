@@ -215,6 +215,28 @@ function workoutLine(today, previous, history = []) {
   return line;
 }
 
+// ---- Reminder cadence -----------------------------------------------------
+
+const TIRZEPATIDE_NUDGE_MINUTES = [720, 900, 1020, 1140]; // 12:00, 15:00, 17:00, 19:00
+const PEPTIDE_NUDGE_MINUTE = 930;                         // 15:30
+
+// The briefing_log kind to record and send now, or null: never once logged,
+// never twice. Several nudge times get their own kind (tirzepatide_nudge_720).
+function nudgeDue({ nudgeMinutes, nowMin, loggedToday, sentKinds = [], kind }) {
+  if (loggedToday) return null;
+  const at = nudgeMinutes.find(m => isDue(m, nowMin));
+  if (at == null) return null;
+  const k = nudgeMinutes.length > 1 ? `${kind}_${at}` : kind;
+  return sentKinds.includes(k) ? null : k;
+}
+
+// The 21:00 meds push only fires when the evening briefing already went out
+// earlier (it carried the meds line) and they're still not logged — or when
+// the evening briefing is switched off. A later briefing carries it instead.
+function medsPushDue({ nowMin, pending, eveningSent, eveningEnabled }) {
+  return pending > 0 && isDue(1260, nowMin) && (eveningSent || !eveningEnabled);
+}
+
 // ---- Morning reminders & helpers -------------------------------------------
 
 const WEEKDAY_NUM = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
@@ -248,7 +270,7 @@ function nightGlucoseSummary(readings, fromMs, toMs) {
   return { low: Math.round(Math.min(...v) * 10) / 10, mean: Math.round(mean * 10) / 10, cv: Math.round((sd / mean) * 100) };
 }
 
-const Briefings = { wakeTime, bedtimeLine, sleepSynced, weighinDue, morningExtras, londonMidnightMs, nightGlucoseSummary, workoutLine, sameExercise, fitl00pSessionRow, DEFAULT_SCHEDULES, defaultSchedule, scheduleFor, isWeekend, morningTime, eveningTime, isDue,
+const Briefings = { TIRZEPATIDE_NUDGE_MINUTES, PEPTIDE_NUDGE_MINUTE, nudgeDue, medsPushDue, wakeTime, bedtimeLine, sleepSynced, weighinDue, morningExtras, londonMidnightMs, nightGlucoseSummary, workoutLine, sameExercise, fitl00pSessionRow, DEFAULT_SCHEDULES, defaultSchedule, scheduleFor, isWeekend, morningTime, eveningTime, isDue,
   composeBriefing, fallbackNightPhrase };
 
 if (typeof module !== 'undefined' && module.exports) {

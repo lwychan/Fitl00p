@@ -12,6 +12,7 @@ import { fetchNightscoutInput } from '../_shared/nightscout-fetch.ts';
 import ReadinessModel from '../_shared/readiness-model.js';
 import Insights from '../_shared/insights.js';
 import Briefings from '../_shared/briefings.js';
+import { claim, recordBody } from '../_shared/briefing-log.ts';
 
 const SB_URL     = Deno.env.get('SUPABASE_URL');
 const SB_SERVICE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
@@ -20,27 +21,6 @@ function addDays(dateStr: string, n: number) {
   const d = new Date(dateStr + 'T12:00:00Z');
   d.setUTCDate(d.getUTCDate() + n);
   return d.toISOString().slice(0, 10);
-}
-
-async function sbWrite(path: string, method: string, body: unknown, prefer: string) {
-  const res = await fetch(`${SB_URL}${path}`, {
-    method,
-    headers: { apikey: SB_SERVICE!, Authorization: `Bearer ${SB_SERVICE}`, 'Content-Type': 'application/json', Prefer: prefer },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`${method} ${path.split('?')[0]} → ${res.status}: ${await res.text()}`);
-  return prefer.includes('return=representation') ? res.json() : null;
-}
-
-// Claim today's (user, kind) slot; true only for the run that inserted it.
-async function claim(userId: string, kind: string, dateStr: string) {
-  const rows = await sbWrite('/rest/v1/briefing_log?on_conflict=user_id,kind,sent_date', 'POST',
-    { user_id: userId, kind, sent_date: dateStr }, 'resolution=ignore-duplicates,return=representation');
-  return Array.isArray(rows) && rows.length > 0;
-}
-async function recordBody(userId: string, kind: string, dateStr: string, body: string) {
-  await sbWrite(`/rest/v1/briefing_log?user_id=eq.${userId}&kind=eq.${kind}&sent_date=eq.${dateStr}`, 'PATCH',
-    { body }, 'return=minimal').catch(() => {});
 }
 
 // Same SD-based z-score the app uses (bbZScore in app.js).

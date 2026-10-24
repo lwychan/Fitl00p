@@ -246,3 +246,28 @@ test('wake time for tomorrow: Lewis 05:30 weekdays, 07:30 weekends', () => {
   assert.equal(B.wakeTime(B.scheduleFor(LEWIS), 'Sun'), 450);
   assert.equal(B.wakeTime(B.scheduleFor(GEMMA), 'Mon'), 450);
 });
+
+test('Tirzepatide nudges 12:00/15:00/17:00/19:00 only until logged, each once', () => {
+  const base = { nudgeMinutes: B.TIRZEPATIDE_NUDGE_MINUTES, loggedToday: false, sentKinds: [], kind: 'tirzepatide_nudge' };
+  assert.deepEqual(B.TIRZEPATIDE_NUDGE_MINUTES, [720, 900, 1020, 1140]);
+  assert.equal(B.nudgeDue({ ...base, nowMin: 722 }), 'tirzepatide_nudge_720');
+  assert.equal(B.nudgeDue({ ...base, nowMin: 722, loggedToday: true }), null); // logged at 11:59
+  assert.equal(B.nudgeDue({ ...base, nowMin: 722, sentKinds: ['tirzepatide_nudge_720'] }), null);
+  assert.equal(B.nudgeDue({ ...base, nowMin: 800 }), null);
+  assert.equal(B.nudgeDue({ ...base, nowMin: 1140 }), 'tirzepatide_nudge_1140');
+});
+
+test('peptide: one 15:30 nudge unless logged', () => {
+  assert.equal(B.PEPTIDE_NUDGE_MINUTE, 930);
+  const p = { nudgeMinutes: [930], nowMin: 930, loggedToday: false, sentKinds: [], kind: 'peptide_nudge' };
+  assert.equal(B.nudgeDue(p), 'peptide_nudge');
+  assert.equal(B.nudgeDue({ ...p, loggedToday: true }), null);
+});
+
+test('21:00 meds push only when the evening briefing already went earlier (or is off)', () => {
+  assert.equal(B.medsPushDue({ nowMin: 1260, pending: 1, eveningSent: true, eveningEnabled: true }), true);
+  assert.equal(B.medsPushDue({ nowMin: 1260, pending: 1, eveningSent: false, eveningEnabled: true }), false); // briefing comes later and carries it
+  assert.equal(B.medsPushDue({ nowMin: 1260, pending: 1, eveningSent: false, eveningEnabled: false }), true);
+  assert.equal(B.medsPushDue({ nowMin: 1260, pending: 0, eveningSent: true, eveningEnabled: true }), false);
+  assert.equal(B.medsPushDue({ nowMin: 1200, pending: 1, eveningSent: true, eveningEnabled: true }), false);
+});
