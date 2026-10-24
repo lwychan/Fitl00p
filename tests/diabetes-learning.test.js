@@ -25,18 +25,31 @@ test('sim patient: 60 days of plausible data', () => {
 const H = 3600000;
 const sim60 = simulatePatient({ days: 60, seed: 1 });
 
-test('sim patient: clean corrections spread across all eight 3h London blocks', () => {
-  const p = sim60;
-  const confounds = [
+// Every unlogged disturbance the sim injects is in truth: snacks and compression lows (there are
+// no hidden drifts; highs come from logged, partly under-dosed meals - truth.underdosedMeals).
+function confoundTimes(p) {
+  return [
     ...p.boluses.filter(b => !b.auto && b.carbs > 0).map(b => b.time),
     ...p.truth.snacks.map(x => x.time), ...p.truth.compressionLows.map(x => x.time),
   ];
-  // clean = no meal / snack / compression low within 4h before or 2h after the correction
+}
+
+test('sim patient: clean corrections spread across all eight 3h London blocks', () => {
+  const p = sim60;
+  const confounds = confoundTimes(p);
+  assert.ok(p.truth.underdosedMeals.length > 20);
+  // clean = no meal / snack / compression low within 3h before (carbs absorbed) or 2h after the correction
   const clean = Array(8).fill(0);
   for (const c of p.corrections) {
-    if (!confounds.some(t => t > c.time - 4 * H && t < c.time + 2 * H)) clean[Math.floor(londonHour(c.time) / 3)]++;
+    if (!confounds.some(t => t > c.time - 3 * H && t < c.time + 2 * H)) clean[Math.floor(londonHour(c.time) / 3)]++;
   }
   for (let b = 0; b < 8; b++) assert.ok(clean[b] >= 8, `block ${b} has ${clean[b]} clean corrections (${clean})`);
+});
+
+test('sim patient: >= 20 corrections are followed by an unlogged snack within 3h', () => {
+  const p = sim60;
+  const n = p.corrections.filter(c => p.truth.snacks.some(x => x.time > c.time && x.time <= c.time + 3 * H)).length;
+  assert.ok(n >= 20, `only ${n} snack-overlapping corrections`);
 });
 
 test('sim patient: nights inside a post-exercise boost window, with insulin activity', () => {
