@@ -47,7 +47,9 @@ function summarise(w: any, userId: string) {
     for (const s of working) {
       if (s.weight_kg > 0 && s.reps > 0) volume += s.weight_kg * s.reps;
     }
-    return { title: ex.title, sets: working.length };
+    // Heaviest working set, for the evening briefing's "top set +2.5 kg".
+    const weights = working.map((s: any) => Number(s.weight_kg)).filter((n: number) => n > 0);
+    return { title: ex.title, sets: working.length, top_kg: weights.length ? Math.max(...weights) : null };
   });
   const start = new Date(w.start_time), end = w.end_time ? new Date(w.end_time) : null;
   return {

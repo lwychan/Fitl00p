@@ -132,7 +132,67 @@ function fallbackNightPhrase({ snapshot = null, nightGlucose = null } = {}) {
   return s;
 }
 
-const Briefings = { DEFAULT_SCHEDULES, defaultSchedule, scheduleFor, isWeekend, morningTime, eveningTime, isDue,
+// ---- Hevy workout line ----------------------------------------------------
+
+const kg = n => (Math.round(n * 10) / 10).toLocaleString('en-GB');
+const shortName = t => String(t || '').replace(/\s*\([^)]*\)\s*$/, '');
+
+// Hevy writes "Squat (Barbell)", fitl00p "Barbell Squat" or plain "Hip
+// Thrust": two names match when all their words match, or their names
+// without the bracketed equipment match.
+const words = s => String(s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').split(/\s+/).filter(Boolean);
+function sameExercise(a, b) {
+  const full = s => words(s).sort().join(' ');
+  const base = s => words(shortName(s)).join(' ');
+  return full(a) === full(b) || base(a) === base(b) || base(a) === full(b) || full(a) === base(b);
+}
+
+const LB = 0.45359237;
+// A fitl00p-logged session (workout_sessions + workout_exercises +
+// workout_sets) in the same shape as a hevy_workouts row, in kg.
+function fitl00pSessionRow(session, exercises) {
+  let volume = 0;
+  const ex = (exercises || []).map(e => {
+    const sets = e.sets || [];
+    const kgs = sets.map(s => (Number(s.weight) || 0) * (s.unit === 'lb' ? LB : 1));
+    sets.forEach((s, i) => { if (kgs[i] > 0 && s.reps > 0) volume += kgs[i] * s.reps; });
+    const top = Math.max(0, ...kgs);
+    return { title: e.name, sets: sets.length, top_kg: top > 0 ? Math.round(top * 10) / 10 : null };
+  });
+  return { id: session.id, title: session.split_type || 'Workout', routine_id: `fitl00p:${session.split_type || ''}`,
+    started_at: session.started_at, volume_kg: Math.round(volume), exercises: ex };
+}
+
+// today = this session; previous = the last session of the same routine (or
+// null); history = earlier sessions from Hevy and fitl00p, newest first, used
+// for top sets when the same routine hasn't been done before. Only gains are
+// mentioned — never "+0" or a drop.
+function workoutLine(today, previous, history = []) {
+  if (!today) return null;
+  let line = `🏋️ ${today.title || 'Workout'}: ${kg(Number(today.volume_kg) || 0)} kg`;
+  if (previous) {
+    const dVol = Math.round((Number(today.volume_kg) || 0) - (Number(previous.volume_kg) || 0));
+    if (dVol > 0) line += `, +${kg(dVol)} kg on last time`;
+  }
+  const lastTop = title => {
+    for (const row of [previous, ...(history || [])].filter(Boolean)) {
+      const hit = (row.exercises || []).find(e => sameExercise(e.title, title) && e.top_kg != null);
+      if (hit) return hit.top_kg;
+    }
+    return null;
+  };
+  let best = null;
+  for (const e of today.exercises || []) {
+    const before = lastTop(e.title);
+    if (e.top_kg == null || before == null) continue;
+    const gain = e.top_kg - before;
+    if (gain > 0 && (!best || gain > best.gain)) best = { name: shortName(e.title), gain };
+  }
+  if (best) line += `; ${best.name} top set +${kg(best.gain)} kg`;
+  return line;
+}
+
+const Briefings = { workoutLine, sameExercise, fitl00pSessionRow, DEFAULT_SCHEDULES, defaultSchedule, scheduleFor, isWeekend, morningTime, eveningTime, isDue,
   composeBriefing, fallbackNightPhrase };
 
 if (typeof module !== 'undefined' && module.exports) {
