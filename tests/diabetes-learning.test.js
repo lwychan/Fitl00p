@@ -420,39 +420,49 @@ test('meal fits never carry an implausible CR when clean (seeds 1-7 x 90 days)',
 
 /* ── Task 5: exercise episodes and nights ───────────────────────────── */
 const RUN = { dropPerMin: 0.045, sensitivityBoost: 1.2, hours: 24 };
-const simRun = simulatePatient({ days: 90, seed: 1, exercise: { Running: RUN, Weights: { dropPerMin: 0.015, sensitivityBoost: 1.15, hours: 16 } } });
-const simRunEnd = simRun.glucoseHistory[simRun.glucoseHistory.length - 1].time;
+const RUN_EXERCISE = { Running: RUN, Weights: { dropPerMin: 0.015, sensitivityBoost: 1.15, hours: 16 } };
 const runOpts = (p, nowMs) => ({ pumpProfile: p.pumpProfile, isfAt: ms => p.truth.isfByHour(londonHour(ms)), nowMs });
 const boostEnd = (p, w) => w.endTime + p.truth.exercise[w.workoutType].hours * H;
 
-let _ex = null;   // simRun workouts + nights scored lazily, once
-function exercise90() {
+// Seeds 1-7 x 90 days pooled (as the meal tests do): a single seed has only ~5-16 clean runs and
+// ~6-11 clean after-run nights, so its mean swings with which unlogged snacks happen to land
+// before a window. Scored lazily, once.
+let _ex = null;
+function exercisePooled() {
   if (!_ex) {
-    const p = simRun, P = E.prepareLearningInput(simInput(p));
-    const workouts = p.activities.workouts.map(w => ({ w, ep: E.scoreExerciseEpisode(P, w, runOpts(p, simRunEnd)) }));
-    const nights = [];
-    // one night per London date: 00:00 London of each sim day
-    for (let t = p.glucoseHistory[0].time; t < simRunEnd; t += 24 * H) {
-      const ep = E.scoreNight(P, t + 12 * H, runOpts(p, simRunEnd));
-      if (!ep) continue;
-      const nightEnd = ep.startMs + 6 * H;
-      const afterRun = p.activities.workouts.some(w => w.workoutType === 'Running' && w.endTime <= ep.startMs && boostEnd(p, w) >= nightEnd);
-      const without = !p.activities.workouts.some(w => w.startTime < nightEnd && (w.startTime > ep.startMs - 30 * H || boostEnd(p, w) > ep.startMs));
-      nights.push({ ep, afterRun, without });
+    const workouts = [], nights = [], perSeed = [];
+    for (const seed of [1, 2, 3, 4, 5, 6, 7]) {
+      const p = simulatePatient({ days: 90, seed, exercise: RUN_EXERCISE });
+      const P = E.prepareLearningInput(simInput(p));
+      const nowMs = p.glucoseHistory[p.glucoseHistory.length - 1].time;
+      const ws = p.activities.workouts.map(w => ({ seed, p, P, w, ep: E.scoreExerciseEpisode(P, w, runOpts(p, nowMs)) }));
+      const ns = [];
+      // one night per London date: 00:00 London of each sim day
+      for (let t = p.glucoseHistory[0].time; t < nowMs; t += 24 * H) {
+        const ep = E.scoreNight(P, t + 12 * H, runOpts(p, nowMs));
+        if (!ep) continue;
+        const nightEnd = ep.startMs + 6 * H;
+        const afterRun = p.activities.workouts.some(w => w.workoutType === 'Running' && w.endTime <= ep.startMs && boostEnd(p, w) >= nightEnd);
+        const without = !p.activities.workouts.some(w => w.startTime < nightEnd && (w.startTime > ep.startMs - 30 * H || boostEnd(p, w) > ep.startMs));
+        ns.push({ seed, ep, afterRun, without });
+      }
+      workouts.push(...ws); nights.push(...ns);
+      perSeed.push({ seed, p, P, nowMs });
     }
-    _ex = { P, workouts, nights };
+    _ex = { workouts, nights, perSeed };
   }
   return _ex;
 }
+const bySeed = (xs, f) => [1, 2, 3, 4, 5, 6, 7].map(seed => { const v = xs.filter(x => x.seed === seed).map(f); return v.length ? `${seed}:${meanOf(v).toFixed(3)}(n=${v.length})` : `${seed}:-`; }).join(' ');
 
 test('exercise episode: running drop recovered within 30% of truth', () => {
-  const { workouts } = exercise90();
+  const { workouts } = exercisePooled();
   const runs = workouts.filter(({ w }) => w.workoutType === 'Running');
   const clean = runs.filter(({ ep }) => ep && ep.confounded === null);
-  console.log(`runs ${runs.length}: clean ${clean.length}; confounded ${JSON.stringify(countBy(runs.filter(x => x.ep && x.ep.confounded)))}; dropPerMin ${clean.map(({ ep }) => ep.fit.dropPerMin.toFixed(3)).join(' ')}`);
-  assert.ok(clean.length >= 8, `only ${clean.length} clean runs`);
+  console.log(`runs ${runs.length}: clean ${clean.length}; confounded ${JSON.stringify(countBy(runs.filter(x => x.ep && x.ep.confounded)))}; per seed ${bySeed(clean, ({ ep }) => ep.fit.dropPerMin)}`);
+  assert.ok(clean.length >= 40, `only ${clean.length} clean runs`);
   const m = meanOf(clean.map(({ ep }) => ep.fit.dropPerMin));
-  console.log(`mean running dropPerMin ${m.toFixed(4)} vs truth ${RUN.dropPerMin}`);
+  console.log(`pooled mean running dropPerMin ${m.toFixed(4)} vs truth ${RUN.dropPerMin}`);
   assert.ok(Math.abs(m - RUN.dropPerMin) / RUN.dropPerMin <= 0.3, `mean dropPerMin ${m}`);
   for (const { w, ep } of clean) {
     assert.strictEqual(ep.kind, 'exercise');
@@ -467,15 +477,16 @@ test('exercise episode: running drop recovered within 30% of truth', () => {
 });
 
 test('night after a run is more insulin-sensitive than a night without exercise', () => {
-  const { nights } = exercise90();
+  const { nights } = exercisePooled();
   const clean = nights.filter(n => n.ep.confounded === null);
   const after = clean.filter(n => n.afterRun), without = clean.filter(n => n.without);
   const conf = {};
   for (const n of nights) if (n.ep.confounded) conf[n.ep.confounded] = (conf[n.ep.confounded] || 0) + 1;
   const mA = meanOf(after.map(n => n.ep.fit.isfRatio)), mW = meanOf(without.map(n => n.ep.fit.isfRatio));
   console.log(`nights ${nights.length}: clean ${clean.length}, confounded ${JSON.stringify(conf)}; after run n=${after.length} isfRatio ${mA.toFixed(3)}; without n=${without.length} isfRatio ${mW.toFixed(3)}; drift without ${meanOf(without.map(n => n.ep.fit.driftPerHr)).toFixed(3)}/h`);
-  assert.ok(after.length >= 8, `only ${after.length} clean nights after a run`);
-  assert.ok(without.length >= 8, `only ${without.length} clean nights without exercise`);
+  console.log(`  after per seed ${bySeed(after, n => n.ep.fit.isfRatio)}; without per seed ${bySeed(without, n => n.ep.fit.isfRatio)}`);
+  assert.ok(after.length >= 30, `only ${after.length} clean nights after a run`);
+  assert.ok(without.length >= 100, `only ${without.length} clean nights without exercise`);
   assert.ok(mA >= 1.08 && mA <= 1.35, `after-run isfRatio ${mA}`);
   assert.ok(mW >= 0.9 && mW <= 1.1, `no-exercise isfRatio ${mW}`);
   // a night whose logged insulin barely moves glucose can't determine a ratio
@@ -491,8 +502,9 @@ test('night after a run is more insulin-sensitive than a night without exercise'
 });
 
 test('exercise + night episodes: null until elapsed, missing profile, London 00-06 across DST', () => {
-  const { P, workouts } = exercise90();
-  const w = workouts.find(({ ep }) => ep && ep.confounded === null).w;
+  const { workouts, perSeed } = exercisePooled();
+  const { p: simRun, P, nowMs: simRunEnd } = perSeed[0];
+  const w = workouts.find(x => x.seed === 1 && x.ep && x.ep.confounded === null).w;
   const end = w.endTime + 60 * 60000;
   assert.strictEqual(E.scoreExerciseEpisode(P, w, runOpts(simRun, end - 60000)), null);
   assert.ok(E.scoreExerciseEpisode(P, w, runOpts(simRun, end)));
@@ -518,4 +530,18 @@ test('exercise + night episodes: null until elapsed, missing profile, London 00-
   const autumn = E.scoreNight({ glucoseHistory: [] }, Date.UTC(2026, 9, 25, 12), { nowMs: Date.UTC(2026, 11, 1) });
   assert.strictEqual(autumn.startMs, Date.UTC(2026, 9, 24, 23));
   assert.strictEqual(autumn.endMs - autumn.startMs, 7 * H);
+});
+
+test('night with complete CGM but no logged insulin -> weak-signal, not sensor-gap', () => {
+  const start = Date.UTC(2026, 1, 10, 0);   // 00:00 London (GMT)
+  const glucoseHistory = [];
+  for (let t = start - 3 * H; t <= start + 6 * H; t += 5 * 60000) glucoseHistory.push({ time: t, value: 6.5 + 0.2 * Math.sin(t / H) });
+  const profile = { default: [{ time: '00:00', correctionFactor: 3, carbRatio: 10, basalRate: 0.8 }] };
+  const ep = E.scoreNight({ glucoseHistory }, start, { pumpProfile: profile, nowMs: start + 7 * H });
+  assert.ok(ep.fit.n >= 72, `n ${ep.fit.n}`);
+  assert.strictEqual(ep.fit.insulinMmol, 0);
+  assert.strictEqual(ep.confounded, 'weak-signal');
+  // a real gap still wins
+  const gappy = { glucoseHistory: glucoseHistory.filter(r => r.time < start + 2 * H || r.time > start + 3 * H) };
+  assert.strictEqual(E.scoreNight(gappy, start, { pumpProfile: profile, nowMs: start + 7 * H }).confounded, 'sensor-gap');
 });

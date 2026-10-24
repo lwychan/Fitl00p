@@ -4016,8 +4016,10 @@ function scoreNight(input, nightStartMs, opts = {}) {
     for (const r of rows) r.y -= (driftPerHr ?? 0) * r.x2;   // rise checks see the drift-corrected curve
   }
 
-  const confounded = windowConfounder({ missingProfile, rows, after, startMs, endMs, g0, fitOk: isfRatio != null })
-    || (insulinMmol < NIGHT_MIN_INSULIN_MMOL ? 'weak-signal' : null)
+  // no fit because there was no insulin to fit is weak-signal, not a sensor problem
+  const weak = insulinMmol != null && insulinMmol < NIGHT_MIN_INSULIN_MMOL;
+  const confounded = windowConfounder({ missingProfile, rows, after, startMs, endMs, g0, fitOk: isfRatio != null || weak })
+    || (weak ? 'weak-signal' : null)
     || windowEventConfounder(rows, win, startMs,
       isfRatio >= NIGHT_ISF_RATIO_MIN && isfRatio <= NIGHT_ISF_RATIO_MAX && Number.isFinite(driftPerHr));
 
