@@ -237,6 +237,7 @@ const u1 = n => (Math.round(n * 10) / 10).toFixed(1);
 // correction SUGGESTION (owner's decision): "consider", always with insulin
 // on board, naming whether the factor was learned (and from how many corrections) or
 // is the configured one — and never while low or falling.
+const GLUCOSE_ALERT_MAX_CHARS = 180;
 function glucoseAlert(kind, f) {
   if (!f || f.forecastGlucose == null) return null;
   const iob = Number(f.iob) || 0;
@@ -248,17 +249,29 @@ function glucoseAlert(kind, f) {
   if (f.currentGlucose != null && f.currentGlucose < 3.9) return null;
   if (f.trendPerMinute != null && f.trendPerMinute < 0) return null;
   // 'learned' = the learned model's block for this time of day (factorSampleSize = its
-  // evidence count; factorBasis 'pooled' = from the all-day fit); 'observed' is the old
+  // evidence count; factorBasis 'pooled' = from the all-day fit); 'pump-adjusted' = the
+  // pump factor x today's adjustments (factorAdjustments names them); 'observed' is the old
   // engine's rolling average, kept as an alias with its old wording.
-  const source = f.factorSource === 'learned'
+  const adj = Array.isArray(f.factorAdjustments) ? f.factorAdjustments.filter(Boolean) : [];
+  const sourceText = adjustments => (f.factorSource === 'learned'
     ? (f.factorBasis === 'pooled'
       ? `based on ${f.factorSampleSize} corrections across the day`
       : `based on ${f.factorSampleSize} corrections at this time of day`)
     : f.factorSource === 'observed'
-      ? `based on your last ${f.factorSampleSize} corrections` : 'using your set factor';
-  const dose = f.suggestedUnits > 0 ? `consider ~${Number(f.suggestedUnits).toFixed(2)}u correction (${source})`
-    : 'no correction needed yet with what\'s active';
-  return { title: '⬆️ High predicted', body: `Heading to ~${u1(f.forecastGlucose)} in 2h, ${u1(iob)}u active — ${dose}.` };
+      ? `based on your last ${f.factorSampleSize} corrections`
+      : f.factorSource === 'pump-adjusted'
+        ? `using your set factor, adjusted for ${adjustments}`
+        : 'using your set factor');
+  const body = adjustments => {
+    const dose = f.suggestedUnits > 0 ? `consider ~${Number(f.suggestedUnits).toFixed(2)}u correction (${sourceText(adjustments)})`
+      : 'no correction needed yet with what\'s active';
+    return `Heading to ~${u1(f.forecastGlucose)} in 2h, ${u1(iob)}u active — ${dose}.`;
+  };
+  // Keep the push within GLUCOSE_ALERT_MAX_CHARS: all adjustments, else the first, else "today".
+  let text = body(adj.length ? adj.join(' and ') : 'today');
+  if (text.length > GLUCOSE_ALERT_MAX_CHARS && adj.length > 1) text = body(`${adj[0]} and more`);
+  if (text.length > GLUCOSE_ALERT_MAX_CHARS) text = body('today');
+  return { title: '⬆️ High predicted', body: text };
 }
 
 // ---- Reminder cadence -----------------------------------------------------

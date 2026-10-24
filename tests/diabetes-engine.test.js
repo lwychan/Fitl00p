@@ -173,15 +173,26 @@ test('exercise only lowers doses', () => {
   close(zero.multiplier, 1);
 });
 
-test('forecast bias applied and capped', () => {
-  const input = bias => ({ glucoseHistory: flat(8), boluses: [], corrections: [], settings: SETTINGS,
+// R6: the bias only ever LOWERS the forecast (a forecast that has run high).
+test('forecast bias applied (lowering only) and capped', () => {
+  const input = (bias, g = 8) => ({ glucoseHistory: flat(g), boluses: [], corrections: [], settings: SETTINGS,
     model: mkModel({ forecastBias: [{ label: '12:00–15:00', from: 12, to: 15, bias, n: 30 }] }) });
   const a = E.hypoForecast2h(input(0), NOW);       // 12:00Z = 13:00 London
-  const b = E.hypoForecast2h(input(-2.5), NOW);
-  close(b.forecastGlucose - a.forecastGlucose, 1.0);
+  const b = E.hypoForecast2h(input(2.5), NOW);
+  close(b.forecastGlucose - a.forecastGlucose, -1.0);   // capped
   const c = E.hypoForecast2h(input(0.4), NOW);
   close(c.forecastGlucose - a.forecastGlucose, -0.4);
-  assert.ok(b.reasons.some(s => /forecast/.test(s)), b.reasons.join(' | '));
+  assert.ok(b.reasons.some(s => /forecast lowered/.test(s)), b.reasons.join(' | '));
+  // a forecast that has run low is never lifted (that would hide lows)
+  close(E.hypoForecast2h(input(-2.5), NOW).forecastGlucose, a.forecastGlucose);
+  // ...nor raised on the high side (that would mean more insulin)
+  const hiBase = E.hyperForecast2h(input(0, 14), NOW);
+  const hiLow = E.hyperForecast2h(input(-2.5, 14), NOW);
+  close(hiLow.forecastGlucose, hiBase.forecastGlucose);
+  assert.equal(hiLow.suggestedUnits, hiBase.suggestedUnits);
+  const hiHigh = E.hyperForecast2h(input(2.5, 14), NOW);
+  close(hiHigh.forecastGlucose - hiBase.forecastGlucose, -1.0);
+  assert.ok(hiHigh.suggestedUnits < hiBase.suggestedUnits);
 });
 
 test('in-progress workout of a learned type lowers the forecast by its learned drop rate', () => {
@@ -270,8 +281,107 @@ test('forecast bias needs n >= 10', () => {
   const input = (bias, n) => ({ glucoseHistory: flat(8), boluses: [], corrections: [], settings: SETTINGS,
     model: mkModel({ forecastBias: [{ label: '12:00–15:00', from: 12, to: 15, bias, n }] }) });
   const a = E.hypoForecast2h(input(0, 30), NOW);
-  close(E.hypoForecast2h(input(-2.5, 9), NOW).forecastGlucose, a.forecastGlucose);
-  close(E.hypoForecast2h(input(-2.5, 10), NOW).forecastGlucose - a.forecastGlucose, 1.0);
+  close(E.hypoForecast2h(input(2.5, 9), NOW).forecastGlucose, a.forecastGlucose);
+  close(E.hypoForecast2h(input(2.5, 10), NOW).forecastGlucose - a.forecastGlucose, -1.0);
+});
+
+// ── Review fix round 1 ──
+const pumpParam = (v = 2.5) => param(v, v, 0, { source: 'pump' });
+const adjModel = () => mkModel({
+  isf: { 12: pumpParam(2.5) }, cr: { 12: pumpParam(10) },
+  modifiers: { siteAge: { active: true, effect: 0.5, n: 12 }, illness: { active: true, effect: 0.6, n: 11 } },
+});
+const adjInput = (over = {}) => ({ glucoseHistory: flat(7), boluses: [], corrections: [], settings: SETTINGS,
+  model: adjModel(), modelContext: { siteAgeHours: 60, rhrZ: 2 }, ...over });
+
+test('unlearned block + active modifiers is labelled pump-adjusted on both paths, sample size 0', () => {
+  const f = E.resolveCorrectionFactor([], SETTINGS, E.modelOpts(adjInput(), NOW));
+  close(f.factor, 1.75);                        // 2.5 x 0.3, held at the 0.7 band edge
+  assert.equal(f.source, 'pump-adjusted');
+  assert.equal(f.sampleSize, 0);
+  assert.deepEqual(f.adjustments, ['a 60h-old site', 'a raised resting heart rate']);
+  assert.ok(f.reasons.includes('sensitivity 2.5 from your pump setting, adjusted for a 60h-old site and a raised resting heart rate'), f.reasons.join(' | '));
+  const m = E.suggestMealDose(adjInput(), 60, NOW);
+  assert.equal(m.source, 'pump-adjusted');
+  assert.equal(m.sampleSize, 0);
+  close(m.suggestedUnits, E.roundDose(60 / 7));   // 60 / (10 x 0.7 band edge)
+  assert.ok(m.reasons.some(r => r.startsWith('carb ratio 10.0 from your pump setting, adjusted for')), m.reasons.join(' | '));
+  // a pump block with nothing applied stays plain pump on both paths
+  const plain = adjInput({ modelContext: {} });
+  assert.equal(E.resolveCorrectionFactor([], SETTINGS, E.modelOpts(plain, NOW)).source, 'pump-setting');
+  assert.equal(E.suggestMealDose(plain, 60, NOW).source, 'manual-carb-ratio');
+  assert.equal(E.suggestMealDose(plain, 60, NOW).sampleSize, 0);
+  // the high forecast carries the label and the adjustments for the alert
+  const hi = E.hyperForecast2h(adjInput({ glucoseHistory: flat(14) }), NOW);
+  assert.equal(hi.factorSource, 'pump-adjusted');
+  assert.equal(hi.factorSampleSize, 0);
+  assert.deepEqual(hi.factorAdjustments, ['a 60h-old site', 'a raised resting heart rate']);
+  // the correction suggestion's COB part isn't called personalised
+  const s = E.suggestCorrectionDose({ stale: false, effectiveGlucose: 12, iob: 0, cob: 20, settings: SETTINGS },
+    f, [], [], NOW, null, adjInput());
+  assert.equal(s.cobPersonalized, false);
+});
+
+test('a malformed model never throws and falls back to the pump settings', () => {
+  const junk = [
+    { version: 2, fittedAt: NOW, blocks: {}, forecastBias: {}, exercise: [], modifiers: 'x', meals: null },
+    { version: 2, fittedAt: NOW, blocks: [null, 3, 'a'], forecastBias: {}, exercise: [], modifiers: 'x', meals: null },
+    'nope', 42, [],
+  ];
+  const run = { workoutType: 'Run', startTime: minsAgo(30), endTime: new Date(NOW + 30 * 60000).toISOString() };
+  for (const model of junk) {
+    const input = { glucoseHistory: flat(14), boluses: [], corrections: [], settings: SETTINGS, activities: { workouts: [run] }, model };
+    const hypo = E.hypoForecast2h(input, NOW);
+    assert.equal(hypo.factorSource, 'pump-setting');
+    assert.ok(E.hyperForecast2h(input, NOW).tier);
+    assert.ok(E.projectedGlucoseCurve(input, NOW).length > 0);
+    assert.equal(E.resolveCorrectionFactor([], SETTINGS, E.modelOpts(input, NOW)).source, 'pump-setting');
+    assert.equal(E.suggestMealDose(input, 60, NOW).source, 'manual-carb-ratio');
+    assert.deepEqual(E.splitDoseGuide(30, 10, SETTINGS, { model, nowMs: NOW }).reasons, []);
+    assert.ok(E.suggestMacroMealDose(input, { carbs: 60, fat: 30 }, NOW).suggestedUnits != null);
+    assert.ok(Array.isArray(E.sensitivityMap(input, NOW)));
+    assert.equal(E.applyModel(model, NOW), null);
+  }
+  // valid blocks with junk elsewhere: the blocks are still used, the junk ignored
+  const half = { ...mkModel({ isf: { 12: param(3, 2.5) } }), forecastBias: {}, exercise: [], modifiers: 'x', meals: null };
+  const input = { glucoseHistory: flat(14), boluses: [], corrections: [], settings: SETTINGS, activities: { workouts: [run] }, model: half };
+  close(E.hypoForecast2h(input, NOW).factor, 3);
+  assert.deepEqual(E.splitDoseGuide(30, 10, SETTINGS, { model: half, nowMs: NOW }).reasons, []);
+  assert.equal(E.sensitivityMap(input, NOW).length, 8);
+  // the learner treats a malformed previous model as none
+  const profile = { default: [{ time: '00:00', correctionFactor: 2.5, carbRatio: 10 }] };
+  assert.equal(E.fitModel([], profile, { nowMs: NOW, prevModel: { fittedAt: NOW - 86400000, blocks: {} } }).blocks.length, 8);
+});
+
+test('meal doses are capped at MAX_SUGGESTED_UNITS on every path', () => {
+  const base = { glucoseHistory: flat(6), boluses: [], corrections: [], settings: SETTINGS };
+  for (const input of [{ ...base, model: mkModel() }, base]) {
+    const m = E.suggestMealDose(input, 150, NOW);
+    assert.equal(m.suggestedUnits, E.MAX_SUGGESTED_UNITS);
+    assert.equal(m.cappedAt10, true);
+    const mm = E.suggestMacroMealDose(input, { carbs: 150, fat: 40, protein: 30 }, NOW);
+    assert.equal(mm.suggestedUnits, E.MAX_SUGGESTED_UNITS);
+    assert.equal(mm.cappedAt10, true);
+    assert.ok(mm.upfrontUnits + mm.delayedUnits <= E.MAX_SUGGESTED_UNITS + 1e-9);
+  }
+  assert.equal(E.suggestMealDose({ ...base, model: mkModel() }, 60, NOW).cappedAt10, false);
+});
+
+test('a future-dated model is not fresh, except in the accuracy replay', () => {
+  close(E.applyModel(mkModel({ fittedAt: NOW + 30 * 60000 }), NOW).isf, 2.5);
+  assert.equal(E.applyModel(mkModel({ fittedAt: NOW + 2 * 3600000 }), NOW), null);
+  assert.equal(E.resolveCorrectionFactor([], SETTINGS, { model: mkModel({ fittedAt: NOW + 2 * 3600000 }), atMs: NOW }).source, 'pump-setting');
+  assert.ok(E.applyModel(mkModel(), NOW - 24 * 3600000, { allowFutureFit: true }));
+  assert.equal(E.applyModel(mkModel(), NOW - 24 * 3600000), null);
+  assert.equal(E.modelOpts({ modelReplay: true }, NOW).allowFutureFit, true);
+  assert.equal(E.modelOpts({}, NOW).allowFutureFit, false);
+  // the replay really uses today's model: a different learned ISF changes the per-block errors
+  const glucoseHistory = Array.from({ length: 3 * 288 }, (_, i) => ({ time: new Date(NOW - i * 300000).toISOString(), value: 7 }));
+  const boluses = Array.from({ length: 12 }, (_, i) => ({ time: new Date(NOW - (i * 6 + 1) * 3600000).toISOString(), units: 1 }));
+  const input = { glucoseHistory, boluses, corrections: [], settings: SETTINGS };
+  const withModel = E.forecastAccuracyByBlock({ ...input, model: mkModel({ isf: Object.fromEntries(BLOCKS.map(([f]) => [f, param(3.25, 2.5)])) }) }, NOW);
+  const without = E.forecastAccuracyByBlock(input, NOW);
+  assert.ok(withModel.some((r, i) => r.n && Math.abs(r.bias - without[i].bias) > 1e-6));
 });
 
 test('chart curve 2h point equals the alert forecast (with and without a live learned workout)', () => {

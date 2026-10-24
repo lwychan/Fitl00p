@@ -9602,7 +9602,7 @@ async function renderDiabetesTab(data) {
   renderDxForecast(forecast, settings);
 
   const resolved = DiabetesEngine.resolveCorrections(data.corrections, data.glucoseHistory, carbBoluses, now);
-  const factor = DiabetesEngine.resolveCorrectionFactor(resolved, settings, { model: input.model, atMs: now, workouts: input.activities?.workouts || [] });
+  const factor = DiabetesEngine.resolveCorrectionFactor(resolved, settings, DiabetesEngine.modelOpts(input, now));
   const retrospective = await engineAsync('retrospectiveCorrection', input, now);
   const suggestion = DiabetesEngine.suggestCorrectionDose(ctx, factor, carbBoluses, data.corrections, now, retrospective.discrepancy, input);
   renderDxCorrection(suggestion);
@@ -10001,7 +10001,7 @@ function renderDxCorrection(s) {
   el.dxCorrectionBody.innerHTML = `
     <div class="dx-suggestion">
       <span class="dx-suggestion__val">${fmtDose(s.suggestedUnits)}u</span>
-      <span class="dx-suggestion__meta">factor ${fmt1(s.factor)} mmol/L/u, ${s.factorSource === 'learned' ? `learned from ${s.factorSampleSize} corrections` : 'from your pump setting'}</span>
+      <span class="dx-suggestion__meta">factor ${fmt1(s.factor)} mmol/L/u, ${s.factorSource === 'learned' ? `learned from ${s.factorSampleSize} corrections` : s.factorSource === 'pump-adjusted' ? 'from your pump setting, adjusted for today' : 'from your pump setting'}</span>
     </div>
     ${s.cappedAt10 ? '<p class="dx-note">Capped at 10u — the raw math suggested more.</p>' : ''}
     ${dxRetrospectiveNote(s.retrospectiveEffect)}
@@ -10058,7 +10058,7 @@ async function refreshDxLive() {
     renderDxInsulinGaps(insulinGaps);
 
     const resolved = DiabetesEngine.resolveCorrections(data.corrections, data.glucoseHistory, carbBoluses, now);
-    const factor = DiabetesEngine.resolveCorrectionFactor(resolved, settings, { model: input.model, atMs: now, workouts: input.activities?.workouts || [] });
+    const factor = DiabetesEngine.resolveCorrectionFactor(resolved, settings, DiabetesEngine.modelOpts(input, now));
     const retrospective = await engineAsync('retrospectiveCorrection', input, now);
     const suggestion = DiabetesEngine.suggestCorrectionDose(ctx, factor, carbBoluses, data.corrections, now, retrospective.discrepancy, input);
     renderDxCorrection(suggestion);
@@ -10347,7 +10347,7 @@ $('btnDxMealDose')?.addEventListener('click', async () => {
     const breakdownParts = [];
     if (carbs > 0) breakdownParts.push(`${fmtDose(r.carbUnits)}u for carbs`);
     if (r.correctionAvailable && Math.abs(r.correctionUnits) >= 0.005) {
-      breakdownParts.push(`${fmtSigned(r.correctionUnits, 2)}u correction (factor ${fmt1(r.factor)}, ${r.factorSource === 'pump-setting' ? 'from pump settings' : `learned from ${r.factorSampleSize} corrections`})`);
+      breakdownParts.push(`${fmtSigned(r.correctionUnits, 2)}u correction (factor ${fmt1(r.factor)}, ${r.factorSource === 'learned' ? `learned from ${r.factorSampleSize} corrections` : r.factorSource === 'pump-adjusted' ? 'from pump settings, adjusted for today' : 'from pump settings'})`);
     }
     if (r.iob >= 0.005) breakdownParts.push(`−${fmtDose(r.iob)}u active IOB`);
 

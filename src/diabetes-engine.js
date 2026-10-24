@@ -498,10 +498,9 @@ function resolveCorrectionFactor(resolvedCorrections, settings, opts = {}) {
   const inBounds = f => Number.isFinite(f) && f >= MIN_RELIABLE_FACTOR && f <= MAX_RELIABLE_FACTOR;
   const applied = model ? applyModel(model, atMs, opts) : null;
   if (applied && inBounds(applied.isf)) {
-    const learned = applied.isfSource === 'learned' || applied.isfSource === 'pooled';
     return {
-      factor: applied.isf, source: learned ? 'learned' : 'pump-setting', basis: applied.isfSource,
-      sampleSize: applied.sampleSize, multiplier: applied.multiplier,
+      factor: applied.isf, source: doseSource(applied.isfSource), basis: applied.isfSource,
+      sampleSize: applied.sampleSize, multiplier: applied.multiplier, adjustments: applied.adjustments,
       rateLimited: applied.rateLimited, outsideBand: applied.outsideBand, reasons: applied.isfReasons,
     };
   }
@@ -1613,6 +1612,7 @@ function computeForecastCore(input, now = Date.now()) {
     // the learned model's block, factorSampleSize = its evidence count;
     // 'pump-setting' = the configured one), insulin on board, and the trend.
     factorSource: factorResult.source, factorBasis: factorResult.basis ?? null,
+    factorAdjustments: factorResult.adjustments || [],
     iob: ctx.iob, trendPerMinute: ctx.trendPerMinute,
     currentGlucose: ctx.currentGlucose,
     reasons,
@@ -2357,13 +2357,15 @@ function suggestMealDose(input, newCarbs, now = Date.now()) {
   const o = modelOpts(input, now);
   const applied = o.model ? applyModel(o.model, now, o) : null;
   if (applied && applied.carbRatio > 0) {
-    const learned = applied.crSource === 'learned' || applied.crSource === 'pooled' || applied.multiplier !== 1;
+    const src = doseSource(applied.crSource);
+    const raw = Math.max(0, newCarbs / applied.carbRatio);
     return {
-      source: learned ? 'learned' : 'manual-carb-ratio',
-      suggestedUnits: Math.max(0, roundDose(newCarbs / applied.carbRatio)),
+      source: src === 'pump-setting' ? 'manual-carb-ratio' : src,
+      suggestedUnits: roundDose(Math.min(MAX_SUGGESTED_UNITS, raw)),
+      cappedAt10: raw > MAX_SUGGESTED_UNITS,
       carbRatio: applied.carbRatio,
       sampleSize: applied.crSampleSize,
-      multiplier: applied.multiplier,
+      multiplier: applied.multiplier, adjustments: applied.adjustments,
       fromModel: true,
       reasons: applied.crReasons,
       withheldReason: null,
@@ -2376,7 +2378,8 @@ function fallbackMealDose(newCarbs, settings, reason) {
   if (!carbRatio) return { source: 'none', suggestedUnits: null, withheldReason: 'missing-carb-ratio', reasons: ['no carb ratio set'] };
   return {
     source: 'manual-carb-ratio',
-    suggestedUnits: roundDose(newCarbs / carbRatio),
+    suggestedUnits: roundDose(Math.min(MAX_SUGGESTED_UNITS, Math.max(0, newCarbs / carbRatio))),
+    cappedAt10: newCarbs / carbRatio > MAX_SUGGESTED_UNITS,
     withheldReason: reason,
     reasons: [`carb ratio ${fmt1(carbRatio)} from your pump setting`],
   };
@@ -2410,8 +2413,8 @@ function splitDoseGuide(fatGrams, proteinGrams, settings, opts = {}) {
   const curve = insulinCurveOpts(settings);
   const fastActing = curve.peak <= 60; // Fiasp/Lyumjev-class peak vs Novorapid-class
   const { model = null, nowMs = Date.now() } = opts || {};
-  const late = modelFresh(model, nowMs) ? model.meals?.delayedRiseHighFat : null;
-  const learnedLateRise = !!late && isNum(late.rate) && late.rate >= MODEL_LATE_RISE_RATE && (late.n || 0) >= MODEL_LATE_RISE_MIN_N;
+  const late = modelFresh(model, nowMs) ? asModel(model).meals.delayedRiseHighFat : null;
+  const learnedLateRise = isObj(late) && isNum(late.rate) && late.rate >= MODEL_LATE_RISE_RATE && (late.n || 0) >= MODEL_LATE_RISE_MIN_N;
   const reasons = learnedLateRise && fat >= SPLIT_DOSE_FAT_LOW_G
     ? [`your high-fat meals usually rise after 2½h (${late.n} meals)`] : [];
   const learned = { learnedLateRise: reasons.length > 0, reasons };
@@ -2566,6 +2569,8 @@ function suggestMacroMealDose(input, meal, now = Date.now()) {
   total = Math.max(0, total);
 
   if (guide.highProteinFlag) total *= (1 + SPLIT_DOSE_PROTEIN_BUMP_PCT);
+  const cappedAt10 = total > MAX_SUGGESTED_UNITS;
+  total = Math.min(MAX_SUGGESTED_UNITS, total);
 
   const upfrontUnits = roundDose(total * guide.upfrontPct);
   const delayedUnits = guide.tier === 'single' ? 0 : Math.max(0, roundDose(total - upfrontUnits));
@@ -2573,6 +2578,7 @@ function suggestMacroMealDose(input, meal, now = Date.now()) {
 
   return {
     suggestedUnits: roundDose(total),
+    cappedAt10,
     carbUnits: Math.round(carbUnits * 100) / 100,
     correctionUnits: Math.round(correctionUnits * 100) / 100,
     correctionAvailable,
@@ -2697,16 +2703,20 @@ const REGIMEN_TOD_BUCKETS = [
 // With a learned model on the input: the model's 3h blocks (what doses
 // actually use) instead of the old averaged display cells.
 function sensitivityMap(input, now = Date.now()) {
-  const { glucoseHistory = [], boluses = [], corrections = [], activities = {}, model = null } = input || {};
+  const { glucoseHistory = [], boluses = [], corrections = [], activities = {} } = input || {};
   const nowMs = toMs(now);
-  if (model && Array.isArray(model.blocks)) {
-    return model.blocks.map(b => ({
-      timeOfDay: b.label,
-      isf: b.isf?.value ?? null, carbRatio: b.carbRatio?.value ?? null,
-      pumpIsf: b.isf?.pump ?? null, pumpCr: b.carbRatio?.pump ?? null,
-      n: b.isf?.n ?? 0, source: b.isf?.source ?? null,
-      outsideBand: !!(b.isf?.outsideBand || b.carbRatio?.outsideBand),
-    }));
+  const model = asModel(input?.model);
+  if (model) {
+    return model.blocks.map(b => {
+      const isf = isObj(b.isf) ? b.isf : {}, cr = isObj(b.carbRatio) ? b.carbRatio : {};
+      return {
+        timeOfDay: b.label,
+        isf: isf.value ?? null, carbRatio: cr.value ?? null,
+        pumpIsf: isf.pump ?? null, pumpCr: cr.pump ?? null,
+        n: isf.n ?? 0, source: isf.source ?? null,
+        outsideBand: !!(isf.outsideBand || cr.outsideBand),
+      };
+    });
   }
   // Same MIN/MAX_RELIABLE_FACTOR plausibility bounds personalCorrectionFactor
   // and analyzePatterns' cleanInWindow use (see personalCorrectionFactor's
@@ -3285,8 +3295,10 @@ function forecastAccuracy(input, now = Date.now()) {
 // learner to store as model.forecastBias. Replayed WITHOUT any bias already
 // in the model, so the stored bias doesn't feed on itself.
 function forecastAccuracyByBlock(input, now = Date.now()) {
-  const model = input?.model ? { ...input.model, forecastBias: [] } : input?.model;
-  const scored = forecastAccuracyScored({ ...input, model }, now);
+  const model = isObj(input?.model) ? { ...input.model, forecastBias: [] } : input?.model;
+  // modelReplay: past forecasts are replayed against today's model, which is
+  // "future-dated" relative to them — allowed here only.
+  const scored = forecastAccuracyScored({ ...input, model, modelReplay: true }, now);
   return REGIMEN_TOD_BUCKETS.map(bk => {
     const errs = scored.filter(x => { const h = londonParts(x.t).hour; return h >= bk.from && h < bk.to; }).map(x => x.error);
     return { label: bk.label, from: bk.from, to: bk.to, bias: errs.length ? mean(errs) : null, n: errs.length };
@@ -4113,7 +4125,8 @@ const finiteOrNull = v => (isNum(v) ? v : null);
 // the all-day mean by its weight sum: (sum w * blockMean + k * allDay) / (sum w + k).
 // Without a pump profile there is no band to guard with, so values are null (source 'pump').
 function fitModel(episodes, pumpProfile, opts = {}) {
-  const { nowMs: nowIn = Date.now(), prevModel = null, halfLifeDays = 30, shrinkK = 5 } = opts;
+  const { nowMs: nowIn = Date.now(), prevModel: prevIn = null, halfLifeDays = 30, shrinkK = 5 } = opts;
+  const prevModel = asModel(prevIn);   // a malformed previous model counts as none
   const nowMs = toMs(nowIn);
   const clean = (episodes || []).filter(ep => ep && ep.confounded === null && isNum(toMs(ep.startMs)));
   const weight = ep => 0.5 ** (Math.max(0, nowMs - toMs(ep.startMs)) / DAY_MS / halfLifeDays);
@@ -4161,7 +4174,7 @@ function fitModel(episodes, pumpProfile, opts = {}) {
   const prevFitted = prevModel ? toMs(prevModel.fittedAt) : null;
   const daysSincePrev = prevFitted != null ? (nowMs - prevFitted) / DAY_MS : null;
   const blocks = REGIMEN_TOD_BUCKETS.map((bk, i) => {
-    const prev = prevModel?.blocks?.find(b => b.label === bk.label);
+    const prev = prevModel?.blocks.find(b => b.label === bk.label);
     const inBlock = xs => xs.filter(x => x.hour >= bk.from && x.hour < bk.to);
     return {
       label: bk.label, from: bk.from, to: bk.to,
@@ -4205,14 +4218,40 @@ function fitModel(episodes, pumpProfile, opts = {}) {
 const MODEL_FRESH_MS          = 48 * 3600000;
 const MODEL_BOOST_APPLY_MAX   = 1.3;
 const MODEL_FORECAST_BIAS_MAX = 1.0;   // mmol/L
+const MODEL_FUTURE_FIT_MS     = 3600000;   // fittedAt may be at most 1h ahead of now
 const MODEL_FORECAST_BIAS_MIN_N = 10;  // a block's bias needs this many scored forecasts
 const MODEL_LATE_RISE_RATE    = 0.5;
 const MODEL_LATE_RISE_MIN_N   = 5;
 
-function modelFresh(model, nowMs) {
-  const fitted = toMs(model?.fittedAt);
+const isObj = v => v != null && typeof v === 'object' && !Array.isArray(v);
+
+// A model as stored can be anything (a hand edit, an old row, a bad write).
+// Anything malformed is treated as absent: no blocks array → no model;
+// non-object exercise / modifiers / meals / allDay → {}; non-array
+// forecastBias → []. Callers never throw on a bad model — they fall back.
+function asModel(model) {
+  if (!isObj(model) || !Array.isArray(model.blocks)) return null;
+  return {
+    ...model,
+    blocks: model.blocks.filter(b => isObj(b) && isNum(b.from) && isNum(b.to)),
+    exercise: isObj(model.exercise) ? model.exercise : {},
+    modifiers: isObj(model.modifiers) ? model.modifiers : {},
+    meals: isObj(model.meals) ? model.meals : {},
+    allDay: isObj(model.allDay) ? model.allDay : {},
+    forecastBias: Array.isArray(model.forecastBias) ? model.forecastBias.filter(b => isObj(b) && isNum(b.from) && isNum(b.to)) : [],
+  };
+}
+
+// Fresh = fitted within the last 48h and not more than 1h in the future
+// (a future-dated model is a clock or write error). allowFutureFit is only
+// for replaying past forecasts against today's model (forecastAccuracyByBlock).
+function modelFresh(model, nowMs, { allowFutureFit = false } = {}) {
+  const m = asModel(model);
+  const fitted = toMs(m?.fittedAt);
   const now = toMs(nowMs);
-  return !!model && fitted != null && now != null && now - fitted <= MODEL_FRESH_MS && Array.isArray(model.blocks);
+  if (!m || fitted == null || now == null) return false;
+  if (now - fitted > MODEL_FRESH_MS) return false;
+  return allowFutureFit || fitted <= now + MODEL_FUTURE_FIT_MS;
 }
 
 function modelBlockAt(model, atMs) {
@@ -4229,19 +4268,24 @@ function workoutMinutes(w) {
 const fmt1 = v => (Math.round(v * 10) / 10).toFixed(1);
 const pctText = m => `${m >= 1 ? '+' : '−'}${Math.round(Math.abs(m - 1) * 100)}%`;
 
-function applyModel(model, atMs, opts = {}) {
-  const { workouts = [], siteAgeHours = null, rhrZ = null, sleepHrs = null } = opts;
+// Sources per parameter: 'learned' / 'pooled' (from the person's data), 'pump' (the block's
+// pump value as-is) or 'pump-adjusted' (pump value x boost/modifiers — nothing learned for
+// this block, so its sample size is 0). `adjustments` = short names of what was applied.
+function applyModel(rawModel, atMs, opts = {}) {
+  const { workouts = [], siteAgeHours = null, rhrZ = null, sleepHrs = null, allowFutureFit = false } = opts;
   const at = toMs(atMs);
   const nowMs = toMs(opts.nowMs ?? at);
-  if (at == null || !modelFresh(model, nowMs)) return null;
+  if (at == null || !modelFresh(rawModel, nowMs, { allowFutureFit })) return null;
+  const model = asModel(rawModel);
   const block = modelBlockAt(model, at);
   if (!block) return null;
-  const reasons = [];
+  const reasons = [], adjustments = [];
+  const workoutList = (Array.isArray(workouts) ? workouts : []).filter(isObj);
 
   // post-exercise boost: >= 1 always, capped, only after a real workout that ended within boost.hours
-  const boost = model.exercise?.boost || {};
+  const boost = isObj(model.exercise.boost) ? model.exercise.boost : {};
   const hours = isNum(boost.hours) ? boost.hours : MODEL_BOOST_HOURS;
-  const recent = (workouts || [])
+  const recent = workoutList
     .map(w => ({ w, end: toMs(w.endTime) ?? toMs(w.startTime) }))
     .filter(({ w, end }) => end != null && end <= nowMs && nowMs - end <= hours * 3600000 && workoutMinutes(w) > 0)
     .sort((a, b) => b.end - a.end)[0];
@@ -4250,49 +4294,62 @@ function applyModel(model, atMs, opts = {}) {
   if (recent && boostMult > 1) {
     multiplier *= boostMult;
     const day = _londonDateFmt.format(new Date(recent.end)) === _londonDateFmt.format(new Date(nowMs)) ? 'today' : 'yesterday';
-    reasons.push(`${pctText(boostMult)} after ${day}'s ${recent.w.workoutType || 'workout'}`);
+    const what = `${day}'s ${recent.w.workoutType || 'workout'}`;
+    reasons.push(`${pctText(boostMult)} after ${what}`);
+    adjustments.push(what);
   }
 
-  const mods = model.modifiers || {};
+  const mods = model.modifiers;
   const conds = [
-    ['siteAge', isNum(siteAgeHours) && siteAgeHours >= MODEL_SITE_AGE_HOURS, `infusion site ${Math.round(siteAgeHours)}h old`],
-    ['illness', isNum(rhrZ) && rhrZ >= MODEL_ILLNESS_RHR_Z, 'resting heart rate raised'],
-    ['shortSleep', isNum(sleepHrs) && sleepHrs < MODEL_SHORT_SLEEP_HRS, 'short sleep'],
+    ['siteAge', isNum(siteAgeHours) && siteAgeHours >= MODEL_SITE_AGE_HOURS, `infusion site ${Math.round(siteAgeHours)}h old`, `a ${Math.round(siteAgeHours)}h-old site`],
+    ['illness', isNum(rhrZ) && rhrZ >= MODEL_ILLNESS_RHR_Z, 'resting heart rate raised', 'a raised resting heart rate'],
+    ['shortSleep', isNum(sleepHrs) && sleepHrs < MODEL_SHORT_SLEEP_HRS, 'short sleep', 'short sleep'],
   ];
-  for (const [key, holds, why] of conds) {
+  for (const [key, holds, why, short] of conds) {
     const m = mods[key];
-    if (!holds || !m?.active || !isNum(m.effect) || !(m.effect > 0)) continue;
+    if (!holds || !isObj(m) || m.active !== true || !isNum(m.effect) || !(m.effect > 0)) continue;
     multiplier *= m.effect;
     reasons.push(`${why}: sensitivity ${pctText(m.effect)} (${m.n} corrections)`);
+    adjustments.push(short);
   }
 
-  const use = (p, name, unit, reasons) => {
-    if (!p || !isNum(p.value) || !isNum(p.pump) || !(p.pump > 0)) return { value: null, source: null, n: 0 };
+  const use = (p, name, unit, out) => {
+    if (!isObj(p) || !isNum(p.value) || !isNum(p.pump) || !(p.pump > 0)) return { value: null, source: null, n: 0 };
     const raw = p.value * multiplier;
     const value = clamp(raw, p.pump * MODEL_BAND_LO, p.pump * MODEL_BAND_HI);
-    const n = p.source === 'pooled' ? (unit === 'corrections' ? model.allDay?.nIsf : model.allDay?.nCr) ?? p.n : p.n;
-    if (p.source === 'learned') reasons.push(`${name} ${fmt1(p.value)} at this time of day (${n} ${unit})`);
-    else if (p.source === 'pooled') reasons.push(`${name} ${fmt1(p.value)} from all your ${unit} across the day (${n})`);
-    else reasons.push(`${name} ${fmt1(p.value)} from your pump setting`);
-    if (p.rateLimited) reasons.push('learned value held back while it settles');
-    if (p.outsideBand) reasons.push('your data suggests outside ±30% of your pump setting — worth discussing');
-    if (value !== raw) reasons.push(`${name} held within ±30% of your pump setting`);
-    return { value, source: p.source, n };
+    let source, n = 0;
+    if (p.source === 'learned') {
+      source = 'learned'; n = p.n;
+      out.push(`${name} ${fmt1(p.value)} at this time of day (${n} ${unit})`);
+    } else if (p.source === 'pooled') {
+      source = 'pooled'; n = (unit === 'corrections' ? model.allDay.nIsf : model.allDay.nCr) ?? p.n;
+      out.push(`${name} ${fmt1(p.value)} from all your ${unit} across the day (${n})`);
+    } else {
+      source = multiplier !== 1 ? 'pump-adjusted' : 'pump';
+      out.push(multiplier !== 1
+        ? `${name} ${fmt1(p.value)} from your pump setting, adjusted for ${adjustments.join(' and ')}`
+        : `${name} ${fmt1(p.value)} from your pump setting`);
+    }
+    if (p.rateLimited) out.push('learned value held back while it settles');
+    if (p.outsideBand) out.push('your data suggests outside ±30% of your pump setting — worth discussing');
+    if (value !== raw) out.push(`${name} held within ±30% of your pump setting`);
+    return { value, source, n: isNum(n) ? n : 0 };
   };
   const isfReasons = [], crReasons = [];
   const isf = use(block.isf, 'sensitivity', 'corrections', isfReasons);
   const cr = use(block.carbRatio, 'carb ratio', 'meals', crReasons);
 
   // in-progress workout of a learned type: its learned drop rate
-  const ongoing = (workouts || []).find(w => {
+  const learnedType = t => t !== 'boost' && isObj(model.exercise[t]) && isNum(model.exercise[t].dropPerMin);
+  const ongoing = workoutList.find(w => {
     const a = toMs(w.startTime), b = toMs(w.endTime);
-    return a != null && b != null && a <= nowMs && nowMs < b && isNum(model.exercise?.[w.workoutType]?.dropPerMin);
+    return a != null && b != null && a <= nowMs && nowMs < b && learnedType(w.workoutType);
   });
   const exerciseDropPerMin = ongoing ? Math.max(0, model.exercise[ongoing.workoutType].dropPerMin) : 0;
 
   return {
     isf: isf.value, carbRatio: cr.value, isfSource: isf.source, crSource: cr.source,
-    sampleSize: isf.n, crSampleSize: cr.n, multiplier,
+    sampleSize: isf.n, crSampleSize: cr.n, multiplier, adjustments,
     exerciseDropPerMin,
     exerciseOngoing: ongoing ? { workoutType: ongoing.workoutType, endMs: toMs(ongoing.endTime), n: model.exercise[ongoing.workoutType].n } : null,
     rateLimited: !!block.isf?.rateLimited, outsideBand: !!block.isf?.outsideBand,
@@ -4305,11 +4362,21 @@ function applyModel(model, atMs, opts = {}) {
   };
 }
 
+// The dose-facing label for a parameter source: learned/pooled → 'learned',
+// pump x adjustments → 'pump-adjusted', the plain pump value → 'pump-setting'.
+function doseSource(paramSource) {
+  if (paramSource === 'learned' || paramSource === 'pooled') return 'learned';
+  if (paramSource === 'pump-adjusted') return 'pump-adjusted';
+  return 'pump-setting';
+}
+
 // The current block's learned forecast bias (predicted − actual), capped ±1.0 mmol/L;
 // null with fewer than MODEL_FORECAST_BIAS_MIN_N scored forecasts.
-function modelForecastBias(model, atMs) {
+function modelForecastBias(rawModel, atMs) {
+  const model = asModel(rawModel);
+  if (!model) return null;
   const h = londonParts(toMs(atMs)).hour;
-  const row = (model?.forecastBias || []).find(b => h >= b.from && h < b.to);
+  const row = model.forecastBias.find(b => h >= b.from && h < b.to);
   if (!row || !isNum(row.bias) || !((row.n || 0) >= MODEL_FORECAST_BIAS_MIN_N)) return null;
   return { bias: clamp(row.bias, -MODEL_FORECAST_BIAS_MAX, MODEL_FORECAST_BIAS_MAX), n: row.n };
 }
@@ -4318,7 +4385,8 @@ function modelForecastBias(model, atMs) {
 // computeForecastCore (t = the 2h horizon) and projectedGlucoseCurve (each
 // step) so the chart and the alert agree. An in-progress workout of a
 // learned type drops at its learned rate for min(t, time left in it); the
-// block's forecast bias is a 2h bias, so it ramps in linearly to full at 2h.
+// block's forecast bias is a 2h bias, so it ramps in linearly to full at 2h,
+// and only ever lowers the forecast.
 function modelForecastTerms(applied, model, nowMs, t) {
   const out = { liveExerciseDropMmol: 0, forecastBiasShift: 0, reasons: [] };
   if (!applied) return out;
@@ -4327,10 +4395,12 @@ function modelForecastTerms(applied, model, nowMs, t) {
     out.liveExerciseDropMmol = applied.exerciseDropPerMin * remainingMin;
     out.reasons.push(`${applied.exerciseOngoing.workoutType} in progress: about ${fmt1(out.liveExerciseDropMmol)} mmol/L more drop before it ends (${applied.exerciseOngoing.n} sessions)`);
   }
+  // Only ever LOWERS the forecast (a forecast that has run high): raising it
+  // would mean more insulin on the high side and fewer low alerts.
   const bias = modelForecastBias(model, nowMs);
-  if (bias && bias.bias !== 0) {
+  if (bias && bias.bias > 0) {
     out.forecastBiasShift = -bias.bias * clamp(t / HYPO_FORECAST_HORIZON_MIN, 0, 1);
-    out.reasons.push(`forecast adjusted ${-bias.bias > 0 ? '+' : ''}${fmt1(-bias.bias)} mmol/L — at this time of day it has run ${bias.bias > 0 ? 'high' : 'low'} (${bias.n} checks)`);
+    out.reasons.push(`forecast lowered ${fmt1(bias.bias)} mmol/L — at this time of day it has run high (${bias.n} checks)`);
   }
   return out;
 }
@@ -4338,9 +4408,11 @@ function modelForecastTerms(applied, model, nowMs, t) {
 // What applyModel needs from an engine input, beyond the model itself.
 // input.modelContext (optional): { siteAgeHours, rhrZ, sleepHrs } for the modifiers.
 function modelOpts(input, now) {
-  const c = input?.modelContext || {};
-  return { model: input?.model, atMs: now, workouts: input?.activities?.workouts || [],
-    siteAgeHours: c.siteAgeHours ?? null, rhrZ: c.rhrZ ?? null, sleepHrs: c.sleepHrs ?? null };
+  const c = isObj(input?.modelContext) ? input.modelContext : {};
+  const w = input?.activities?.workouts;
+  return { model: input?.model, atMs: now, workouts: Array.isArray(w) ? w : [],
+    siteAgeHours: c.siteAgeHours ?? null, rhrZ: c.rhrZ ?? null, sleepHrs: c.sleepHrs ?? null,
+    allowFutureFit: input?.modelReplay === true };
 }
 
 // The learned carb ratio for this time of day, or null (no fresh model).
@@ -4445,6 +4517,7 @@ const DiabetesEngine = {
   scoreNight,
   fitModel,
   applyModel,
+  modelOpts,
 };
 
 // Dual environment: CommonJS (Node/Netlify functions) or a plain <script>
