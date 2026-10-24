@@ -3869,6 +3869,7 @@ async function loadBodyBattery(healthHistory) {
     renderBodyBatteryBadge();
     if (!$('bbModal')?.hidden) renderBodyBatteryModal();
     refreshInsights();
+    pushBodyBatteryToWidgets();
   } catch (err) {
     console.warn('Body Battery failed:', err?.message || err);
   } finally {
@@ -4493,10 +4494,26 @@ function renderNetCalories(today, history, log, bmrFallback) {
 // logic on the native side, just a mirror of whatever the dashboard just
 // showed. A no-op on web/no native bridge, and inert until the widget
 // extension target exists.
-function pushScoresToWidgets({ recovery, sleep, strain, netCalories, steps, stepsGoal, sleepHours, sleepNeedHours, nutritionScore }) {
+// The plugin rebuilds the whole stored blob on every call, so the last
+// dashboard payload is kept and re-sent with fresh Body Battery fields
+// whenever the battery recomputes (pushBodyBatteryToWidgets).
+let lastWidgetScores = null;
+function pushBodyBatteryToWidgets() {
+  if (lastWidgetScores) sendWidgetScores(lastWidgetScores);
+}
+function sendWidgetScores(payload) {
   const Bridge = window.Capacitor?.Plugins?.ScoreWidgetBridge;
   if (!Bridge) return;
+  const level = bbLevelNow();
   Bridge.writeScores({
+    ...payload,
+    bodyBattery: level != null ? Math.round(level) : null,
+    bodyBatteryRate: bbState ? Math.round(bbState.result.ratePerHr * 10) / 10 : null,
+    bodyBatteryAt: new Date().toISOString(),
+  }).catch(err => console.warn('pushScoresToWidgets failed:', err));
+}
+function pushScoresToWidgets({ recovery, sleep, strain, netCalories, steps, stepsGoal, sleepHours, sleepNeedHours, nutritionScore }) {
+  lastWidgetScores = {
     recovery: recovery?.score ?? null,
     sleep: sleep?.score ?? null,
     strain: strain?.score ?? null,
@@ -4510,7 +4527,8 @@ function pushScoresToWidgets({ recovery, sleep, strain, netCalories, steps, step
     sleepNeedHours: sleepNeedHours ?? null,
     nutritionScore: nutritionScore ?? null,
     updatedAt: new Date().toISOString(),
-  }).catch(err => console.warn('pushScoresToWidgets failed:', err));
+  };
+  sendWidgetScores(lastWidgetScores);
 }
 async function fetchAndRenderLog(date) {
   if (!currentUser) return;

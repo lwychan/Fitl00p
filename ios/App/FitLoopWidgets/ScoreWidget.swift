@@ -16,7 +16,29 @@ struct ScoreData: Codable {
     var sleepHours: Double?
     var sleepNeedHours: Double?
     var nutritionScore: Int?
+    var bodyBattery: Int?
+    var bodyBatteryRate: Double?
+    var bodyBatteryAt: String?
     var updatedAt: String?
+
+    // Body Battery at `date`: the last value the app computed, carried on at
+    // its rate for at most 3 hours (the app recomputes properly when opened).
+    func bodyBattery(at date: Date) -> Int? {
+        guard let base = bodyBattery else { return nil }
+        guard let rate = bodyBatteryRate, let atString = bodyBatteryAt,
+              let at = ISO8601DateFormatter.withFractions.date(from: atString) ?? ISO8601DateFormatter().date(from: atString)
+        else { return base }
+        let hours = min(3, max(0, date.timeIntervalSince(at) / 3600))
+        return Int(min(100, max(5, (Double(base) + rate * hours).rounded())))
+    }
+}
+
+extension ISO8601DateFormatter {
+    static let withFractions: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
 }
 
 func loadScoreData() -> ScoreData? {
@@ -40,13 +62,17 @@ struct ScoreProvider: TimelineProvider {
     }
 
     // The app calls WidgetCenter.reloadAllTimelines() itself whenever it
-    // pushes fresh scores (see ScoreWidgetBridgePlugin), so this timeline
-    // just needs today's snapshot plus a distant safety refresh — it isn't
-    // the primary update mechanism.
+    // pushes fresh scores (see ScoreWidgetBridgePlugin). Between pushes,
+    // one entry every 15 minutes for 3 hours lets the Body Battery gauge
+    // tick on at its last rate (see ScoreData.bodyBattery(at:)).
     func getTimeline(in context: Context, completion: @escaping (Timeline<ScoreEntry>) -> Void) {
-        let entry = ScoreEntry(date: Date(), scores: loadScoreData())
-        let nextRefresh = Calendar.current.date(byAdding: .hour, value: 4, to: Date()) ?? Date().addingTimeInterval(4 * 3600)
-        completion(Timeline(entries: [entry], policy: .after(nextRefresh)))
+        let scores = loadScoreData()
+        let now = Date()
+        let entries = (0...12).map { i in
+            ScoreEntry(date: now.addingTimeInterval(Double(i) * 15 * 60), scores: scores)
+        }
+        let nextRefresh = now.addingTimeInterval(4 * 3600)
+        completion(Timeline(entries: entries, policy: .after(nextRefresh)))
     }
 }
 
@@ -120,8 +146,22 @@ struct GaugeSpec: Identifiable {
     }
 }
 
-func gaugeSpecs(for s: ScoreData?) -> [GaugeSpec] {
-    [
+// Same zone colours as the app-bar battery (76+ green, 51-75 blue,
+// 26-50 amber, 25 and under red).
+func bodyBatteryColor(_ level: Int?) -> Color {
+    guard let level else { return Color(red: 0.19, green: 0.82, blue: 0.35) }
+    if level >= 76 { return Color(red: 0.19, green: 0.82, blue: 0.35) }
+    if level >= 51 { return Color(red: 0.04, green: 0.62, blue: 1.0) }
+    if level >= 26 { return Color(red: 1.0, green: 0.62, blue: 0.04) }
+    return Color(red: 1.0, green: 0.27, blue: 0.23)
+}
+
+func gaugeSpecs(for s: ScoreData?, at date: Date = Date()) -> [GaugeSpec] {
+    let battery = s?.bodyBattery(at: date)
+    return [
+        GaugeSpec(id: "battery", value: battery.map(Double.init), target: 100,
+                   color: bodyBatteryColor(battery), label: "Battery",
+                   displayValue: battery.map { "\($0)%" } ?? "—"),
         GaugeSpec(id: "recovery", value: s?.recovery.map(Double.init), target: 100,
                    color: Color(red: 0.91, green: 0.47, blue: 0.98), label: "Recovery",
                    displayValue: s?.recovery.map { "\($0)" } ?? "—"),
@@ -149,7 +189,7 @@ struct ScoreWidgetView: View {
 
     var body: some View {
         if entry.scores != nil {
-            let specs = gaugeSpecs(for: entry.scores)
+            let specs = gaugeSpecs(for: entry.scores, at: entry.date)
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
                 ForEach(specs) { spec in
                     LiquidGaugeView(fillPct: spec.fillPct, color: spec.color, value: spec.displayValue, label: spec.label)
@@ -176,7 +216,7 @@ struct ScoreWidget: Widget {
                 .containerBackground(Color(red: 0.02, green: 0.02, blue: 0.04), for: .widget)
         }
         .configurationDisplayName("FitLoop Scores")
-        .description("Today's recovery, sleep, strain, steps and calorie balance.")
+        .description("Body Battery plus today's recovery, sleep, strain, steps and calorie balance.")
         .supportedFamilies([.systemMedium, .systemLarge])
     }
 }

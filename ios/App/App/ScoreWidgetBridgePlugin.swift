@@ -47,6 +47,11 @@ public class ScoreWidgetBridgePlugin: CAPPlugin, CAPBridgedPlugin, WCSessionDele
         if let v = call.getDouble("sleepHours") { scores["sleepHours"] = v }
         if let v = call.getDouble("sleepNeedHours") { scores["sleepNeedHours"] = v }
         if let v = call.getInt("nutritionScore") { scores["nutritionScore"] = v }
+        // Body Battery: level + current rate (%/hour) at bodyBatteryAt, so the
+        // widget can project it forward between app opens.
+        if let v = call.getInt("bodyBattery") { scores["bodyBattery"] = v }
+        if let v = call.getDouble("bodyBatteryRate") { scores["bodyBatteryRate"] = v }
+        if let v = call.getString("bodyBatteryAt") { scores["bodyBatteryAt"] = v }
 
         if let data = try? JSONSerialization.data(withJSONObject: scores) {
             defaults.set(data, forKey: Self.scoresKey)
