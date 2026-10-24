@@ -634,17 +634,47 @@ test('guard band clamps and flags', () => {
 });
 
 test('rate limit 10%/day', () => {
-  const profile = { default: [{ time: '00:00', correctionFactor: 3.5, carbRatio: 10, basalRate: 0.8 }] };
-  const prev = E.fitModel(many(10, i => corrEp(AT10 + i * 60000, 3.0)), profile, { nowMs: AT10 });
-  assert.ok(Math.abs(block(prev, '09:00–12:00').isf.value - 3.0) < 1e-9);
-  const later = (days, isf) => block(E.fitModel(many(10, i => corrEp(AT10 + days * D + i * 60000, isf)), profile,
-    { nowMs: AT10 + days * D, prevModel: JSON.parse(JSON.stringify(prev)) }), '09:00–12:00').isf.value;
-  const up = later(1, 4.0);
-  assert.ok(up <= 3.3 + 1e-9, `value ${up}`);
-  assert.ok(up >= 3.3 - 1e-9, `cap applied, not reset: ${up}`);
-  assert.ok(Math.abs(later(0.5, 4.0) - 3.15) < 1e-9);
-  assert.ok(Math.abs(later(1, 2.5) - 2.7) < 1e-9);
-  assert.ok(Math.abs(later(10, 4.0) - 4.0) < 1e-9);   // 10 days: cap 100%, evidence wins
+  // only moves toward MORE insulin than both the previous model and the pump are slowed; ratio-to-pump space
+  const prof = cf => ({ default: [{ time: '00:00', correctionFactor: cf, carbRatio: 10, basalRate: 0.8 }] });
+  const fitAt = (days, eps, prev, profile = FLAT) => block(E.fitModel(eps, profile, { nowMs: AT10 + days * D, prevModel: prev && JSON.parse(JSON.stringify(prev)) }), '09:00–12:00');
+  const evidence = (days, isf, n = 10) => many(n, i => corrEp(AT10 + days * D + i * 60000, isf));
+  const prev3 = E.fitModel(evidence(0, 3.0), FLAT, { nowMs: AT10 });
+  assert.ok(Math.abs(block(prev3, '09:00–12:00').isf.value - 3.0) < 1e-9);
+  // genuine learned move toward more insulin: 2.0 vs prev 3.0 a day earlier -> 2.7
+  const more = fitAt(1, evidence(1, 2.0), prev3);
+  assert.ok(Math.abs(more.isf.value - 2.7) < 1e-9, `value ${more.isf.value}`);
+  assert.strictEqual(more.isf.rateLimited, true);
+  assert.strictEqual(more.isf.source, 'learned');
+  assert.ok(Math.abs(fitAt(0.5, evidence(0.5, 2.0), prev3).isf.value - 2.85) < 1e-9);
+  const tenDays = fitAt(10, evidence(10, 2.0), prev3);   // cap 100%: evidence wins, band still holds
+  assert.ok(Math.abs(tenDays.isf.value - 2.1) < 1e-9 && tenDays.isf.outsideBand === true && tenDays.isf.rateLimited === false);
+  // toward less insulin: immediate (band-clamped)
+  const less = fitAt(1, evidence(1, 4.0), prev3);
+  assert.ok(Math.abs(less.isf.value - 3.9) < 1e-9, `value ${less.isf.value}`);
+  assert.strictEqual(less.isf.rateLimited, false);
+  assert.strictEqual(less.isf.outsideBand, true);
+  // review probe: pump raised 3 -> 4, no evidence, 1 day later -> the new pump value, not dragged back
+  const raised = fitAt(1, [], prev3, prof(4));
+  assert.deepStrictEqual([raised.isf.value, raised.isf.pump, raised.isf.source, raised.isf.rateLimited, raised.isf.outsideBand], [4, 4, 'pump', false, false]);
+  // evidence vanished after a more-insulin learn (2.4 vs pump 3): back to pump at once
+  const prev24 = E.fitModel(evidence(0, 2.4), FLAT, { nowMs: AT10 });
+  assert.ok(Math.abs(block(prev24, '09:00–12:00').isf.value - 2.4) < 1e-9);
+  for (const eps of [[], evidence(1, 2.4, 6)]) {
+    const back = fitAt(1, eps, prev24);
+    assert.deepStrictEqual([back.isf.value, back.isf.source, back.isf.rateLimited], [3, 'pump', false]);
+  }
+  // from a less-insulin model (1.2 x pump) the step to pump is free, below it is slowed
+  const prev36 = E.fitModel(evidence(0, 3.6), FLAT, { nowMs: AT10 });
+  assert.ok(Math.abs(fitAt(1, evidence(1, 2.4), prev36).isf.value - 2.7) < 1e-9);
+  // ratio space: prev 0.9 x pump 3, pump now 4, evidence 0.6 x pump -> floor 0.81 x 4
+  const prev27 = E.fitModel(evidence(0, 2.7), FLAT, { nowMs: AT10 });
+  const moved = fitAt(1, evidence(1, 2.4), prev27, prof(4));
+  assert.ok(Math.abs(moved.isf.value - 0.81 * 4) < 1e-9, `value ${moved.isf.value}`);
+  assert.strictEqual(moved.isf.rateLimited, true);
+  // same rule for the carb ratio
+  const prevCr = E.fitModel(many(10, i => mealEp(AT10 + i * 60000, 10)), FLAT, { nowMs: AT10 });
+  const cr = fitAt(1, many(10, i => mealEp(AT10 + D + i * 60000, 7.5)), prevCr);
+  assert.ok(Math.abs(cr.carbRatio.value - 9) < 1e-9 && cr.carbRatio.rateLimited === true);
 });
 
 test('exercise boost never below 1', () => {
@@ -823,4 +853,15 @@ test('post-exercise episodes: normalised when the boost is learned, as-is when n
   const rest = block(E.fitModel([...many(10, i => corrEp(AT10 + i * 60000, 3.6)), ...boostNights], FLAT, { nowMs: AT10 }), '09:00–12:00');
   assert.ok(Math.abs(rest.isf.value - 3.6) < 1e-9);
   assert.strictEqual(rest.isf.nPostExercise, 0);
+  // a learned boost of 1.6 stays in the model, but normalisation divides by at most 1.3
+  const bigNights = [...many(6, i => nightEp(night(i), 1.6, true)), ...many(6, i => nightEp(night(i + 20), 1.0, false))];
+  const big = E.fitModel([...many(10, i => corrEp(AT10 + i * 60000, 3.9, ran)), ...many(10, i => mealEp(AT10 + i * 60000, 13, { context: ctx(ran) })), ...bigNights], FLAT, { nowMs: AT10 });
+  assert.ok(Math.abs(big.exercise.boost.multiplier - 1.6) < 1e-9);
+  assert.ok(Math.abs(block(big, '09:00–12:00').isf.value - 3.0) < 1e-9, `isf ${block(big, '09:00–12:00').isf.value}`);
+  assert.ok(Math.abs(block(big, '09:00–12:00').carbRatio.value - 10) < 1e-9);
+  // a workout logged with 0 minutes is not post-exercise
+  const zero = { exercise24h: { minutes: 0, types: ['Running'], trimp: null } };
+  const z = block(E.fitModel([...many(10, i => corrEp(AT10 + i * 60000, 3.6, zero)), ...boostNights], FLAT, { nowMs: AT10 }), '09:00–12:00');
+  assert.ok(Math.abs(z.isf.value - 3.6) < 1e-9);
+  assert.strictEqual(z.isf.nPostExercise, 0);
 });

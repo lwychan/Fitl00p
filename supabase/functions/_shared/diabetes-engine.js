@@ -4047,6 +4047,7 @@ const MODEL_RATE_PER_DAY      = 0.10;
 const MODEL_EXERCISE_MIN_N    = 3;
 const MODEL_BOOST_MIN_NIGHTS  = 5;
 const MODEL_BOOST_HOURS       = 24;
+const MODEL_BOOST_NORMALISE_MAX = 1.3;   // post-exercise ISF/CR are divided by at most this
 const MODEL_MODIFIER_MIN_N    = 10;
 const MODEL_SITE_AGE_HOURS    = 48;
 const MODEL_ILLNESS_RHR_Z     = 1.5;
@@ -4067,9 +4068,15 @@ function weightedStats(items) {
 }
 
 // One block parameter (ISF or CR — for both, a higher value = less insulin).
-function fitBlockParam(items, all, pump, prevValue, daysSincePrev, shrinkK) {
+// Shrinkage weighs the block by sum w (recency-weighted) by design; the asymmetry thresholds
+// count raw clean episodes (n).
+// Rate limit, in ratio-to-pump space (a pump-setting change doesn't drag the value back): only
+// moves toward MORE insulin than both the previous model and the pump are slowed, to 10%/day
+// below min(prev ratio, 1). Moves toward the pump or toward less insulin apply immediately.
+function fitBlockParam(items, all, pump, prev, daysSincePrev, shrinkK) {
   const b = weightedStats(items);
-  const out = { value: pump, pump, n: b.n, nPostExercise: items.filter(x => x.post).length, source: 'pump', outsideBand: false, se: b.se };
+  const out = { value: pump, pump, n: b.n, nPostExercise: items.filter(x => x.post).length, source: 'pump',
+    outsideBand: false, rateLimited: false, se: b.se };
   if (!isNum(pump) || !(pump > 0)) return { ...out, value: null, pump: null };
   const usable = (value, n) => isNum(value) && n >= (value > pump ? MODEL_N_LESS_INSULIN : MODEL_N_MORE_INSULIN);
   let value = null;
@@ -4081,11 +4088,11 @@ function fitBlockParam(items, all, pump, prevValue, daysSincePrev, shrinkK) {
   if (value == null) value = pump;
   const lo = pump * MODEL_BAND_LO, hi = pump * MODEL_BAND_HI;
   if (value < lo || value > hi) { out.outsideBand = true; value = clamp(value, lo, hi); }
-  // rate limit vs the previous model: move toward the new value, by at most 10%/day
-  if (isNum(prevValue) && prevValue > 0 && isNum(daysSincePrev)) {
-    const cap = MODEL_RATE_PER_DAY * Math.max(0, daysSincePrev);
-    value = clamp(value, prevValue * (1 - cap), prevValue * (1 + cap));
-    value = clamp(value, lo, hi);   // a changed pump profile still bounds the result
+  const prevRatio = isNum(prev?.value) && isNum(prev?.pump) && prev.pump > 0 && prev.value > 0 ? prev.value / prev.pump : null;
+  if (prevRatio != null && isNum(daysSincePrev)) {
+    const floor = Math.min(prevRatio, 1) * (1 - MODEL_RATE_PER_DAY * Math.max(0, daysSincePrev));
+    if (value / pump < floor) { value = floor * pump; out.rateLimited = true; }
+    if (value < lo || value > hi) { out.outsideBand = true; value = clamp(value, lo, hi); }
   }
   out.value = value;
   return out;
@@ -4106,7 +4113,8 @@ function fitModifier(isfItems, pumpProfile, cond) {
   const off = { active: false, effect: 1, n: w.length, nWithout: wo.length };
   if (w.length < MODEL_MODIFIER_MIN_N || wo.length < MODEL_MODIFIER_MIN_N) return off;
   const mW = mean(w), mO = mean(wo);
-  const se = Math.sqrt(stddev(w, mW) ** 2 / w.length + stddev(wo, mO) ** 2 / wo.length);
+  const sampleVar = (xs, m) => xs.reduce((a, x) => a + (x - m) ** 2, 0) / (xs.length - 1);
+  const se = Math.sqrt(sampleVar(w, mW) / w.length + sampleVar(wo, mO) / wo.length);
   if (!(mO > 0) || !(Math.abs(mW - mO) > 2 * se)) return off;
   return { active: true, effect: mW / mO, n: w.length, nWithout: wo.length };
 }
@@ -4123,8 +4131,8 @@ function fitModel(episodes, pumpProfile, opts = {}) {
   const nowMs = toMs(nowIn);
   const clean = (episodes || []).filter(ep => ep && ep.confounded === null && isNum(toMs(ep.startMs)));
   const weight = ep => 0.5 ** (Math.max(0, nowMs - toMs(ep.startMs)) / DAY_MS / halfLifeDays);
-  // a workout in the 24h before the start = inside the post-exercise boost window
-  const exercised = ep => (ep.context?.exercise24h?.minutes || 0) > 0 || (ep.context?.exercise24h?.types?.length || 0) > 0;
+  // > 0 workout minutes in the 24h before the start = inside the post-exercise boost window
+  const exercised = ep => (Number(ep.context?.exercise24h?.minutes) || 0) > 0;
 
   // exercise: per workout type, median of clean episodes (one unlogged snack can't swing it),
   // never a rise
@@ -4148,14 +4156,15 @@ function fitModel(episodes, pumpProfile, opts = {}) {
     n: after.length, nWithout: without.length, hours: MODEL_BOOST_HOURS };
 
   // Post-exercise episodes (inside boost.hours of a workout) carry the boost. When the boost is
-  // learned, divide it out of their fitted ISF / CR (applyModel multiplies it back in) and keep
+  // learned, divide it (capped at 1.3, so normalising can't raise baseline doses much) out of their
+  // fitted ISF / CR (applyModel multiplies the boost back in) and keep
   // them: someone who trains most days has few episodes outside the window. When it isn't learned
   // (multiplier 1), they go in as-is — that is the person's habitual state.
-  const boostLearned = exercise.boost.multiplier > 1;
+  const norm = Math.min(exercise.boost.multiplier, MODEL_BOOST_NORMALISE_MAX);
   const items = (kind, get) => clean.filter(ep => ep.kind === kind && isNum(get(ep)) && get(ep) > 0)
     .map(ep => {
       const post = exercised(ep);
-      return { ep, post, v: post && boostLearned ? get(ep) / exercise.boost.multiplier : get(ep),
+      return { ep, post, v: post ? get(ep) / norm : get(ep),
         w: weight(ep), hour: hourOfDay(toMs(ep.startMs)) };
     });
   const isfItems = items('correction', ep => ep.fit?.isf);
@@ -4170,8 +4179,8 @@ function fitModel(episodes, pumpProfile, opts = {}) {
     const inBlock = xs => xs.filter(x => x.hour >= bk.from && x.hour < bk.to);
     return {
       label: bk.label, from: bk.from, to: bk.to,
-      isf: fitBlockParam(inBlock(isfItems), allIsf, finiteOrNull(table[i].correctionFactor), prev?.isf?.value, daysSincePrev, shrinkK),
-      carbRatio: fitBlockParam(inBlock(crItems), allCr, finiteOrNull(table[i].carbRatio), prev?.carbRatio?.value, daysSincePrev, shrinkK),
+      isf: fitBlockParam(inBlock(isfItems), allIsf, finiteOrNull(table[i].correctionFactor), prev?.isf, daysSincePrev, shrinkK),
+      carbRatio: fitBlockParam(inBlock(crItems), allCr, finiteOrNull(table[i].carbRatio), prev?.carbRatio, daysSincePrev, shrinkK),
     };
   });
 
