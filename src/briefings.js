@@ -58,7 +58,79 @@ function isDue(targetMin, nowMin, toleranceMin = 7) {
   return targetMin != null && Math.abs(nowMin - targetMin) <= toleranceMin;
 }
 
-const Briefings = { DEFAULT_SCHEDULES, defaultSchedule, scheduleFor, isWeekend, morningTime, eveningTime, isDue };
+// ---- Composer -------------------------------------------------------------
+
+const SAFETY = ['glucose', 'health', 'diabetes'];
+const ends = s => /[.!?]$/.test(s);
+const sentence = s => (ends(s) ? s : `${s}.`);
+const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
+
+// items = evaluateInsights output (highest priority first) with rule parts.
+// Body: "<headline> <reason1>, and <reason2>. <Action>." + one line per extra,
+// trimmed (second reason, then trailing extras, then the first reason) to
+// maxChars. A headline that is already a sentence (the evening bedtime line)
+// makes the reasons their own sentence.
+function composeBriefing(items, { slot, extras = [], maxChars = 180, headlineOverride = null } = {}) {
+  const use = (items || []).filter(i => i && (i.slot === slot || i.slot === 'both'));
+  const top = headlineOverride ? null : use.find(i => i.headline);
+  const headline = headlineOverride || (top ? top.headline : null);
+  const reasonItems = [];
+  for (const i of use) {
+    if (reasonItems.length >= 2) break;
+    if (i === top || !i.reason || reasonItems.some(r => r.category === i.category)) continue;
+    reasonItems.push(i);
+  }
+  const actionItem = use.find(i => i.action && SAFETY.includes(i.category)) || use.find(i => i.action);
+  const used = [top, ...reasonItems, actionItem].filter(Boolean);
+  const ruleIds = use.filter(i => used.includes(i)).map(i => i.id);
+
+  const build = (reasons, extraLines) => {
+    let first;
+    if (!headline) first = reasons.length ? sentence(cap(reasons.join(', and '))) : (slot === 'evening' ? 'Nothing new to flag tonight.' : 'Good morning, nothing new to flag today.');
+    else if (!reasons.length) first = sentence(headline);
+    else if (ends(headline)) first = `${headline} ${sentence(cap(reasons.join(', and ')))}`;
+    else first = sentence(`${headline} ${reasons.join(', and ')}`);
+    const lines = [actionItem ? `${first} ${sentence(actionItem.action)}` : first, ...extraLines];
+    return lines.join('\n');
+  };
+  let reasons = reasonItems.map(i => i.reason);
+  let extraLines = (extras || []).filter(Boolean);
+  let body = build(reasons, extraLines);
+  while (body.length > maxChars && (reasons.length > 1 || extraLines.length)) {
+    if (reasons.length > 1) reasons = reasons.slice(0, 1);
+    else extraLines = extraLines.slice(0, -1);
+    body = build(reasons, extraLines);
+  }
+  if (body.length > maxChars && reasons.length) body = build([], extraLines);
+  if (body.length > maxChars) body = `${body.slice(0, maxChars - 1).trimEnd()}…`;
+
+  const base = slot === 'evening' ? '🌙 Evening' : '⚡ Morning';
+  const title = top && `${base} · ${top.headline}`.length <= 50 ? `${base} · ${top.headline}` : base;
+  return { title, body, ruleIds };
+}
+
+// ---- Sleep-data fallback --------------------------------------------------
+
+function londonHHMM(iso) {
+  return new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+    .format(new Date(iso));
+}
+
+// When last night's sleep hasn't synced: what the evening snapshot (battery at
+// last app open) and overnight glucose suggest. null if nothing is known.
+function fallbackNightPhrase({ snapshot = null, nightGlucose = null } = {}) {
+  const snap = snapshot && snapshot.battery != null && snapshot.takenAt ? snapshot : null;
+  const g = nightGlucose && Number.isFinite(nightGlucose.low) ? nightGlucose : null;
+  if (!snap && !g) return null;
+  let s = 'No sleep data from last night yet';
+  if (g) s += ` — probably a ${g.low < 3.9 || g.cv > 36 ? 'broken' : 'settled'} night`;
+  if (snap) s += ` (bed ~${londonHHMM(snap.takenAt)} on ${Math.round(snap.battery)}%)`;
+  if (g) s += g.low < 3.9 ? `, glucose dipped to ${g.low.toFixed(1)}` : g.cv > 36 ? ', glucose up and down' : ', glucose steady';
+  return s;
+}
+
+const Briefings = { DEFAULT_SCHEDULES, defaultSchedule, scheduleFor, isWeekend, morningTime, eveningTime, isDue,
+  composeBriefing, fallbackNightPhrase };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = Briefings;
