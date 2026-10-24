@@ -23,14 +23,16 @@ for (const r of rules) {
 if (bad) process.exit(1);
 
 const q = s => `'${String(s).replace(/'/g, "''")}'`;
+const qn = s => (s == null ? 'null' : q(s));
 const values = rules.map(r =>
-  `  (${q(r.id)}, ${q(r.category)}, ${q(r.severity)}, ${r.priority}, ${q(JSON.stringify(r.conditions))}::jsonb, ${q(r.title)}, ${q(r.body)})`);
+  `  (${q(r.id)}, ${q(r.category)}, ${q(r.severity)}, ${r.priority}, ${q(JSON.stringify(r.conditions))}::jsonb, ${q(r.title)}, ${q(r.body)}, ${qn(r.headline)}, ${qn(r.reason)}, ${qn(r.action)}, ${q(r.slot || 'app')})`);
 const sql = `-- GENERATED from supabase/seed/insight-rules.json by scripts/build-insight-rules.mjs — edit the JSON, not this.
-insert into public.insight_rules (id, category, severity, priority, conditions, title, body) values
+insert into public.insight_rules (id, category, severity, priority, conditions, title, body, headline, reason, action, slot) values
 ${values.join(',\n')}
 on conflict (id) do update set
   category = excluded.category, severity = excluded.severity, priority = excluded.priority,
-  conditions = excluded.conditions, title = excluded.title, body = excluded.body, updated_at = now();
+  conditions = excluded.conditions, title = excluded.title, body = excluded.body,
+  headline = excluded.headline, reason = excluded.reason, action = excluded.action, slot = excluded.slot, updated_at = now();
 
 delete from public.insight_rules where id not in (${rules.map(r => q(r.id)).join(', ')});
 `;

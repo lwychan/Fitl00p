@@ -208,6 +208,16 @@ function fillTemplate(text, ctx) {
   });
 }
 
+// Briefing parts: filled like a template, but null when absent or when any
+// value it needs is missing (a briefing never shows "—").
+function fillPart(text, ctx) {
+  if (!text) return null;
+  for (const [, key] of String(text).matchAll(/\{(\w+)(?::\d)?\}/g)) if (ctx[key] == null) return null;
+  return fillTemplate(text, ctx);
+}
+
+const SLOTS = ['app', 'morning', 'evening', 'both'];
+
 // Matching rules, highest priority first, each filled in from ctx.
 // onePerCategory keeps only the top rule of each category (the dashboard
 // card); `categories` limits to those (the Body Battery popup).
@@ -223,7 +233,9 @@ function evaluateInsights(rules, ctx, { max = 4, onePerCategory = true, categori
     if (onePerCategory && seen.has(r.category)) continue;
     seen.add(r.category);
     out.push({ id: r.id, category: r.category, severity: r.severity, priority: r.priority,
-      title: fillTemplate(r.title, ctx), body: fillTemplate(r.body, ctx) });
+      title: fillTemplate(r.title, ctx), body: fillTemplate(r.body, ctx),
+      headline: fillPart(r.headline, ctx), reason: fillPart(r.reason, ctx), action: fillPart(r.action, ctx),
+      slot: r.slot || 'app' });
     if (out.length >= max) break;
   }
   return out;
@@ -240,7 +252,8 @@ function validateRule(r) {
     if (c.op !== 'exists' && !(c.op in OPS)) errs.push(`unknown op ${c.op}`);
     if (c.op === 'between' && !(Array.isArray(c.v) && c.v.length === 2)) errs.push(`between needs [lo, hi] for ${c.m}`);
   }
-  for (const [, key] of `${r.title} ${r.body}`.matchAll(/\{(\w+)(?::\d)?\}/g)) {
+  if (r.slot != null && !SLOTS.includes(r.slot)) errs.push(`bad slot ${r.slot}`);
+  for (const [, key] of `${r.title} ${r.body} ${r.headline || ''} ${r.reason || ''} ${r.action || ''}`.matchAll(/\{(\w+)(?::\d)?\}/g)) {
     if (!(key in METRICS)) errs.push(`unknown template key ${key}`);
   }
   return errs;

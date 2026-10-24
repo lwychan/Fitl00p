@@ -114,3 +114,26 @@ test('batteryContextMetrics: charge, drains and when it hits 25%', () => {
   assert.deepEqual(I.batteryContextMetrics({ level: null, result }), {});
   assert.equal(I.batteryContextMetrics({ level: 60, result: { ...result, ratePerHr: 1 }, hasNight: false, hourNow: 9 }).battery_low_hour, undefined);
 });
+
+const PARTS_RULE = { id: 'p1', category: 'recovery', severity: 'warn', priority: 50,
+  conditions: [{ m: 'recovery', op: 'lt', v: 34 }], title: 'Low', body: 'Recovery {recovery}' };
+
+test('rule parts (headline/reason/action/slot) validate', () => {
+  assert.deepEqual(I.validateRule({ ...PARTS_RULE, headline: 'Recovery {recovery}',
+    reason: 'after only {sleep_hrs:1}h sleep', action: 'Take it easy', slot: 'morning' }), []);
+  assert.ok(I.validateRule({ ...PARTS_RULE, slot: 'noon' }).some(e => e.includes('bad slot')));
+  assert.ok(I.validateRule({ ...PARTS_RULE, reason: '{nope}' }).some(e => e.includes('unknown template key nope')));
+});
+
+test('evaluateInsights fills rule parts, defaults slot to app', () => {
+  const ctx = { recovery: 31, sleep_hrs: 4.9 };
+  const [it] = I.evaluateInsights([{ ...PARTS_RULE, headline: 'Recovery {recovery}',
+    reason: 'after only {sleep_hrs:1}h sleep', slot: 'morning' }], ctx);
+  assert.equal(it.headline, 'Recovery 31');
+  assert.equal(it.reason, 'after only 4.9h sleep');
+  assert.equal(it.action, null);
+  assert.equal(it.slot, 'morning');
+  const [plain] = I.evaluateInsights([PARTS_RULE], ctx);
+  assert.equal(plain.headline, null);
+  assert.equal(plain.slot, 'app');
+});
