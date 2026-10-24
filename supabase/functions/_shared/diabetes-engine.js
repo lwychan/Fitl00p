@@ -3628,6 +3628,7 @@ function episodeTerms(P, pumpProfile, startMs, endMs, after, { lookback, doses, 
   const basalChunks = basalDeviationChunks(P.basal, pumpProfile, lookback, endMs);
   const lagMs = CGM_LAG_MINUTES * 60000, s0 = startMs - lagMs;
   const chunkStart = basalChunks.map(c => c.units * iobFraction(Math.max(0, (s0 - c.ms) / 60000)));
+  const carbs = episodeCarbs(meals, startMs, after);
   return after.map(r => {
     const tEnd = r.ms - lagMs;   // a reading shows glucose from ~lag min earlier
     let B = 0;
@@ -3636,8 +3637,21 @@ function episodeTerms(P, pumpProfile, startMs, endMs, after, { lookback, doses, 
       if (c.ms >= tEnd) continue;
       B += chunkStart[i] - c.units * iobFraction((tEnd - c.ms) / 60000);
     }
-    return { tMin: (r.ms - startMs) / 60000, value: r.value,
-      I: insulinEffectBetween(doses, [], s0, tEnd), B, C: carbEffectBetween(meals, s0, tEnd) };
+    return { tMin: (r.ms - startMs) / 60000, value: r.value, I: insulinEffectBetween(doses, [], s0, tEnd), B };
+  }).map((t, i) => Object.assign(t, { C: carbs[i] }));
+}
+
+// Logged carb grams absorbed between the start and each reading (lagged as
+// in episodeTerms). `slow` = { ms, delayMin, durationMin } re-times one meal
+// (the episode's own) to start absorbing delayMin late, over durationMin.
+function episodeCarbs(meals, startMs, after, slow = null) {
+  const lagMs = CGM_LAG_MINUTES * 60000, s0 = startMs - lagMs;
+  const own = slow ? meals.filter(m => m.ms === slow.ms).map(m => ({ ...m, time: m.ms + slow.delayMin * 60000 })) : [];
+  const rest = slow ? meals.filter(m => m.ms !== slow.ms) : meals;
+  return after.map(r => {
+    const tEnd = r.ms - lagMs;
+    const c = carbEffectBetween(rest, s0, tEnd);
+    return slow ? c + carbEffectBetween(own, s0, tEnd, { duration: slow.durationMin }) : c;
   });
 }
 
@@ -3717,8 +3731,12 @@ function scoreCorrectionEpisode(input, correction, opts = {}) {
 const MEAL_CR_MIN_G         = 2;    // g/U: a fitted carb ratio outside [2, 60] is implausible
 const MEAL_CR_MAX_G         = 60;
 const MEAL_STACK_MIN        = 90;   // another carb bolus this close -> stacked-meal
-const MEAL_DELAYED_PEAK_MIN = 150;  // highest reading later than this -> delayedRise
+const MEAL_DELAYED_PEAK_MIN = 150;  // unexplained rise peaking later than this -> delayedRise
 const MEAL_MACRO_MATCH_MIN  = 20;   // macroMealLog entry within this of the bolus
+const MEAL_LATE_FAT_G       = 20;   // only meals logged with >= 20 g fat can be 'late-absorption'
+const MEAL_SLOW_DELAYS_MIN    = [0, 30, 60, 90];        // slow-absorption candidates tried
+const MEAL_SLOW_DURATIONS_MIN = [180, 240, 300, 360];
+const MEAL_SLOW_RMSE_SHARE  = 0.7;  // slow curve must cut the standard fit's rmse to <= 70%
 
 // Whole-curve fit of one meal bolus, in hindsight. With ISF known
 // (opts.isfAt(startMs); falls back to the pump correction factor),
@@ -3727,10 +3745,18 @@ const MEAL_MACRO_MATCH_MIN  = 20;   // macroMealLog entry within this of the bol
 // scoreCorrectionEpisode). Every logged carb absorbing in the window (incl.
 // an earlier meal's tail) shares the fitted ratio.
 // idealUnits = carbs / fitted CR is the dose that would have been right;
-// deltaUnits = idealUnits - units. peakMin = minutes to the highest reading;
-// delayedRise = that peak came after 150 min (fat/protein-slowed meal).
+// deltaUnits = idealUnits - units. peakMin = minutes to the highest reading.
+// delayedRise = glucose rose later than the standard carb curve explains:
+// the fit's residual peaks > 2.0 after 150 min, or the episode is
+// 'late-absorption'. (Raw peak time isn't used: an under-dosed meal peaks
+// late too, without any slow absorption.)
 // Confounders as scoreCorrectionEpisode, except carbs in the window are the
-// point here: instead 'stacked-meal' when another carb bolus is within 90 min.
+// point here: instead 'stacked-meal' when another carb bolus is within 90 min,
+// and 'late-absorption' (checked before 'unexplained-rise') when a meal
+// logged with >= 20 g fat leaves a late residual rise that a delayed /
+// stretched carb curve for that meal explains (fit.slowAbsorption holds the
+// best delay/duration). Late-absorption episodes are not clean: their
+// standard-curve CR is biased, so CR learning skips them.
 // Missing/implausible ISF or no basal schedule -> 'missing-profile';
 // a fitted CR <= 0, non-finite or outside [2, 60] g/U -> 'implausible-fit'.
 function scoreMealEpisode(input, bolus, opts = {}) {
@@ -3752,24 +3778,48 @@ function scoreMealEpisode(input, bolus, opts = {}) {
   const missingProfile = isf == null || !hasProfileField(pumpProfile, 'basalRate');
   const win = episodeDoses(P, startMs, endMs, bolus);
 
+  const toCr = coef => (coef != null && Number.isFinite(1 / coef) ? 1 / coef : null);
+  const isPlausible = cr => cr != null && cr >= MEAL_CR_MIN_G && cr <= MEAL_CR_MAX_G;
   let rows = [], carbRatio = null, rmse = null;
   if (!missingProfile) {
     rows = episodeTerms(P, pumpProfile, startMs, endMs, after, win)
       .map(t => ({ tMin: t.tMin, x: isf * t.C, y: g0 == null ? NaN : t.value - g0 + isf * (t.I + t.B) }));
     const f = fitThroughOrigin(rows);
     rmse = f.rmse;
-    carbRatio = f.coef != null && Number.isFinite(1 / f.coef) ? 1 / f.coef : null;
+    carbRatio = toCr(f.coef);
   }
-  const plausible = carbRatio != null && carbRatio >= MEAL_CR_MIN_G && carbRatio <= MEAL_CR_MAX_G;
+  const plausible = isPlausible(carbRatio);
   const idealUnits = carbRatio > 0 ? carbs / carbRatio : null;
 
   let peakMin = null, peak = -Infinity;
   for (const r of after) if (r.value > peak) { peak = r.value; peakMin = (r.ms - startMs) / 60000; }
 
   let macros = null, bestDt = Infinity;
-  for (const m of sliceByMs(P.macroMeals, startMs - MEAL_MACRO_MATCH_MIN * 60000, startMs + MEAL_MACRO_MATCH_MIN * 60000)) {
+  for (const m of sliceByMs(P.macroMeals || [], startMs - MEAL_MACRO_MATCH_MIN * 60000, startMs + MEAL_MACRO_MATCH_MIN * 60000)) {
     const dt = Math.abs(m.ms - startMs);
     if (dt < bestDt) { bestDt = dt; macros = { fat: m.fat, protein: m.protein }; }
+  }
+
+  // late residual rise: the standard curve leaves glucose > 2.0 above the fit, peaking after 150 min
+  let resPeak = -Infinity, resPeakMin = null;
+  for (const r of rows) if (Number.isFinite(r.res) && r.res > resPeak) { resPeak = r.res; resPeakMin = r.tMin; }
+  const lateResidual = resPeak > EPISODE_RISE_MMOL && resPeakMin > MEAL_DELAYED_PEAK_MIN;
+
+  // high-fat meal with a late rise: does a delayed/stretched curve for this meal explain it?
+  let slowAbsorption = null;
+  if (lateResidual && rmse > 0 && (macros?.fat ?? 0) >= MEAL_LATE_FAT_G) {
+    const own = win.meals.find(m => m.ms === startMs);
+    let best = null;
+    for (const delayMin of MEAL_SLOW_DELAYS_MIN) for (const durationMin of MEAL_SLOW_DURATIONS_MIN) {
+      if (!own || (delayMin === 0 && durationMin === COB_DURATION_MINUTES)) continue;
+      const C = episodeCarbs(win.meals, startMs, after, { ms: startMs, delayMin, durationMin });
+      const alt = rows.map((r, i) => ({ tMin: r.tMin, x: isf * C[i], y: r.y }));
+      const f = fitThroughOrigin(alt);
+      if (f.rmse != null && (!best || f.rmse < best.rmse)) best = { delayMin, durationMin, rmse: f.rmse, carbRatio: toCr(f.coef), rows: alt };
+    }
+    if (best && best.rmse <= MEAL_SLOW_RMSE_SHARE * rmse && isPlausible(best.carbRatio) && !hasUnexplainedRise(best.rows)) {
+      slowAbsorption = { delayMin: best.delayMin, durationMin: best.durationMin, carbRatio: best.carbRatio, rmse: best.rmse };
+    }
   }
 
   const stacked = sliceByMs(P.boluses, startMs - MEAL_STACK_MIN * 60000, startMs + MEAL_STACK_MIN * 60000)
@@ -3782,14 +3832,15 @@ function scoreMealEpisode(input, bolus, opts = {}) {
   else if (episodeMaxGap(after, startMs, endMs) > EPISODE_MAX_GAP_MIN || g0 == null) confounded = 'sensor-gap';
   else if (stacked) confounded = 'stacked-meal';
   else if (hasCompressionLow(rows)) confounded = 'compression-low';
+  else if (slowAbsorption) confounded = 'late-absorption';
   else if (hasUnexplainedRise(rows)) confounded = 'unexplained-rise';
   else if (!plausible) confounded = 'implausible-fit';
 
   return {
     kind: 'meal', startMs, carbs, units, context,
-    fit: { carbRatio, rmse, n: missingProfile ? after.length : rows.length, peakMin, idealUnits },
+    fit: { carbRatio, rmse, n: missingProfile ? after.length : rows.length, peakMin, idealUnits, slowAbsorption },
     deltaUnits: idealUnits == null ? null : idealUnits - units,
-    macros, delayedRise: peakMin != null && peakMin > MEAL_DELAYED_PEAK_MIN,
+    macros, delayedRise: confounded === 'late-absorption' || lateResidual,
     confounded,
   };
 }

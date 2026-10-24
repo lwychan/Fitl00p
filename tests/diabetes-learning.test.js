@@ -308,24 +308,74 @@ test('under-dosed meal -> idealUnits > units', () => {
 const simFat = simulatePatient({ days: 60, seed: 1, fatMeals: { rate: 0.3, fat: 40, delayMin: 60, durationMin: 300 } });
 const simFatEnd = simFat.glucoseHistory[simFat.glucoseHistory.length - 1].time;
 
-test('high-fat meal peaks late -> delayedRise', () => {
-  const P = E.prepareLearningInput({ ...simInput(simFat), macroMealLog: simFat.macroMealLog });
-  const fatTimes = new Set(simFat.truth.fatMeals.map(m => m.time));
+let _fat = null;   // simFat meals scored lazily, once
+function fatMeals() {
+  if (!_fat) {
+    const P = E.prepareLearningInput({ ...simInput(simFat), macroMealLog: simFat.macroMealLog });
+    const fatTimes = new Set(simFat.truth.fatMeals.map(m => m.time));
+    const all = loggedMeals(simFat).map(b => ({ b, fat: fatTimes.has(b.time), ep: E.scoreMealEpisode(P, b, mealOpts(simFat, simFatEnd)) }))
+      .filter(x => x.ep);
+    _fat = { P, all };
+  }
+  return _fat;
+}
+const countBy = xs => xs.reduce((o, { ep }) => { o[ep.confounded] = (o[ep.confounded] || 0) + 1; return o; }, {});
+// windows the learner can't use for anything regardless of fat
+const unusable = ep => ['stacked-meal', 'sensor-gap', 'too-few-readings', 'compression-low'].includes(ep.confounded);
+
+test('high-fat meal peaks late -> late-absorption with delayedRise', () => {
+  const { all } = fatMeals();
+  const fat = all.filter(x => x.fat && !unusable(x.ep));
+  assert.ok(fat.length >= 20, `only ${fat.length} usable fat meals`);
+  const late = fat.filter(({ ep }) => ep.confounded === 'late-absorption');
+  console.log(`fat meals (40 g): ${JSON.stringify(countBy(fat))}; slow fits ${late.slice(0, 8).map(({ ep }) => `${ep.fit.slowAbsorption.delayMin}+${ep.fit.slowAbsorption.durationMin}`).join(' ')}`);
+  assert.ok(late.length / fat.length >= 0.8, `late-absorption ${late.length}/${fat.length}`);
+  for (const { ep } of late) {
+    assert.strictEqual(ep.delayedRise, true);
+    assert.ok(ep.macros.fat >= 20);
+    assert.ok(ep.fit.slowAbsorption && ep.fit.slowAbsorption.carbRatio >= 2 && ep.fit.slowAbsorption.carbRatio <= 60);
+  }
+  // one 40 g-fat meal on its own
+  const one = late[0];
+  assert.deepStrictEqual(one.ep.macros, { fat: 40, protein: one.ep.macros.protein });
+  assert.strictEqual(one.ep.confounded, 'late-absorption');
+  assert.strictEqual(one.ep.delayedRise, true);
+});
+
+test('late-absorption never on low-fat or unlogged-macro meals; snacks stay unexplained-rise', () => {
+  const { all } = fatMeals();
+  const plain = all.filter(x => !x.fat);
+  assert.ok(plain.length > 50);
+  assert.strictEqual(plain.filter(({ ep }) => ep.confounded === 'late-absorption').length, 0);
+  for (const { ep } of plain) assert.ok(ep.macros && ep.macros.fat < 20);
+  const snacked = plain.filter(({ b }) => simFat.truth.snacks.some(s => s.time >= b.time - 60 * 60000 && s.time <= b.time + 240 * 60000));
+  assert.ok(snacked.length >= 5, `only ${snacked.length} snack-overlapping plain meals`);
+  console.log(`snack-overlapping plain meals: ${JSON.stringify(countBy(snacked))}`);
+  // no macro log at all (default sim) -> never late-absorption
+  assert.strictEqual(meals60().all.filter(({ ep }) => ep && ep.confounded === 'late-absorption').length, 0);
+});
+
+test('late-absorption episodes are not clean, so CR learning ignores them', () => {
+  const { all } = fatMeals();
+  const late = all.filter(({ ep }) => ep.confounded === 'late-absorption');
+  assert.ok(late.length > 0);
+  for (const { ep } of late) assert.notStrictEqual(ep.confounded, null);
+  // CR learning set (confounded === null) holds no fat meal that the slow-curve explained
+  const clean = all.filter(({ ep }) => ep.confounded === null);
+  assert.ok(clean.length >= 40);
+  assert.strictEqual(clean.filter(({ ep }) => ep.fit.slowAbsorption).length, 0);
+});
+
+test('delayedRise follows the unexplained late rise, not the raw peak', () => {
+  const { all } = fatMeals();
+  // clean plain meals, incl. under-dosed ones (they peak late on raw glucose, but the fit explains it)
+  const plainClean = all.filter(x => !x.fat && x.ep.confounded === null && !inBoost(simFat, x.b.time, x.b.time + 5 * H));
   const underdosed = new Set(simFat.truth.underdosedMeals.map(m => m.time));
-  // well-dosed meals (no deliberate under-dose), nothing unlogged/stacked/missing in the window
-  const usable = loggedMeals(simFat).filter(b => !underdosed.has(b.time) &&
-    !simFat.truth.snacks.some(s => s.time > b.time - 3 * H && s.time < b.time + 5 * H) &&
-    !inBoost(simFat, b.time, b.time + 5 * H))
-    .map(b => ({ b, ep: E.scoreMealEpisode(P, b, mealOpts(simFat, simFatEnd)) }))
-    .filter(({ ep }) => ep && !['stacked-meal', 'sensor-gap', 'too-few-readings', 'compression-low'].includes(ep.confounded));
-  const fat = usable.filter(({ b }) => fatTimes.has(b.time)), plain = usable.filter(({ b }) => !fatTimes.has(b.time));
-  assert.ok(fat.length >= 5 && plain.length >= 10, `fat ${fat.length}, plain ${plain.length}`);
-  const fatLate = fat.filter(({ ep }) => ep.delayedRise).length, plainLate = plain.filter(({ ep }) => ep.delayedRise).length;
-  console.log(`delayedRise: fat ${fatLate}/${fat.length} (peaks ${fat.map(x => x.ep.fit.peakMin).join(',')}), plain ${plainLate}/${plain.length}`);
-  assert.ok(fatLate / fat.length >= 0.8, `fat meals flagged ${fatLate}/${fat.length}`);
-  assert.ok(plainLate / plain.length <= 0.2, `plain meals flagged ${plainLate}/${plain.length}`);
-  for (const { ep } of fat) assert.deepStrictEqual(ep.macros, { fat: 40, protein: ep.macros.protein });
-  for (const { ep } of fat) assert.strictEqual(ep.delayedRise, ep.fit.peakMin > 150);
+  const rawLate = plainClean.filter(({ ep }) => ep.fit.peakMin > 150).length;
+  const flagged = plainClean.filter(({ ep }) => ep.delayedRise).length;
+  console.log(`clean plain meals n=${plainClean.length} (under-dosed ${plainClean.filter(x => underdosed.has(x.b.time)).length}): raw peak > 150 min ${rawLate}, delayedRise ${flagged}`);
+  assert.ok(plainClean.length >= 40);
+  assert.ok(flagged / plainClean.length <= 0.05, `plain meals flagged ${flagged}/${plainClean.length}`);
 });
 
 test('meal episode: null until elapsed, stacked-meal, missing profile, macros null without a log', () => {
