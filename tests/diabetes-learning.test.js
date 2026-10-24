@@ -181,3 +181,69 @@ test('episodeContext fills what it can and nulls the rest', () => {
   assert.strictEqual(ctx.rhrZ, null);
   assert.strictEqual(ctx.sleepHrs, null);
 });
+
+/* ── Task 3 fix round 1 ─────────────────────────────────────────────── */
+const sim90 = [1, 2, 3, 4, 5, 6, 7].map(seed => simulatePatient({ days: 90, seed }));
+
+test('clean episodes never carry an implausible ISF (seeds 1-7 x 90 days)', () => {
+  let clean = 0, implausible = 0;
+  for (const p of sim90) {
+    const P = E.prepareLearningInput(simInput(p));
+    const nowMs = p.glucoseHistory[p.glucoseHistory.length - 1].time;
+    for (const c of p.corrections) {
+      const ep = E.scoreCorrectionEpisode(P, c, { pumpProfile: p.pumpProfile, nowMs });
+      if (!ep) continue;
+      if (ep.confounded === 'implausible-fit') { implausible++; assert.ok(ep.fit.isf != null); }
+      if (ep.confounded !== null) continue;
+      clean++;
+      assert.ok(ep.fit.isf >= 0.5 && ep.fit.isf <= 15, `clean episode with isf ${ep.fit.isf}`);
+    }
+  }
+  console.log(`seeds 1-7 x 90d: ${clean} clean, ${implausible} implausible-fit`);
+  assert.ok(clean > 300);
+});
+
+test('missing pump profile -> missing-profile, never clean', () => {
+  const p = sim90[1];
+  const P = E.prepareLearningInput(simInput(p));
+  const nowMs = p.glucoseHistory[p.glucoseHistory.length - 1].time;
+  const eps = p.corrections.map(c => E.scoreCorrectionEpisode(P, c, { nowMs })).filter(Boolean);
+  assert.ok(eps.length > 50);
+  assert.strictEqual(eps.filter(ep => ep.confounded === null).length, 0);
+  for (const ep of eps) if (!ep.confounded || ep.confounded === 'missing-profile') assert.strictEqual(ep.fit.isf, null);
+  assert.ok(eps.filter(ep => ep.confounded === 'missing-profile').length > 50);
+  // profile without a carb ratio is just as unusable
+  const noCr = { default: p.pumpProfile.default.map(({ carbRatio, ...s }) => s) };
+  const ep = E.scoreCorrectionEpisode(P, p.corrections[3], { pumpProfile: noCr, nowMs });
+  assert.strictEqual(ep.confounded, 'missing-profile');
+});
+
+test('prepared input: fast and identical to the raw path', () => {
+  const p = sim90[0];
+  const nowMs = p.glucoseHistory[p.glucoseHistory.length - 1].time;
+  const t0 = process.hrtime.bigint();
+  const P = E.prepareLearningInput(simInput(p));
+  const prepared = p.corrections.map(c => E.scoreCorrectionEpisode(P, c, { pumpProfile: p.pumpProfile, nowMs }));
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  console.log(`90-day seed 1: ${p.corrections.length} corrections scored (prepared, incl. prepare) in ${ms.toFixed(0)} ms`);
+  assert.ok(ms < 1500, `took ${ms} ms`);
+  for (let i = 0; i < p.corrections.length; i += 10) {
+    assert.deepStrictEqual(E.scoreCorrectionEpisode(simInput(p), p.corrections[i], { pumpProfile: p.pumpProfile, nowMs }), prepared[i]);
+  }
+  assert.strictEqual(E.basalDeviationUnits(P, p.pumpProfile, nowMs - 24 * H, nowMs),
+    E.basalDeviationUnits(p.basalDoses, p.pumpProfile, nowMs - 24 * H, nowMs));
+});
+
+test('duplicate readings and a dose logged in boluses are not double-counted', () => {
+  const p = sim60;
+  const { c, ep } = cleanSimEpisodes[0];
+  const dup = { ...simInput(p), glucoseHistory: [...p.glucoseHistory, ...p.glucoseHistory] };
+  const epDup = E.scoreCorrectionEpisode(dup, c, { pumpProfile: p.pumpProfile, nowMs: simEnd });
+  assert.strictEqual(epDup.fit.n, ep.fit.n);
+  assert.ok(ep.fit.n <= 48);
+  assert.strictEqual(epDup.fit.isf, ep.fit.isf);
+  // the same dose arriving via boluses instead of corrections
+  const viaBolus = { ...simInput(p), corrections: p.corrections.filter(x => x !== c), boluses: [...p.boluses, { time: c.time, units: c.units, carbs: 0 }] };
+  const epB = E.scoreCorrectionEpisode(viaBolus, c, { pumpProfile: p.pumpProfile, nowMs: simEnd });
+  assert.ok(Math.abs(epB.fit.isf - ep.fit.isf) < 1e-9, `${epB.fit.isf} vs ${ep.fit.isf}`);
+});
