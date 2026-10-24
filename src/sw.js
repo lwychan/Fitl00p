@@ -5,7 +5,7 @@
    ═══════════════════════════════════════════════════════════ */
 
 const CACHE_NAME    = 'fitl00p-v3';
-const NEVER_CACHE   = ['/app.js', '/app.css', '/index.html', '/', '/diabetes-engine.js', '/nightscout-adapter.js', '/food-utils.js', '/readiness-model.js'];
+const NEVER_CACHE   = ['/app.js', '/app.css', '/index.html', '/', '/diabetes-engine.js', '/nightscout-adapter.js', '/food-utils.js', '/readiness-model.js', '/body-battery.js'];
 
 // Absolute last-resort shell for a failed navigation with nothing cached
 // yet — self-contained (no dependency on app.js/app.css, which are

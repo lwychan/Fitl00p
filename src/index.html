@@ -305,6 +305,11 @@
     <nav class="appbar__nav" id="appNav"></nav>
     <div class="appbar__right">
       <span class="appbar__user" id="appbarUser"></span>
+      <!-- Body Battery (see loadBodyBattery in app.js) -->
+      <button type="button" class="bb-badge" id="btnBodyBattery" hidden aria-label="Body Battery">
+        <span class="bb-icon" aria-hidden="true"><span class="bb-icon__fill" id="bbIconFill"></span></span>
+        <span class="bb-badge__pct" id="bbBadgePct">—</span>
+      </button>
       <button class="appbar__icon-btn appbar__settings" id="btnOpenSettingsHeader" data-view="settings" aria-label="Settings" title="Settings">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="3"/>
@@ -1973,6 +1978,37 @@
 </div>
 
 <!-- IAM Portal Modal -->
+<div class="modal-backdrop" id="bbModal" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="bbTitle">
+    <div class="modal__head">
+      <span class="modal__title" id="bbTitle">🔋 Body Battery</span>
+      <button type="button" class="modal__close" id="bbClose" aria-label="Close">×</button>
+    </div>
+    <div class="modal__body">
+      <div class="bb-hero">
+        <div class="bb-hero__val" id="bbValue">—</div>
+        <div class="bb-hero__zone" id="bbZone"></div>
+        <div class="bb-hero__rate" id="bbRate"></div>
+      </div>
+      <canvas class="bb-chart" id="bbChart" aria-label="Body Battery since last night"></canvas>
+      <div class="bb-section-title">Since last night</div>
+      <div class="bb-rows" id="bbRows"></div>
+      <details class="bb-how">
+        <summary>How it's scored</summary>
+        <ul>
+          <li><strong>Scale 5–100</strong>, like Garmin: 76+ high, 51–75 medium, 26–50 low, 25 and under very low.</li>
+          <li><strong>Sleep charges it</strong>, faster when it's low: a good 7–8 hours takes 25% to about 80%. A night where your HRV is above your normal (and resting heart rate below) charges more; a restless night less.</li>
+          <li><strong>Workouts drain it</strong> by heart-rate effort: about −25% for a hard hour, a few % for an easy walk.</li>
+          <li><strong>Stress &amp; activity drain it slowly</strong> while you're awake: about −1% an hour sitting, up to −5–7% an hour on your feet, more on a low-HRV day.</li>
+          <li><strong>Calm rest recharges it a little</strong> (heart rate near resting): about +1–2% an hour.</li>
+          <li>Recalculated from your Apple Watch heart rate every 5 minutes while fitl00p is open; in between it ticks on at the current rate.</li>
+          <li>Garmin's own formula isn't public and needs beat-to-beat data Apple Watch doesn't share, so this is fitl00p's estimate built on the same principles.</li>
+        </ul>
+      </details>
+    </div>
+  </div>
+</div>
+
 <div class="modal-backdrop" id="iamModal" hidden>
   <div class="modal">
     <div class="modal__head">
@@ -2116,6 +2152,7 @@
 <script src="nightscout-adapter.js"></script>
 <script src="food-utils.js"></script>
 <script src="readiness-model.js"></script>
+<script src="body-battery.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

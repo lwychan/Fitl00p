@@ -2019,6 +2019,7 @@ async function _loadDashboardInner(signal) {
   // both feed the scores below. Never allowed to break the dashboard.
   try { await loadRecoveryModel({ signal }); } catch (e) { console.warn('Recovery model load failed:', e?.message || e); }
   renderFeelCheckin();
+  loadBodyBattery(healthHistory); // app-bar battery — not awaited, never blocks the dashboard
 
   // Sleep need (see computeSleepNeed) folds in yesterday's strain, so
   // that has to be computed first — same local-midnight boundary
@@ -3759,6 +3760,211 @@ $('feelCheckin')?.addEventListener('click', async (e) => {
   try { await loadRecoveryModel({ force: true }); } catch (err) { console.warn(err); }
   renderFeelCheckin();
   if (JSON.stringify(recoveryModel?.weights || null) !== before) loadDashboard();
+});
+
+/* ═══ BODY BATTERY ═══════════════════════════════════════════
+   Garmin-style 5-100 energy gauge in the app bar, rebuilt minute by
+   minute from Apple Watch data (src/body-battery.js has the maths and
+   why): the last ~2 days of heart-rate samples and sleep segments read
+   straight from HealthKit on the phone (synced nightly totals on the web),
+   plus Watch workouts. Full recompute every 5 min while the app is open
+   and whenever it comes back to the foreground; in between the % ticks
+   on at the current drain/charge rate. Tap it for the breakdown. */
+const { simulate: bbSimulate, sleepQuality: bbSleepQuality, zoneOf: bbZoneOf, groupSleepSessions: bbGroupSleep } = window.BodyBattery;
+const BB_FULL_REFRESH_MS = 5 * 60000;
+let bbState = null;      // { result, computedAt, source, sleepLast, workouts }
+let bbHistory = [];      // health_daily rows (from the dashboard load)
+let bbLoading = false;
+
+function bbZScore(hist, field, date, value, log, floor) {
+  const stats = personalBaseline(hist, field, date, { log });
+  if (!stats || value == null || (log && !(value > 0))) return null;
+  return ((log ? Math.log(value) : value) - stats.mean) / Math.max(stats.sd, floor);
+}
+
+async function loadBodyBattery(healthHistory) {
+  if (!currentUser || bbLoading) return;
+  bbLoading = true;
+  try {
+    if (healthHistory) bbHistory = healthHistory;
+    const hist = bbHistory;
+    const now = Date.now();
+    const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+    // From 18:00 two evenings ago: two nights of charging wash out the
+    // assumed starting level (each night closes ~75% of the gap to 100).
+    const start = midnight.getTime() - 30 * 3600000;
+    const startISO = new Date(start).toISOString(), nowISO = new Date(now).toISOString();
+
+    const { data: wRows } = await db.from('apple_health_workouts')
+      .select('workout_type, started_at, ended_at, avg_heart_rate')
+      .eq('user_id', currentUser.id).gte('started_at', startISO).order('started_at', { ascending: true });
+    const workouts = (wRows || []).map(w => ({
+      name: appleWorkoutTypeLabel(w.workout_type) || 'Workout',
+      start: Date.parse(w.started_at), end: Date.parse(w.ended_at),
+      avgHr: w.avg_heart_rate != null ? Number(w.avg_heart_rate) : null,
+    })).filter(w => w.end > w.start);
+
+    let hrSamples = [], sleeps = [], source = 'synced';
+    if (healthKitAvailable()) {
+      const [hrRaw, sleepRaw] = await Promise.all([
+        hkSafe(hkReadAll('heartRate', startISO, nowISO), []),
+        hkSafe(hkReadAll('sleep', new Date(start - 12 * 3600000).toISOString(), nowISO), []),
+      ]);
+      hrSamples = hrRaw.map(s => ({ t: Date.parse(s.startDate), bpm: Number(s.value) }))
+        .filter(s => Number.isFinite(s.t) && Number.isFinite(s.bpm)).sort((a, b) => a.t - b.t);
+      sleeps = bbGroupSleep(sleepRaw.map(s => ({
+        start: Date.parse(s.startDate), end: Date.parse(s.endDate || s.startDate),
+        asleep: !!s.sleepState && s.sleepState !== 'inBed' && s.sleepState !== 'awake',
+      })));
+      if (hrSamples.length) source = 'live';
+    }
+    if (!sleeps.length) {
+      // Web, or HealthKit gave nothing: nightly totals already synced to health_daily.
+      sleeps = hist.filter(h => h.sleep_start && Number(h.sleep_total_hrs) >= 1).map(h => {
+        const s = Date.parse(h.sleep_start), hrs = Number(h.sleep_total_hrs);
+        return { start: s, end: s + hrs * 1.08 * 3600000, asleepHrs: hrs };
+      }).filter(s => s.end > start - 12 * 3600000);
+    }
+    // Charge quality from that night's HRV / resting HR vs your normal (row = wake date).
+    for (const s of sleeps) {
+      const day = hkLocalDateStr(s.end);
+      const row = hist.find(h => h.log_date === day);
+      s.hrvZ = row ? bbZScore(hist, 'hrv_ms', day, row.hrv_ms, true, 0.05) : null;
+      s.rhrZ = row ? bbZScore(hist, 'resting_hr', day, row.resting_hr, false, 1) : null;
+      s.quality = bbSleepQuality(s.hrvZ, s.rhrZ);
+    }
+
+    const today = hist.find(h => h.log_date === hkLocalDateStr(now)) || {};
+    const rhrStats = personalBaseline(hist, 'resting_hr', hkLocalDateStr(now));
+    const restingHr = Number(today.resting_hr) || (rhrStats ? rhrStats.mean : 60);
+    const hrvZToday = bbZScore(hist, 'hrv_ms', hkLocalDateStr(now), today.hrv_ms, true, 0.05);
+    const stressFactor = hrvZToday == null ? 1 : clamp(1 - 0.25 * hrvZToday, 0.75, 1.5);
+
+    // Breakdown runs from the start of last night's sleep (latest session
+    // that ended after 18:00 yesterday), else from midnight.
+    const lastNight = sleeps.filter(s => s.end > midnight.getTime() - 6 * 3600000 && (s.end - s.start) > 3 * 3600000)
+      .sort((a, b) => b.end - a.end)[0] || null;
+    const result = bbSimulate({
+      start, now, startLevel: 40, sleeps, workouts, hrSamples,
+      restingHr, hrMax: personalHrMax(profile?.age_years), isFemale: profile?.sex === 'female',
+      stressFactor, breakdownFrom: lastNight ? lastNight.start : midnight.getTime(),
+    });
+    bbState = { result, computedAt: now, source, lastNight, stressFactor };
+    renderBodyBatteryBadge();
+    if (!$('bbModal')?.hidden) renderBodyBatteryModal();
+  } catch (err) {
+    console.warn('Body Battery failed:', err?.message || err);
+  } finally {
+    bbLoading = false;
+  }
+}
+
+// Level now, ticked on from the last full compute at its current rate.
+function bbLevelNow() {
+  if (!bbState) return null;
+  const hrs = (Date.now() - bbState.computedAt) / 3600000;
+  return clamp(bbState.result.level + bbState.result.ratePerHr * Math.min(hrs, 0.25), 5, 100);
+}
+
+function renderBodyBatteryBadge() {
+  const btn = $('btnBodyBattery');
+  if (!btn) return;
+  const level = bbLevelNow();
+  btn.hidden = level == null;
+  if (level == null) return;
+  const pct = Math.round(level);
+  const zone = bbZoneOf(pct);
+  $('bbBadgePct').textContent = `${pct}%`;
+  $('bbIconFill').style.width = `${pct}%`;
+  btn.dataset.zone = zone.key;
+  btn.setAttribute('aria-label', `Body Battery ${pct}%. ${zone.label}. Tap for details.`);
+}
+
+const fmtBbDelta = v => `${v >= 0 ? '+' : '−'}${Math.abs(Math.round(v))}%`;
+const fmtBbClock = ms => new Date(ms).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+
+function renderBodyBatteryModal() {
+  if (!bbState) return;
+  const { result, lastNight, source, stressFactor } = bbState;
+  const level = Math.round(bbLevelNow());
+  const zone = bbZoneOf(level);
+  $('bbValue').textContent = `${level}%`;
+  $('bbValue').dataset.zone = zone.key;
+  $('bbZone').textContent = zone.label;
+  const rate = result.ratePerHr;
+  $('bbRate').textContent = Math.abs(rate) < 0.3 ? 'Holding steady right now'
+    : rate < 0 ? `Draining about ${Math.abs(rate).toFixed(1)}% an hour right now` : `Recharging about ${rate.toFixed(1)}% an hour right now`;
+
+  const p = result.parts;
+  const rows = [];
+  rows.push({ icon: '🛏️', label: lastNight ? `Went to bed (${fmtBbClock(lastNight.start)})` : 'At midnight', detail: '', val: `${Math.round(result.levelAtBreakdown)}%`, cls: 'start' });
+  if (p.sleep > 0.5) {
+    const q = lastNight?.quality ?? 1;
+    const qWord = q >= 1.1 ? 'restful' : q <= 0.85 ? 'restless' : 'normal';
+    rows.push({ icon: '😴', label: 'Sleep', detail: lastNight ? `${fmt1(lastNight.asleepHrs)}h asleep, ${qWord} HRV/heart rate` : '', val: fmtBbDelta(p.sleep), cls: 'up' });
+  }
+  if (p.rest > 0.5) rows.push({ icon: '🧘', label: 'Rest', detail: 'calm stretches, heart rate near resting', val: fmtBbDelta(p.rest), cls: 'up' });
+  for (const w of result.workouts) {
+    rows.push({ icon: '🏋️', label: w.name, detail: `${fmtBbClock(w.start)}, ${Math.round((w.end - w.start) / 60000)} min`, val: fmtBbDelta(w.delta), cls: 'down' });
+  }
+  if (p.stress < -0.5) {
+    rows.push({ icon: '⚡', label: 'Stress & activity', detail: `heart rate above resting while not working out${stressFactor > 1.05 ? ', HRV low today' : ''}`, val: fmtBbDelta(p.stress), cls: 'down' });
+  }
+  if (p.awake < -0.5) rows.push({ icon: '⏱️', label: 'Awake time', detail: 'no recent heart-rate reading — steady estimate', val: fmtBbDelta(p.awake), cls: 'down' });
+  rows.push({ icon: '🔋', label: 'Now', detail: source === 'live' ? 'live from Apple Watch heart rate' : 'from synced Apple Health totals', val: `${level}%`, cls: 'end' });
+
+  $('bbRows').innerHTML = rows.map(r => `
+    <div class="bb-row bb-row--${r.cls}">
+      <span class="bb-row__icon" aria-hidden="true">${r.icon}</span>
+      <span class="bb-row__text"><span class="bb-row__label">${escapeHtml(r.label)}</span>${r.detail ? `<span class="bb-row__detail">${escapeHtml(r.detail)}</span>` : ''}</span>
+      <span class="bb-row__val">${r.val}</span>
+    </div>`).join('');
+  drawBodyBatteryChart();
+}
+
+function drawBodyBatteryChart() {
+  const canvas = $('bbChart');
+  if (!canvas || !bbState) return;
+  const from = bbState.lastNight ? bbState.lastNight.start - 3600000 : bbState.result.series[0].t;
+  const pts = bbState.result.series.filter(p => p.t >= from);
+  if (pts.length < 2) return;
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  const W = canvas.clientWidth || 300, Hh = canvas.clientHeight || 90;
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(Hh * dpr);
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  const css = getComputedStyle(document.documentElement);
+  const ink3 = css.getPropertyValue('--ink-4').trim() || 'rgba(128,128,128,.3)';
+  const accent = css.getPropertyValue('--blue').trim() || '#4a90e2';
+  const t0 = pts[0].t, t1 = pts[pts.length - 1].t;
+  const x = t => 4 + ((t - t0) / Math.max(1, t1 - t0)) * (W - 8);
+  const y = v => 4 + (1 - v / 100) * (Hh - 8);
+  ctx.strokeStyle = ink3; ctx.lineWidth = 1; ctx.setLineDash([3, 4]);
+  [25, 50, 75].forEach(v => { ctx.beginPath(); ctx.moveTo(0, y(v)); ctx.lineTo(W, y(v)); ctx.stroke(); });
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  pts.forEach((p, i) => (i ? ctx.lineTo(x(p.t), y(p.level)) : ctx.moveTo(x(p.t), y(p.level))));
+  ctx.strokeStyle = accent; ctx.lineWidth = 2.5; ctx.lineJoin = 'round'; ctx.stroke();
+  ctx.lineTo(x(t1), y(0)); ctx.lineTo(x(t0), y(0)); ctx.closePath();
+  ctx.globalAlpha = 0.15; ctx.fillStyle = accent; ctx.fill(); ctx.globalAlpha = 1;
+}
+
+$('btnBodyBattery')?.addEventListener('click', () => {
+  if (!bbState) return;
+  $('bbModal').hidden = false;
+  renderBodyBatteryModal();
+  if (Date.now() - bbState.computedAt > 60000) loadBodyBattery();
+});
+$('bbModal')?.addEventListener('click', e => {
+  if (e.target.id === 'bbModal' || e.target.closest('#bbClose')) $('bbModal').hidden = true;
+});
+setInterval(() => {
+  if (document.hidden || !currentUser || !bbState) return;
+  if (Date.now() - bbState.computedAt > BB_FULL_REFRESH_MS) loadBodyBattery();
+  else { renderBodyBatteryBadge(); if (!$('bbModal').hidden) renderBodyBatteryModal(); }
+}, 30000);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && currentUser && bbState) loadBodyBattery();
 });
 
 /* ═══════════════════════════════════════════════════════════
