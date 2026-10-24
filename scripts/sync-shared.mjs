@@ -12,6 +12,7 @@ const MODULES = [
   { name: 'nightscout-adapter', global: 'NightscoutAdapter' },
   { name: 'readiness-model',    global: 'ReadinessModel' },
   { name: 'insights',           global: 'Insights' },
+  { name: 'briefings',          global: 'Briefings' },
 ];
 const check = process.argv.includes('--check');
 let stale = false;
