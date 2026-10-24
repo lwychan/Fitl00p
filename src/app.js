@@ -9602,7 +9602,7 @@ async function renderDiabetesTab(data) {
   renderDxForecast(forecast, settings);
 
   const resolved = DiabetesEngine.resolveCorrections(data.corrections, data.glucoseHistory, carbBoluses, now);
-  const factor = DiabetesEngine.personalCorrectionFactor(resolved);
+  const factor = DiabetesEngine.resolveCorrectionFactor(resolved, settings, { model: input.model, atMs: now, workouts: input.activities?.workouts || [] });
   const retrospective = await engineAsync('retrospectiveCorrection', input, now);
   const suggestion = DiabetesEngine.suggestCorrectionDose(ctx, factor, carbBoluses, data.corrections, now, retrospective.discrepancy, input);
   renderDxCorrection(suggestion);
@@ -10001,7 +10001,7 @@ function renderDxCorrection(s) {
   el.dxCorrectionBody.innerHTML = `
     <div class="dx-suggestion">
       <span class="dx-suggestion__val">${fmtDose(s.suggestedUnits)}u</span>
-      <span class="dx-suggestion__meta">factor ${fmt1(s.factor)} mmol/L/u, from ${s.factorSampleSize} corrections</span>
+      <span class="dx-suggestion__meta">factor ${fmt1(s.factor)} mmol/L/u, ${s.factorSource === 'learned' ? `learned from ${s.factorSampleSize} corrections` : 'from your pump setting'}</span>
     </div>
     ${s.cappedAt10 ? '<p class="dx-note">Capped at 10u — the raw math suggested more.</p>' : ''}
     ${dxRetrospectiveNote(s.retrospectiveEffect)}
@@ -10058,7 +10058,7 @@ async function refreshDxLive() {
     renderDxInsulinGaps(insulinGaps);
 
     const resolved = DiabetesEngine.resolveCorrections(data.corrections, data.glucoseHistory, carbBoluses, now);
-    const factor = DiabetesEngine.personalCorrectionFactor(resolved);
+    const factor = DiabetesEngine.resolveCorrectionFactor(resolved, settings, { model: input.model, atMs: now, workouts: input.activities?.workouts || [] });
     const retrospective = await engineAsync('retrospectiveCorrection', input, now);
     const suggestion = DiabetesEngine.suggestCorrectionDose(ctx, factor, carbBoluses, data.corrections, now, retrospective.discrepancy, input);
     renderDxCorrection(suggestion);

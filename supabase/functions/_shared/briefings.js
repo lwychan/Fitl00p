@@ -235,7 +235,7 @@ const u1 = n => (Math.round(n * 10) / 10).toFixed(1);
 
 // Wording for the real-time forecast pushes. The high alert keeps a
 // correction SUGGESTION (owner's decision): "consider", always with insulin
-// on board, naming whether the factor was learned from past corrections or
+// on board, naming whether the factor was learned (and from how many corrections) or
 // is the configured one — and never while low or falling.
 function glucoseAlert(kind, f) {
   if (!f || f.forecastGlucose == null) return null;
@@ -247,8 +247,15 @@ function glucoseAlert(kind, f) {
   }
   if (f.currentGlucose != null && f.currentGlucose < 3.9) return null;
   if (f.trendPerMinute != null && f.trendPerMinute < 0) return null;
-  const source = f.factorSource === 'observed'
-    ? `based on your last ${f.factorSampleSize} corrections` : 'using your set factor';
+  // 'learned' = the learned model's block for this time of day (factorSampleSize = its
+  // evidence count; factorBasis 'pooled' = from the all-day fit); 'observed' is the old
+  // engine's rolling average, kept as an alias with its old wording.
+  const source = f.factorSource === 'learned'
+    ? (f.factorBasis === 'pooled'
+      ? `based on ${f.factorSampleSize} corrections across the day`
+      : `based on ${f.factorSampleSize} corrections at this time of day`)
+    : f.factorSource === 'observed'
+      ? `based on your last ${f.factorSampleSize} corrections` : 'using your set factor';
   const dose = f.suggestedUnits > 0 ? `consider ~${Number(f.suggestedUnits).toFixed(2)}u correction (${source})`
     : 'no correction needed yet with what\'s active';
   return { title: '⬆️ High predicted', body: `Heading to ~${u1(f.forecastGlucose)} in 2h, ${u1(iob)}u active — ${dose}.` };

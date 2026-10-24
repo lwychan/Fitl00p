@@ -279,6 +279,8 @@ test('glucose alerts: low says IOB and carbs; high names the factor source; neve
   assert.equal(B.glucoseAlert('high', hi).body,
     'Heading to ~14.2 in 2h, 1.8u active — consider ~1.20u correction (based on your last 12 corrections).');
   assert.ok(B.glucoseAlert('high', { ...hi, factorSource: 'pump-setting' }).body.includes('(using your set factor)'));
+  assert.ok(B.glucoseAlert('high', { ...hi, factorSource: 'learned', factorSampleSize: 18 }).body
+    .includes('(based on 18 corrections at this time of day)'));
   assert.equal(B.glucoseAlert('high', { ...hi, trendPerMinute: -0.02 }), null);
   assert.equal(B.glucoseAlert('high', { ...hi, currentGlucose: 3.6 }), null);
   assert.equal(B.glucoseAlert('low', { forecastGlucose: 4.1, iob: 0, trendPerMinute: -0.05, currentGlucose: 6 }).body,

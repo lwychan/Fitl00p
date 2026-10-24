@@ -484,32 +484,32 @@ function personalCorrectionFactor(resolvedCorrections, opts = {}) {
   return { factor, sampleSize: recent.length, cleanSampleSize: clean.length, sufficient: true };
 }
 
-// Blends the pump's own already-clinically-set correction factor with
-// what's actually been observed here: prefer the observed factor once
-// there's enough clean data to trust it (same >=3-sample gate as
-// personalCorrectionFactor), otherwise fall back to the pump-setting
-// value so dosing isn't blocked purely for lack of history yet. Never
-// fabricates a number when neither is available.
-//
-// This is the single point every caller (correction-dose suggestion,
-// the 2h hypo forecast, the chart's projected-curve, missed-basal
-// impact, the meal-dose split calculator, sensitivity-by-time-of-day)
-// gets its factor from — bounding it here to a clinically plausible
-// range (MIN/MAX_RELIABLE_FACTOR) means every one of them is protected
-// by construction, rather than each needing its own copy of the same
-// check (personalCorrectionFactor's own per-sample filtering already
-// keeps an OBSERVED factor in-bounds; this closes the same gap for the
-// pump-setting fallback, which wasn't filtered anywhere).
+// The single point every caller (correction-dose suggestion, the 2h
+// forecasts, the chart's projected curve, missed-basal impact, the meal
+// calculator) gets its correction factor from. With a fresh learned model
+// (applyModel, Stage 8) it's the model's ISF for this time of day, with
+// boost/modifiers applied and held inside ±30% of the pump value; without
+// one it's the pump setting. The old rolling average of past corrections
+// (personalCorrectionFactor) no longer feeds doses — it stays exported for
+// the Patterns display only. Bounded to a clinically plausible range
+// (MIN/MAX_RELIABLE_FACTOR) either way; never fabricates a number.
 function resolveCorrectionFactor(resolvedCorrections, settings, opts = {}) {
-  const observed = personalCorrectionFactor(resolvedCorrections, opts);
-  if (observed.sufficient) {
-    return { factor: observed.factor, source: 'observed', sampleSize: observed.sampleSize, cleanSampleSize: observed.cleanSampleSize };
+  const { model = null, atMs = Date.now() } = opts;
+  const inBounds = f => Number.isFinite(f) && f >= MIN_RELIABLE_FACTOR && f <= MAX_RELIABLE_FACTOR;
+  const applied = model ? applyModel(model, atMs, opts) : null;
+  if (applied && inBounds(applied.isf)) {
+    const learned = applied.isfSource === 'learned' || applied.isfSource === 'pooled';
+    return {
+      factor: applied.isf, source: learned ? 'learned' : 'pump-setting', basis: applied.isfSource,
+      sampleSize: applied.sampleSize, multiplier: applied.multiplier,
+      rateLimited: applied.rateLimited, outsideBand: applied.outsideBand, reasons: applied.isfReasons,
+    };
   }
   const pumpFactor = Number(settings?.correctionFactor);
-  if (Number.isFinite(pumpFactor) && pumpFactor >= MIN_RELIABLE_FACTOR && pumpFactor <= MAX_RELIABLE_FACTOR) {
-    return { factor: pumpFactor, source: 'pump-setting', sampleSize: observed.sampleSize, cleanSampleSize: observed.cleanSampleSize };
+  if (inBounds(pumpFactor)) {
+    return { factor: pumpFactor, source: 'pump-setting', sampleSize: 0, reasons: [`sensitivity ${fmt1(pumpFactor)} from your pump setting`] };
   }
-  return { factor: null, source: null, sampleSize: observed.sampleSize, cleanSampleSize: observed.cleanSampleSize };
+  return { factor: null, source: null, sampleSize: 0, reasons: ['no correction factor set'] };
 }
 
 // Any dose (bolus or correction) that's 15-110min old and still carries
@@ -564,16 +564,9 @@ function suggestCorrectionDose(ctx, factorResult, boluses, corrections, now = Da
   // where it happens to be this instant.
   //
   // Priced the same way the Meal Bolus Calculator prices a fresh meal —
-  // suggestMealDose's own recency/situation-weighted history for this
-  // exact carb amount, when there's enough of it — rather than always
-  // falling back to the flat pump-programmed carb ratio the way this
-  // used to unconditionally do. suggestMealDose already degrades to that
-  // same flat ratio internally when history is thin, so this never
-  // regresses below the old behavior, only personalizes on top of it
-  // when real history supports it. Before this, the two tools could
-  // suggest very different totals for what was actually the same
-  // digesting meal, since one had learned this person's real carb
-  // sensitivity and the other silently hadn't.
+  // suggestMealDose: the learned model's carb ratio for this time of day
+  // when a fresh model is loaded, else the pump-programmed carb ratio — so
+  // the two tools never disagree about the same digesting meal.
   const carbRatio = Number(settings.carbRatio) || null;
   const cobDose = (input && ctx.cob > 0) ? suggestMealDose(input, ctx.cob, now) : null;
   const cobUnits = cobDose?.suggestedUnits != null
@@ -584,13 +577,14 @@ function suggestCorrectionDose(ctx, factorResult, boluses, corrections, now = Da
   const base = {
     factor: factorResult.factor,
     factorSampleSize: factorResult.sampleSize,
+    factorSource: factorResult.source ?? null,
     effectiveGlucose: ctx.effectiveGlucose,
     retrospectiveEffect,
     adjustedEffectiveGlucose,
     cob: ctx.cob,
     cobRiseMmol,
-    cobPersonalized: cobDose?.source === 'weighted-history',
-    cobPersonalizedSampleSize: cobDose?.source === 'weighted-history' ? cobDose.sampleSize : 0,
+    cobPersonalized: cobDose?.source === 'learned',
+    cobPersonalizedSampleSize: cobDose?.source === 'learned' ? cobDose.sampleSize : 0,
     idealTarget,
     iob: ctx.iob,
     suggestedUnits: null,
@@ -599,6 +593,7 @@ function suggestCorrectionDose(ctx, factorResult, boluses, corrections, now = Da
     cappedAt10: false,
     stackingCaution: false,
     stackingDoses: [],
+    reasons: [...(factorResult.reasons || [])],
   };
 
   if (ctx.stale) return { ...base, withheldReason: 'stale-reading' };
@@ -633,10 +628,10 @@ function suggestCorrectionDose(ctx, factorResult, boluses, corrections, now = Da
 function evaluateCorrection(input, now = Date.now()) {
   const { glucoseHistory = [], boluses = [], corrections = [], settings = {} } = input || {};
   const resolvedCorrections = resolveCorrections(corrections, glucoseHistory, boluses, now);
-  const factor = resolveCorrectionFactor(resolvedCorrections, settings);
+  const factor = resolveCorrectionFactor(resolvedCorrections, settings, modelOpts(input, now));
   const context = dosingContext({ glucoseHistory, boluses, corrections, settings }, now);
   const rc = retrospectiveCorrection(input, now);
-  const suggestion = suggestCorrectionDose(context, factor, boluses, corrections, now, rc.discrepancy);
+  const suggestion = suggestCorrectionDose(context, factor, boluses, corrections, now, rc.discrepancy, input);
   return { context, resolvedCorrections, factor, retrospective: rc, suggestion };
 }
 
@@ -1491,10 +1486,10 @@ function retrospectiveCorrection(input, now = Date.now()) {
   const { glucoseHistory = [], boluses = [], corrections = [], settings = {} } = input || {};
   const nowMs = toMs(now);
   const curveOpts = insulinCurveOpts(settings);
-  const carbRatio = Number(settings.carbRatio) || null;
+  const carbRatio = modelCarbRatio(input, now) || Number(settings.carbRatio) || null;
 
   const resolvedCorrections = resolveCorrections(corrections, glucoseHistory, boluses, now);
-  const factorResult = resolveCorrectionFactor(resolvedCorrections, settings);
+  const factorResult = resolveCorrectionFactor(resolvedCorrections, settings, modelOpts(input, now));
   if (factorResult.factor == null) {
     return { discrepancy: null, withheldReason: 'insufficient-history', factor: factorResult };
   }
@@ -1567,12 +1562,15 @@ function computeForecastCore(input, now = Date.now()) {
   }
 
   const resolvedCorrections = resolveCorrections(corrections, glucoseHistory, boluses, now);
-  const factorResult = resolveCorrectionFactor(resolvedCorrections, settings);
+  const mOpts = modelOpts(input, now);
+  const factorResult = resolveCorrectionFactor(resolvedCorrections, settings, mOpts);
   if (factorResult.factor == null) {
     return { withheldReason: 'insufficient-history', context: ctx, factor: factorResult };
   }
   const factor = factorResult.factor;
-  const carbRatio = Number(settings.carbRatio) || null;
+  const applied = mOpts.model ? applyModel(mOpts.model, nowMs, mOpts) : null;
+  const carbRatio = (applied && applied.carbRatio > 0 ? applied.carbRatio : null) || Number(settings.carbRatio) || null;
+  const reasons = [...(factorResult.reasons || [])];
 
   const insulinActionUnits = insulinActionWithin(boluses, corrections, nowMs, HYPO_FORECAST_HORIZON_MIN, curveOpts);
   const carbAbsorptionGrams = carbAbsorptionWithin(boluses, nowMs, HYPO_FORECAST_HORIZON_MIN);
@@ -1583,6 +1581,21 @@ function computeForecastCore(input, now = Date.now()) {
   const workoutProfiles = buildWorkoutTypeProfiles(activities.workouts, glucoseHistory);
   const openWorkoutDropMmol = openWorkoutDropWithin(workoutProfiles, activities.workouts, nowMs, HYPO_FORECAST_HORIZON_MIN);
 
+  // Learned model: an in-progress workout of a learned type drops at its
+  // learned rate for the rest of the session (within the horizon), and the
+  // forecast is shifted by this block's learned bias (capped ±1.0 mmol/L).
+  let liveExerciseDropMmol = 0, forecastBiasShift = 0;
+  if (applied?.exerciseOngoing && applied.exerciseDropPerMin > 0) {
+    const remainingMin = clamp((applied.exerciseOngoing.endMs - nowMs) / 60000, 0, HYPO_FORECAST_HORIZON_MIN);
+    liveExerciseDropMmol = applied.exerciseDropPerMin * remainingMin;
+    reasons.push(`${applied.exerciseOngoing.workoutType} in progress: about ${fmt1(liveExerciseDropMmol)} mmol/L more drop before it ends (${applied.exerciseOngoing.n} sessions)`);
+  }
+  const bias = applied ? modelForecastBias(mOpts.model, nowMs) : null;
+  if (bias && bias.bias !== 0) {
+    forecastBiasShift = -bias.bias;
+    reasons.push(`forecast adjusted ${forecastBiasShift > 0 ? '+' : ''}${fmt1(forecastBiasShift)} mmol/L — at this time of day it has run ${bias.bias > 0 ? 'high' : 'low'} (${bias.n} checks)`);
+  }
+
   // Retrospective correction: how far off the model's insulin+carb-only
   // prediction was over the last 30 minutes, extrapolated forward (and
   // decayed) to the forecast's own horizon — see the comment above
@@ -1591,7 +1604,8 @@ function computeForecastCore(input, now = Date.now()) {
   const rc = retrospectiveCorrection(input, now);
   const retrospectiveEffect = retrospectiveEffectAt(rc.discrepancy, HYPO_FORECAST_HORIZON_MIN);
 
-  const rawForecastGlucose = ctx.effectiveGlucose - insulinDropMmol + carbRiseMmol - openWorkoutDropMmol + retrospectiveEffect;
+  const rawForecastGlucose = ctx.effectiveGlucose - insulinDropMmol + carbRiseMmol - openWorkoutDropMmol
+    - liveExerciseDropMmol + retrospectiveEffect + forecastBiasShift;
   // Floor matches projectedGlucoseCurve's existing Math.max(1, ...) for
   // the chart; ceiling is new — see FORECAST_GLUCOSE_MAX_MMOL above.
   const forecastGlucose = clamp(rawForecastGlucose, 1, FORECAST_GLUCOSE_MAX_MMOL);
@@ -1600,14 +1614,16 @@ function computeForecastCore(input, now = Date.now()) {
     withheldReason: null, ctx, forecastGlucose,
     forecastCapped: forecastGlucose !== rawForecastGlucose,
     effectiveGlucose: ctx.effectiveGlucose,
-    insulinDropMmol, carbRiseMmol, openWorkoutDropMmol,
+    insulinDropMmol, carbRiseMmol, openWorkoutDropMmol, liveExerciseDropMmol, forecastBiasShift,
     retrospectiveEffect, retrospectiveDiscrepancy: rc.discrepancy,
     factor, factorSampleSize: factorResult.sampleSize,
-    // For the alert wording: which factor the suggestion used ('observed' =
-    // learned from past corrections, 'pump-setting' = the configured one),
-    // insulin on board, and the current trend.
-    factorSource: factorResult.source, iob: ctx.iob, trendPerMinute: ctx.trendPerMinute,
+    // For the alert wording: which factor the suggestion used ('learned' =
+    // the learned model's block, factorSampleSize = its evidence count;
+    // 'pump-setting' = the configured one), insulin on board, and the trend.
+    factorSource: factorResult.source, factorBasis: factorResult.basis ?? null,
+    iob: ctx.iob, trendPerMinute: ctx.trendPerMinute,
     currentGlucose: ctx.currentGlucose,
+    reasons,
   };
 }
 // computeForecastCore's withheld branches key the dosingContext as
@@ -1705,10 +1721,10 @@ function projectedGlucoseCurve(input, now = Date.now(), horizonMinutes = HYPO_FO
   if (ctx.stale || ctx.effectiveGlucose == null) return [];
 
   const resolvedCorrections = resolveCorrections(corrections, glucoseHistory, boluses, now);
-  const factorResult = resolveCorrectionFactor(resolvedCorrections, settings);
+  const factorResult = resolveCorrectionFactor(resolvedCorrections, settings, modelOpts(input, now));
   if (factorResult.factor == null) return [];
 
-  const carbRatio = Number(settings.carbRatio) || null;
+  const carbRatio = modelCarbRatio(input, now) || Number(settings.carbRatio) || null;
   const rc = retrospectiveCorrection(input, now);
   const points = [];
   for (let t = 0; t <= horizonMinutes; t += stepMinutes) {
@@ -1845,7 +1861,7 @@ function workoutSimulate(input, opts = {}, now = Date.now()) {
   let carbAdvice = null;
   if (projectedLow < low) {
     const resolvedCorrections = resolveCorrections(corrections, glucoseHistory, boluses, now);
-    const factorResult = resolveCorrectionFactor(resolvedCorrections, settings);
+    const factorResult = resolveCorrectionFactor(resolvedCorrections, settings, modelOpts(input, now));
     carbAdvice = preventativeCarbAdvice(projectedLow, timeToNadirMin ?? SIMULATE_CARB_TROUGH_ETA_DEFAULT_MIN, factorResult.factor, settings);
   }
 
@@ -2012,7 +2028,7 @@ function estimateUnplugImpact(input, opts = {}, now = Date.now()) {
   }
 
   const resolvedCorrections = resolveCorrections(corrections, glucoseHistory, boluses, now);
-  const factorResult = resolveCorrectionFactor(resolvedCorrections, settings);
+  const factorResult = resolveCorrectionFactor(resolvedCorrections, settings, modelOpts(input, now));
 
   const missedUnits = basalRate * (durationMin / 60);
   const riseFromMissedBasal = factorResult.factor != null ? missedUnits * factorResult.factor : null;
@@ -2190,7 +2206,6 @@ const MEAL_PEAK_WINDOW_HOURS      = 4;
 const MEAL_LOW_RISK_WINDOW_HOURS  = 4;
 const MEAL_DOSE_RECENCY_HALFLIFE_DAYS = 30;
 const MEAL_DOSE_RATING_WINDOW_HOURS   = 6;
-const MEAL_DOSE_MIN_SAMPLES       = 3;
 const HEALTH_CHECK_WINDOW_DAYS    = 7;
 
 // How much a past meal's weight decays as its BG trend / active-IOB
@@ -2333,110 +2348,37 @@ function mealMemory(input, now = Date.now()) {
 }
 
 /* ── Meal-dose suggestion ────────────────────────────────────
-   Weights every past carb-bearing bolus by: carb similarity to the new
-   meal, recency (30-day half-life), time-of-day proximity, whether it
-   shares the same exercise-context as right now, AND how closely its
-   own BG trend + active IOB (at the moment it was eaten) match right
-   now's — a meal eaten while falling with insulin already onboard is
-   a much more relevant precedent for another falling/stacked moment
-   than one eaten flat with a clear tank, even if the carb count is
-   identical. Ratio outliers (an unusually high/low observed
-   grams-per-unit for that one meal, via IQR) get down-weighted rather
-   than excluded outright. The final suggestion is nudged a small,
-   capped amount by how similar past meals actually turned out (ran
-   high → nudge up; went low → nudge down). Falls back to the plain
-   manual carb ratio when there isn't enough weighted history to trust
-   — never fabricates a personalized number from too little data. */
+   With a fresh learned model (applyModel): carbs / the model's carb
+   ratio for this time of day (boost and active modifiers applied, held
+   within ±30% of the pump value). Without one: the plain pump carb
+   ratio. The old weighted imitation of past meal boluses is gone — it
+   copied past doses (good or bad) rather than learning a ratio. */
 function suggestMealDose(input, newCarbs, now = Date.now()) {
-  const { glucoseHistory = [], boluses = [], corrections = [], activities = {}, settings = {} } = input || {};
-  const nowMs = toMs(now);
-  const readings = sortedReadings(glucoseHistory, -Infinity, nowMs);
-  const workouts = activities.workouts || [];
-  const low = Number(settings.targetLow) || 4.5;
-  const high = Number(settings.targetHigh) || 8.5;
-  const curveOpts = insulinCurveOpts(settings);
-
-  const isNearExercise = (ms) => workouts.some(w => {
-    const endMs = toMs(w.endTime) ?? toMs(w.startTime);
-    return endMs != null && ms >= endMs && ms <= endMs + 8 * 3600000;
-  });
-  const nowNearExercise = isNearExercise(nowMs);
-  const nowHour = hourOfDay(nowMs);
-  const nowTrend = computeTrend(glucoseHistory, nowMs);
-  const nowIob = activeInsulin(boluses, corrections, nowMs, curveOpts);
-
-  const pastMeals = (boluses || [])
-    .filter(b => Number(b.carbs) > 0 && Number(b.units) > 0 && toMs(b.time) < nowMs)
-    .map(b => {
-      const ms = toMs(b.time);
-      const carbs = Number(b.carbs), units = Number(b.units);
-      const ratio = carbs / units;
-      const daysAgo = (nowMs - ms) / DAY_MS;
-      const recencyWeight = Math.pow(0.5, daysAgo / MEAL_DOSE_RECENCY_HALFLIFE_DAYS);
-      const carbSimWeight = Math.exp(-Math.abs(carbs - newCarbs) / Math.max(15, newCarbs * 0.5));
-      const hourDiff = Math.min(Math.abs(hourOfDay(ms) - nowHour), 24 - Math.abs(hourOfDay(ms) - nowHour));
-      const timeOfDayWeight = Math.exp(-hourDiff / 6);
-      const exerciseWeight = isNearExercise(ms) === nowNearExercise ? 1 : 0.5;
-
-      // -1ms excludes this meal's own bolus from its own "IOB already
-      // onboard when I ate this" reading — same as nowIob only counting
-      // doses already active before the (hypothetical) new one.
-      const pastTrend = computeTrend(glucoseHistory, ms);
-      const pastIob = activeInsulin(boluses, corrections, ms - 1, curveOpts);
-      const trendSimWeight = Math.exp(-Math.abs(pastTrend - nowTrend) / SITUATION_TREND_SCALE_MMOL_PER_MIN);
-      const iobSimWeight = Math.exp(-Math.abs(pastIob - nowIob) / SITUATION_IOB_SCALE_UNITS);
-      const situationWeight = trendSimWeight * iobSimWeight;
-
-      const window = readings.filter(r => r.ms >= ms && r.ms <= ms + 3 * 3600000);
-      let outcomeBias = 0; // +1 ran high, -1 went low, 0 stayed in range
-      if (window.length) {
-        if (Math.max(...window.map(r => r.value)) > high) outcomeBias = 1;
-        if (window.some(r => r.value < low)) outcomeBias = -1;
-      }
-      return {
-        ms, carbs, units, ratio, outcomeBias, situationWeight,
-        weight: recencyWeight * carbSimWeight * timeOfDayWeight * exerciseWeight * situationWeight,
-      };
-    });
-
-  if (pastMeals.length < MEAL_DOSE_MIN_SAMPLES) return fallbackMealDose(newCarbs, settings, 'insufficient-meal-history');
-
-  const ratios = pastMeals.map(m => m.ratio).sort((a, b) => a - b);
-  const q1 = ratios[Math.floor(ratios.length * 0.25)];
-  const q3 = ratios[Math.floor(ratios.length * 0.75)];
-  const iqr = q3 - q1;
-  if (iqr > 0) {
-    for (const m of pastMeals) {
-      if (m.ratio < q1 - 1.5 * iqr || m.ratio > q3 + 1.5 * iqr) m.weight *= 0.3;
-    }
+  const { settings = {} } = input || {};
+  const o = modelOpts(input, now);
+  const applied = o.model ? applyModel(o.model, now, o) : null;
+  if (applied && applied.carbRatio > 0) {
+    const learned = applied.crSource === 'learned' || applied.crSource === 'pooled' || applied.multiplier !== 1;
+    return {
+      source: learned ? 'learned' : 'manual-carb-ratio',
+      suggestedUnits: Math.max(0, roundDose(newCarbs / applied.carbRatio)),
+      carbRatio: applied.carbRatio,
+      sampleSize: applied.crSampleSize,
+      multiplier: applied.multiplier,
+      reasons: applied.crReasons,
+      withheldReason: null,
+    };
   }
-
-  const totalWeight = pastMeals.reduce((s, m) => s + m.weight, 0);
-  if (totalWeight <= 0) return fallbackMealDose(newCarbs, settings, 'no-comparable-meals');
-
-  const weightedRatio = pastMeals.reduce((s, m) => s + m.ratio * m.weight, 0) / totalWeight;
-  const weightedOutcomeBias = pastMeals.reduce((s, m) => s + m.outcomeBias * m.weight, 0) / totalWeight;
-  const nudgePct = clamp(weightedOutcomeBias * 0.1, -0.15, 0.15); // capped +/-15%
-
-  const units = roundDose((newCarbs / weightedRatio) * (1 + nudgePct));
-
-  return {
-    source: 'weighted-history',
-    suggestedUnits: Math.max(0, units),
-    weightedRatio,
-    nudgePct: nudgePct * 100,
-    sampleSize: pastMeals.length,
-    situationalMatches: pastMeals.filter(m => m.situationWeight >= SITUATION_MATCH_THRESHOLD).length,
-    withheldReason: null,
-  };
+  return fallbackMealDose(newCarbs, settings, 'no-model');
 }
 function fallbackMealDose(newCarbs, settings, reason) {
   const carbRatio = Number(settings.carbRatio);
-  if (!carbRatio) return { source: 'none', suggestedUnits: null, withheldReason: 'missing-carb-ratio' };
+  if (!carbRatio) return { source: 'none', suggestedUnits: null, withheldReason: 'missing-carb-ratio', reasons: ['no carb ratio set'] };
   return {
     source: 'manual-carb-ratio',
     suggestedUnits: roundDose(newCarbs / carbRatio),
     withheldReason: reason,
+    reasons: [`carb ratio ${fmt1(carbRatio)} from your pump setting`],
   };
 }
 
@@ -2459,17 +2401,27 @@ const SPLIT_DOSE_PROTEIN_BUMP_PCT     = 0.1;  // capped bump to total units — 
 const MACRO_HISTORY_MIN_SAMPLE        = 3;
 const MACRO_FAT_SIMILARITY_TOLERANCE_G = 10; // plus 40% of the new meal's own fat grams, whichever is larger
 
-function splitDoseGuide(fatGrams, proteinGrams, settings) {
+// opts.model / opts.nowMs: with a fresh learned model whose high-fat meals
+// mostly rise late (meals.delayedRiseHighFat rate >= 0.5, n >= 5), a 20g+
+// fat meal's split carries that as its reason (learnedLateRise: true).
+function splitDoseGuide(fatGrams, proteinGrams, settings, opts = {}) {
   const fat = Number(fatGrams) || 0;
   const protein = Number(proteinGrams) || 0;
   const curve = insulinCurveOpts(settings);
   const fastActing = curve.peak <= 60; // Fiasp/Lyumjev-class peak vs Novorapid-class
+  const { model = null, nowMs = Date.now() } = opts || {};
+  const late = modelFresh(model, nowMs) ? model.meals?.delayedRiseHighFat : null;
+  const learnedLateRise = !!late && isNum(late.rate) && late.rate >= MODEL_LATE_RISE_RATE && (late.n || 0) >= MODEL_LATE_RISE_MIN_N;
+  const reasons = learnedLateRise && fat >= SPLIT_DOSE_FAT_LOW_G
+    ? [`your high-fat meals usually rise after 2½h (${late.n} meals)`] : [];
+  const learned = { learnedLateRise: reasons.length > 0, reasons };
 
   if (fat < SPLIT_DOSE_FAT_LOW_G) {
     return {
       tier: 'single', fatGrams: fat, proteinGrams: protein,
       upfrontPct: 1, delayMinutes: null, highProteinFlag: false,
       message: 'Under 20g fat — a normal single dose with your usual pre-bolus timing should be fine.',
+      ...learned,
     };
   }
   if (fat < SPLIT_DOSE_FAT_HIGH_G) {
@@ -2477,7 +2429,9 @@ function splitDoseGuide(fatGrams, proteinGrams, settings) {
     return {
       tier: 'moderate-fat', fatGrams: fat, proteinGrams: protein,
       upfrontPct: SPLIT_DOSE_MODERATE_UPFRONT_PCT, delayMinutes, highProteinFlag: false,
-      message: `20-35g fat slows digestion enough to cause a second spike — dose ${Math.round(SPLIT_DOSE_MODERATE_UPFRONT_PCT * 100)}% now, the rest ${fastActing ? '~90min' : '~2h'} later.`,
+      message: `20-35g fat slows digestion enough to cause a second spike — dose ${Math.round(SPLIT_DOSE_MODERATE_UPFRONT_PCT * 100)}% now, the rest ${fastActing ? '~90min' : '~2h'} later.`
+        + (learned.learnedLateRise ? ` Your own high-fat meals usually rise after 2½h (${late.n} meals), so the split matters here.` : ''),
+      ...learned,
     };
   }
   const highProteinFlag = protein >= SPLIT_DOSE_HIGH_PROTEIN_G;
@@ -2486,7 +2440,9 @@ function splitDoseGuide(fatGrams, proteinGrams, settings) {
     tier: 'high-fat', fatGrams: fat, proteinGrams: protein,
     upfrontPct: SPLIT_DOSE_HIGH_UPFRONT_PCT, delayMinutes, highProteinFlag,
     message: `35g+ fat — dose 50% now, 50% ${fastActing ? '~2.5h' : '~3h'} later.`
-      + (highProteinFlag ? ' High protein too, so you may need more total insulin than usual — add that extra to the later dose, not this one.' : ''),
+      + (highProteinFlag ? ' High protein too, so you may need more total insulin than usual — add that extra to the later dose, not this one.' : '')
+      + (learned.learnedLateRise ? ` Your own high-fat meals usually rise after 2½h (${late.n} meals), so the split matters here.` : ''),
+    ...learned,
   };
 }
 
@@ -2547,11 +2503,11 @@ function suggestMacroMealDose(input, meal, now = Date.now()) {
   const settings = input.settings || {};
   const idealTarget = Number(settings.idealTarget);
   const nowMs = toMs(now);
-  const guide = splitDoseGuide(fat, protein, settings);
+  const guide = splitDoseGuide(fat, protein, settings, { model: input.model, nowMs });
 
   const ctx = dosingContext(input, now);
   if (ctx.stale) {
-    return { suggestedUnits: null, withheldReason: 'stale-reading', guide, upfrontUnits: null, delayedUnits: null, personalized: false };
+    return { suggestedUnits: null, withheldReason: 'stale-reading', guide, upfrontUnits: null, delayedUnits: null, personalized: false, reasons: [...guide.reasons] };
   }
 
   // --- carb portion ---
@@ -2598,7 +2554,7 @@ function suggestMacroMealDose(input, meal, now = Date.now()) {
 
   // --- correction portion: current glucose vs target, right now ---
   const resolvedCorrections = resolveCorrections(input.corrections, input.glucoseHistory, input.boluses, now);
-  const factorResult = resolveCorrectionFactor(resolvedCorrections, settings);
+  const factorResult = resolveCorrectionFactor(resolvedCorrections, settings, modelOpts(input, now));
   const correctionAvailable = Number.isFinite(idealTarget) && factorResult.factor != null;
   const correctionUnits = correctionAvailable ? (ctx.effectiveGlucose - idealTarget) / factorResult.factor : 0;
 
@@ -2632,6 +2588,7 @@ function suggestMacroMealDose(input, meal, now = Date.now()) {
     nudgePct: nudgePct * 100,
     zeroedByFloor,
     lowGlucoseWarning: ctx.effectiveGlucose != null && ctx.effectiveGlucose < low,
+    reasons: [...new Set([...(carbBase.reasons || []), ...(correctionAvailable ? factorResult.reasons || [] : []), ...guide.reasons])],
     withheldReason: null,
   };
 }
@@ -2734,9 +2691,20 @@ const REGIMEN_TOD_BUCKETS = [
   { label: '21:00–24:00', from: 21, to: 24 },
 ];
 
+// With a learned model on the input: the model's 3h blocks (what doses
+// actually use) instead of the old averaged display cells.
 function sensitivityMap(input, now = Date.now()) {
-  const { glucoseHistory = [], boluses = [], corrections = [], activities = {} } = input || {};
+  const { glucoseHistory = [], boluses = [], corrections = [], activities = {}, model = null } = input || {};
   const nowMs = toMs(now);
+  if (model && Array.isArray(model.blocks)) {
+    return model.blocks.map(b => ({
+      timeOfDay: b.label,
+      isf: b.isf?.value ?? null, carbRatio: b.carbRatio?.value ?? null,
+      pumpIsf: b.isf?.pump ?? null, pumpCr: b.carbRatio?.pump ?? null,
+      n: b.isf?.n ?? 0, source: b.isf?.source ?? null,
+      outsideBand: !!(b.isf?.outsideBand || b.carbRatio?.outsideBand),
+    }));
+  }
   // Same MIN/MAX_RELIABLE_FACTOR plausibility bounds personalCorrectionFactor
   // and analyzePatterns' cleanInWindow use (see personalCorrectionFactor's
   // comment) — without them a tiny-unit correction whose glucose drop was
@@ -3250,7 +3218,7 @@ const FORECAST_ACCURACY_STEP_MINUTES  = 60;  // one evaluation per hour
 const FORECAST_ACCURACY_MIN_SCORED    = 10;
 const FORECAST_ACCURACY_MATCH_TOLERANCE_MIN = 20; // how close an actual reading must be to t+120min
 
-function forecastAccuracy(input, now = Date.now()) {
+function forecastAccuracyScored(input, now) {
   const { glucoseHistory = [], settings = {} } = input || {};
   const nowMs = toMs(now);
   const windowStart = nowMs - FORECAST_ACCURACY_LOOKBACK_DAYS * DAY_MS;
@@ -3277,7 +3245,11 @@ function forecastAccuracy(input, now = Date.now()) {
       predictedWarning: forecast.tier === 'high' || forecast.tier === 'moderate',
     });
   }
+  return scored;
+}
 
+function forecastAccuracy(input, now = Date.now()) {
+  const scored = forecastAccuracyScored(input, now);
   if (scored.length < FORECAST_ACCURACY_MIN_SCORED) {
     return { sufficient: false, scored: scored.length, minNeeded: FORECAST_ACCURACY_MIN_SCORED };
   }
@@ -3304,6 +3276,18 @@ function forecastAccuracy(input, now = Date.now()) {
     warnings: scored.filter(s => s.predictedWarning).length,
     lows: scored.filter(s => s.actualWentLow).length,
   };
+}
+
+// Mean forecast error (predicted − actual) per 3h London block, for the
+// learner to store as model.forecastBias. Replayed WITHOUT any bias already
+// in the model, so the stored bias doesn't feed on itself.
+function forecastAccuracyByBlock(input, now = Date.now()) {
+  const model = input?.model ? { ...input.model, forecastBias: [] } : input?.model;
+  const scored = forecastAccuracyScored({ ...input, model }, now);
+  return REGIMEN_TOD_BUCKETS.map(bk => {
+    const errs = scored.filter(x => { const h = londonParts(x.t).hour; return h >= bk.from && h < bk.to; }).map(x => x.error);
+    return { label: bk.label, from: bk.from, to: bk.to, bias: errs.length ? mean(errs) : null, n: errs.length };
+  });
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -4207,6 +4191,138 @@ function fitModel(episodes, pumpProfile, opts = {}) {
   };
 }
 
+/* ── Using the model ──────────────────────────────────────────
+   applyModel turns a fitted model into the numbers a dose uses right
+   now. Safety: a model older than 48h (or none) is ignored (null → the
+   callers fall back to the pump settings); the post-exercise boost can
+   only ever mean LESS insulin (>= 1, capped at 1.3) and only within its
+   hours of a real (> 0 min) workout; modifiers count only when active
+   and their condition holds now; the final ISF / CR are re-clamped to the
+   ±30% band around the block's pump value. */
+const MODEL_FRESH_MS          = 48 * 3600000;
+const MODEL_BOOST_APPLY_MAX   = 1.3;
+const MODEL_FORECAST_BIAS_MAX = 1.0;   // mmol/L
+const MODEL_LATE_RISE_RATE    = 0.5;
+const MODEL_LATE_RISE_MIN_N   = 5;
+
+function modelFresh(model, nowMs) {
+  const fitted = toMs(model?.fittedAt);
+  const now = toMs(nowMs);
+  return !!model && fitted != null && now != null && now - fitted <= MODEL_FRESH_MS && Array.isArray(model.blocks);
+}
+
+function modelBlockAt(model, atMs) {
+  const h = londonParts(toMs(atMs)).hour;
+  return (model?.blocks || []).find(b => h >= b.from && h < b.to) || null;
+}
+
+function workoutMinutes(w) {
+  const a = toMs(w?.startTime), b = toMs(w?.endTime);
+  if (a != null && b != null) return Math.max(0, (b - a) / 60000);
+  return Number(w?.minutes) || 0;
+}
+
+const fmt1 = v => (Math.round(v * 10) / 10).toFixed(1);
+const pctText = m => `${m >= 1 ? '+' : '−'}${Math.round(Math.abs(m - 1) * 100)}%`;
+
+function applyModel(model, atMs, opts = {}) {
+  const { workouts = [], siteAgeHours = null, rhrZ = null, sleepHrs = null } = opts;
+  const at = toMs(atMs);
+  const nowMs = toMs(opts.nowMs ?? at);
+  if (at == null || !modelFresh(model, nowMs)) return null;
+  const block = modelBlockAt(model, at);
+  if (!block) return null;
+  const reasons = [];
+
+  // post-exercise boost: >= 1 always, capped, only after a real workout that ended within boost.hours
+  const boost = model.exercise?.boost || {};
+  const hours = isNum(boost.hours) ? boost.hours : MODEL_BOOST_HOURS;
+  const recent = (workouts || [])
+    .map(w => ({ w, end: toMs(w.endTime) ?? toMs(w.startTime) }))
+    .filter(({ w, end }) => end != null && end <= nowMs && nowMs - end <= hours * 3600000 && workoutMinutes(w) > 0)
+    .sort((a, b) => b.end - a.end)[0];
+  const boostMult = isNum(boost.multiplier) ? clamp(boost.multiplier, 1, MODEL_BOOST_APPLY_MAX) : 1;
+  let multiplier = 1;
+  if (recent && boostMult > 1) {
+    multiplier *= boostMult;
+    const day = _londonDateFmt.format(new Date(recent.end)) === _londonDateFmt.format(new Date(nowMs)) ? 'today' : 'yesterday';
+    reasons.push(`${pctText(boostMult)} after ${day}'s ${recent.w.workoutType || 'workout'}`);
+  }
+
+  const mods = model.modifiers || {};
+  const conds = [
+    ['siteAge', isNum(siteAgeHours) && siteAgeHours >= MODEL_SITE_AGE_HOURS, `infusion site ${Math.round(siteAgeHours)}h old`],
+    ['illness', isNum(rhrZ) && rhrZ >= MODEL_ILLNESS_RHR_Z, 'resting heart rate raised'],
+    ['shortSleep', isNum(sleepHrs) && sleepHrs < MODEL_SHORT_SLEEP_HRS, 'short sleep'],
+  ];
+  for (const [key, holds, why] of conds) {
+    const m = mods[key];
+    if (!holds || !m?.active || !isNum(m.effect) || !(m.effect > 0)) continue;
+    multiplier *= m.effect;
+    reasons.push(`${why}: sensitivity ${pctText(m.effect)} (${m.n} corrections)`);
+  }
+
+  const use = (p, name, unit, reasons) => {
+    if (!p || !isNum(p.value) || !isNum(p.pump) || !(p.pump > 0)) return { value: null, source: null, n: 0 };
+    const raw = p.value * multiplier;
+    const value = clamp(raw, p.pump * MODEL_BAND_LO, p.pump * MODEL_BAND_HI);
+    const n = p.source === 'pooled' ? (unit === 'corrections' ? model.allDay?.nIsf : model.allDay?.nCr) ?? p.n : p.n;
+    if (p.source === 'learned') reasons.push(`${name} ${fmt1(p.value)} at this time of day (${n} ${unit})`);
+    else if (p.source === 'pooled') reasons.push(`${name} ${fmt1(p.value)} from all your ${unit} across the day (${n})`);
+    else reasons.push(`${name} ${fmt1(p.value)} from your pump setting`);
+    if (p.rateLimited) reasons.push('learned value held back while it settles');
+    if (p.outsideBand) reasons.push('your data suggests outside ±30% of your pump setting — worth discussing');
+    if (value !== raw) reasons.push(`${name} held within ±30% of your pump setting`);
+    return { value, source: p.source, n };
+  };
+  const isfReasons = [], crReasons = [];
+  const isf = use(block.isf, 'sensitivity', 'corrections', isfReasons);
+  const cr = use(block.carbRatio, 'carb ratio', 'meals', crReasons);
+
+  // in-progress workout of a learned type: its learned drop rate
+  const ongoing = (workouts || []).find(w => {
+    const a = toMs(w.startTime), b = toMs(w.endTime);
+    return a != null && b != null && a <= nowMs && nowMs < b && isNum(model.exercise?.[w.workoutType]?.dropPerMin);
+  });
+  const exerciseDropPerMin = ongoing ? Math.max(0, model.exercise[ongoing.workoutType].dropPerMin) : 0;
+
+  return {
+    isf: isf.value, carbRatio: cr.value, isfSource: isf.source, crSource: cr.source,
+    sampleSize: isf.n, crSampleSize: cr.n, multiplier,
+    exerciseDropPerMin,
+    exerciseOngoing: ongoing ? { workoutType: ongoing.workoutType, endMs: toMs(ongoing.endTime), n: model.exercise[ongoing.workoutType].n } : null,
+    rateLimited: !!block.isf?.rateLimited, outsideBand: !!block.isf?.outsideBand,
+    crRateLimited: !!block.carbRatio?.rateLimited, crOutsideBand: !!block.carbRatio?.outsideBand,
+    block: { label: block.label, from: block.from, to: block.to },
+    // reasons: everything; isfReasons / crReasons: what a correction / a meal dose used
+    reasons: [...reasons, ...isfReasons, ...crReasons],
+    isfReasons: [...reasons, ...isfReasons],
+    crReasons: [...reasons, ...crReasons],
+  };
+}
+
+// The current block's learned forecast bias (predicted − actual), capped ±1.0 mmol/L.
+function modelForecastBias(model, atMs) {
+  const h = londonParts(toMs(atMs)).hour;
+  const row = (model?.forecastBias || []).find(b => h >= b.from && h < b.to);
+  return row && isNum(row.bias) ? { bias: clamp(row.bias, -MODEL_FORECAST_BIAS_MAX, MODEL_FORECAST_BIAS_MAX), n: row.n } : null;
+}
+
+// What applyModel needs from an engine input, beyond the model itself.
+// input.modelContext (optional): { siteAgeHours, rhrZ, sleepHrs } for the modifiers.
+function modelOpts(input, now) {
+  const c = input?.modelContext || {};
+  return { model: input?.model, atMs: now, workouts: input?.activities?.workouts || [],
+    siteAgeHours: c.siteAgeHours ?? null, rhrZ: c.rhrZ ?? null, sleepHrs: c.sleepHrs ?? null };
+}
+
+// The learned carb ratio for this time of day, or null (no fresh model).
+function modelCarbRatio(input, now) {
+  const o = modelOpts(input, now);
+  const a = o.model ? applyModel(o.model, now, o) : null;
+  return a && a.carbRatio > 0 ? a.carbRatio : null;
+}
+
 const DiabetesEngine = {
   // constants
   IOB_PEAK_MINUTES,
@@ -4291,6 +4407,7 @@ const DiabetesEngine = {
   REGIMEN_MAX_PCT_CHANGE,
   // Stage 7 API
   forecastAccuracy,
+  forecastAccuracyByBlock,
   // Stage 8 API — learning
   prepareLearningInput,
   basalDeviationUnits,
@@ -4300,6 +4417,7 @@ const DiabetesEngine = {
   scoreExerciseEpisode,
   scoreNight,
   fitModel,
+  applyModel,
 };
 
 // Dual environment: CommonJS (Node/Netlify functions) or a plain <script>
