@@ -4702,3 +4702,24 @@ body { font-size: 15px; }
 .bb-how summary { font-size: 14px; font-weight: 600; color: var(--ink); cursor: pointer; }
 .bb-how ul { margin: 8px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; }
 .bb-how li { font-size: 13px; line-height: 1.5; color: var(--ink-2); }
+
+/* Insights card (rule-based suggestions) + the same items in the Body Battery popup. */
+.insights { display: flex; flex-direction: column; gap: 10px; }
+.insight {
+  display: flex; gap: 10px; align-items: flex-start;
+  padding: 10px 12px; border-radius: var(--r-md);
+  background: var(--surface-2); border-left: 3px solid var(--ink-4);
+}
+.insight--good    { border-left-color: #30D158; }
+.insight--info    { border-left-color: #0A9EFF; }
+.insight--caution { border-left-color: #FF9F0A; }
+.insight--warn    { border-left-color: #FF453A; }
+.insight__icon { font-size: 16px; line-height: 1.3; flex-shrink: 0; }
+.insight__text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.insight__title { font-size: 14px; font-weight: 700; color: var(--ink); }
+.insight__body { font-size: 13px; line-height: 1.45; color: var(--ink-2); }
+.insights__more {
+  margin-top: 8px; align-self: flex-start; padding: 6px 0;
+  background: none; border: none; color: var(--blue); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.insights__more[hidden] { display: none; }

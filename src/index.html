@@ -433,6 +433,13 @@
           </div>
         </div>
 
+        <!-- Rule-based insights (see refreshInsights in app.js) -->
+        <div class="card card--insights" id="insightsCard" hidden>
+          <div class="card-eyebrow">Insights</div>
+          <div class="insights" id="insightsList"></div>
+          <button type="button" class="insights__more" id="btnInsightsMore" hidden></button>
+        </div>
+
         <!-- Daily habit checklist — Gemma's account only (gated client-
              side in renderChecklist/_loadDashboardInner). Four manually-
              ticked daily targets; completing all four extends a streak
@@ -1993,6 +2000,8 @@
       <canvas class="bb-chart" id="bbChart" aria-label="Body Battery since last night"></canvas>
       <div class="bb-section-title">Since last night</div>
       <div class="bb-rows" id="bbRows"></div>
+      <div class="bb-section-title" id="bbTipsTitle" hidden>Suggestions</div>
+      <div class="insights" id="bbTips"></div>
       <details class="bb-how">
         <summary>How it's scored</summary>
         <ul>
@@ -2153,6 +2162,7 @@
 <script src="food-utils.js"></script>
 <script src="readiness-model.js"></script>
 <script src="body-battery.js"></script>
+<script src="insights.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

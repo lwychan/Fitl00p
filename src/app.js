@@ -2062,6 +2062,12 @@ async function _loadDashboardInner(signal) {
     nutrition: nutritionResult,
   });
   renderHealthTiles(health, healthHistory);
+  insightInputs = {
+    health, healthHistory, log, smartTarget, weights: logs, workouts: recentAppleWorkouts,
+    recovery: recoveryResult, sleep: sleepResult, strain: todayStrainResult, strainYday: yesterdayStrainScore,
+    sleepNeed: sleepNeedResult, tonightNeed: tonightSleepNeed,
+  };
+  refreshInsights();
   const netCaloriesResult = renderNetCalories(health, healthHistory, log, estimatedBmr);
   // Same log-then-health precedence el.dTodaySteps already displays.
   const todayStepsForWidgets = log?.steps || health?.steps || null;
@@ -3849,9 +3855,11 @@ async function loadBodyBattery(healthHistory) {
       restingHr, hrMax: personalHrMax(profile?.age_years), isFemale: profile?.sex === 'female',
       stressFactor, breakdownFrom: lastNight ? lastNight.start : midnight.getTime(),
     });
-    bbState = { result, computedAt: now, source, lastNight, stressFactor };
+    const wakePoint = lastNight ? result.series.find(p => p.t >= lastNight.end) : null;
+    bbState = { result, computedAt: now, source, lastNight, stressFactor, wakeLevel: wakePoint ? wakePoint.level : null };
     renderBodyBatteryBadge();
     if (!$('bbModal')?.hidden) renderBodyBatteryModal();
+    refreshInsights();
   } catch (err) {
     console.warn('Body Battery failed:', err?.message || err);
   } finally {
@@ -3966,6 +3974,197 @@ setInterval(() => {
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && currentUser && bbState) loadBodyBattery();
 });
+
+/* ═══ INSIGHTS ═══════════════════════════════════════════════
+   Rule-based suggestions — the old AI coach briefing without the AI.
+   Rules live in public.insight_rules (source: supabase/seed/insight-rules.json);
+   src/insights.js matches them against today's numbers, built here from
+   what the dashboard, Body Battery and diabetes data already hold. The
+   dashboard card shows the top one per topic; the Body Battery popup shows
+   every matching battery rule. Re-run on each dashboard load and each
+   Body Battery recompute. */
+const { evaluateInsights, glucoseMetrics, healthTrendMetrics } = window.Insights;
+const INSIGHT_RULES_CACHE_KEY = 'fitl00p_insight_rules';
+let insightRules = null;      // rows from insight_rules
+let insightInputs = null;     // set by the dashboard load
+let insightsShowAll = false;
+
+async function loadInsightRules() {
+  if (insightRules) return insightRules;
+  try {
+    const cached = JSON.parse(localStorage.getItem(INSIGHT_RULES_CACHE_KEY) || 'null');
+    if (Array.isArray(cached)) insightRules = cached;
+  } catch { /* private mode — fetch below */ }
+  const { data, error } = await db.from('insight_rules').select('id, category, severity, priority, conditions, title, body, enabled').eq('enabled', true);
+  if (!error && data) {
+    insightRules = data;
+    try { localStorage.setItem(INSIGHT_RULES_CACHE_KEY, JSON.stringify(data)); } catch { /* optional */ }
+  }
+  return insightRules || [];
+}
+
+// Diabetes numbers for the rules — from the Diabetes tab's own cache /
+// fetch (Nightscout via diabetes-sync). Kicks off a fetch if nothing is
+// cached yet and refreshes the insights when it lands.
+let insightDxFetching = false;
+function insightDiabetesContext() {
+  if (profile?.diabetes_enabled === false || !profile?.diabetes_ns_url) return {};
+  const data = diabetesData || readDxCache()?.body || null;
+  if (!diabetesData && !insightDxFetching) {
+    insightDxFetching = true;
+    fetchDiabetesData().then(() => refreshInsights()).catch(() => {}).finally(() => { insightDxFetching = false; });
+  }
+  if (!data?.glucoseHistory?.length) return {};
+  const now = Date.now();
+  const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+  const out = glucoseMetrics(data.glucoseHistory, now, midnight.getTime());
+  try {
+    const dctx = DiabetesEngine.dosingContext({ ...data, settings: dxSettings(), activities: { workouts: [] }, macroMealLog: [] }, now);
+    if (Number.isFinite(dctx.iob)) out.dx_iob = Math.round(dctx.iob * 10) / 10;
+    if (Number.isFinite(dctx.cob)) out.dx_cob = Math.round(dctx.cob);
+  } catch { /* IOB is optional */ }
+  return out;
+}
+
+function insightBatteryContext() {
+  if (!bbState) return {};
+  const { result, lastNight, wakeLevel } = bbState;
+  const level = bbLevelNow();
+  const rate = result.ratePerHr;
+  const hour = new Date().getHours() + new Date().getMinutes() / 60;
+  const out = {
+    battery: Math.round(level),
+    battery_rate: Math.round(rate * 10) / 10,
+    battery_stress_drain: Math.round(Math.max(0, -result.parts.stress)),
+    battery_ex_drain: Math.round(Math.max(0, -result.parts.exercise)),
+  };
+  if (lastNight) {
+    out.battery_bed = Math.round(result.levelAtBreakdown);
+    out.battery_charged = Math.round(result.parts.sleep);
+    if (wakeLevel != null) out.battery_wake = Math.round(wakeLevel);
+  }
+  if (rate < -0.3 && level > 25) {
+    out.battery_hrs_to_low = Math.round(((level - 25) / -rate) * 10) / 10;
+    const at = hour + out.battery_hrs_to_low;
+    if (at < 24) out.battery_low_hour = Math.floor(at);
+  }
+  return out;
+}
+
+function buildInsightContext() {
+  const ctx = { hour: new Date().getHours() };
+  const I = insightInputs;
+  if (I) {
+    const { health, healthHistory: hist, log, recovery, sleep, strain, strainYday, sleepNeed, tonightNeed, smartTarget, workouts, weights } = I;
+    const day = health?.log_date || todayISO();
+    if (recovery?.score != null) {
+      ctx.recovery = recovery.score;
+      const t = targetStrainRange(recovery.score);
+      if (t) { ctx.strain_target_lo = t.lo; ctx.strain_target_hi = t.hi; }
+    }
+    if (sleep?.score != null) ctx.sleep_score = sleep.score;
+    if (health?.sleep_total_hrs != null) ctx.sleep_hrs = Number(health.sleep_total_hrs);
+    if (tonightNeed?.needHours) ctx.sleep_need = tonightNeed.needHours;
+    if (sleepNeed?.needHours && ctx.sleep_hrs != null) ctx.sleep_perf = Math.round((ctx.sleep_hrs / sleepNeed.needHours) * 100);
+    if (sleepNeed?.debtHours != null) ctx.sleep_debt = sleepNeed.debtHours;
+    ctx.hrv_z = bbZScore(hist, 'hrv_ms', day, health?.hrv_ms, true, 0.05);
+    ctx.rhr_z = bbZScore(hist, 'resting_hr', day, health?.resting_hr, false, 1);
+    ctx.rr_z = bbZScore(hist, 'respiratory_rate', day, health?.respiratory_rate, false, 0.25);
+    if (health?.wrist_temp_dev != null) ctx.wrist_temp = Number(health.wrist_temp_dev);
+    Object.assign(ctx, healthTrendMetrics(hist, day));
+    if (strain?.score != null) {
+      ctx.strain = strain.score;
+      if (ctx.strain_target_hi != null) ctx.strain_over = Math.round((strain.score - ctx.strain_target_hi) * 10) / 10;
+    }
+    if (strainYday != null) ctx.strain_yday = strainYday;
+
+    const steps = log?.steps || health?.steps;
+    const goal = profile?.steps_goal || 10000;
+    if (steps != null) {
+      ctx.steps = Number(steps); ctx.steps_goal = goal;
+      ctx.steps_pct = Math.round((ctx.steps / goal) * 100);
+      ctx.steps_left = Math.max(0, goal - ctx.steps);
+    }
+    const consumed = pickConsumedCalories(log, health);
+    const target = smartTarget?.eatTarget ?? profile?.eat_target_kcal ?? null;
+    if (consumed != null && consumed > 0) ctx.consumed = Math.round(consumed);
+    if (target) {
+      ctx.eat_target = Math.round(target);
+      if (ctx.consumed != null) {
+        ctx.consumed_pct = Math.round((ctx.consumed / target) * 100);
+        ctx.over_kcal = Math.max(0, ctx.consumed - ctx.eat_target);
+      }
+    }
+    // Last 7 complete days with both eaten and burned figures.
+    let net = 0, days = 0;
+    for (const h of hist.filter(h => h.log_date < day).slice(-7)) {
+      const eatenRaw = h.cal_fitl00p ?? h.cal_mfp ?? h.dietary_energy_kcal;
+      if (eatenRaw == null || h.active_energy_kcal == null || h.resting_energy_kcal == null) continue;
+      net += Number(eatenRaw) - (Number(h.active_energy_kcal) + Number(h.resting_energy_kcal));
+      days++;
+    }
+    if (days) {
+      ctx.weekly_days = days;
+      ctx.weekly_net = Math.round(net);
+      ctx.weekly_net_abs = Math.abs(ctx.weekly_net);
+      ctx.weekly_kg = Math.round((Math.abs(net) / 7700) * 10) / 10;
+    }
+    ctx.has_plan = activePlan ? 1 : 0;
+    // Weight: daily_logs (kg) plus synced Health weights, last 14 days.
+    const from = addDaysISO(day, -14);
+    const pts = [...(weights || []).map(w => ({ d: w.log_date, kg: Number(w.weight) })),
+      ...hist.filter(h => h.weight_kg != null).map(h => ({ d: h.log_date, kg: Number(h.weight_kg) }))]
+      .filter(p => p.d >= from && Number.isFinite(p.kg)).sort((a, b) => a.d.localeCompare(b.d));
+    if (pts.length >= 2 && Date.parse(pts[pts.length - 1].d) - Date.parse(pts[0].d) >= 7 * 86400000) {
+      ctx.weight_change_14d = Math.round((pts[pts.length - 1].kg - pts[0].kg) * 10) / 10;
+    }
+    const real = (workouts || []).filter(w => !/walk/i.test(w.workout_type || ''));
+    if (real.length) {
+      const nowMs = Date.now();
+      ctx.days_since_workout = Math.floor((nowMs - Date.parse(real[0].started_at)) / 86400000);
+      ctx.workouts_7d = real.filter(w => nowMs - Date.parse(w.started_at) < 7 * 86400000).length;
+    }
+  }
+  const feel = feelCheckins.find(c => c.log_date === todayISO());
+  if (feel) ctx.feel = feel.feel;
+  Object.assign(ctx, insightBatteryContext(), insightDiabetesContext());
+  for (const k of Object.keys(ctx)) if (ctx[k] == null || Number.isNaN(ctx[k])) delete ctx[k];
+  return ctx;
+}
+
+const INSIGHT_ICONS = { good: '✅', info: '💡', caution: '⚠️', warn: '🛑' };
+const insightHtml = i => `
+  <div class="insight insight--${i.severity}">
+    <span class="insight__icon" aria-hidden="true">${INSIGHT_ICONS[i.severity] || '💡'}</span>
+    <div class="insight__text">
+      <div class="insight__title">${escapeHtml(i.title)}</div>
+      <div class="insight__body">${escapeHtml(i.body)}</div>
+    </div>
+  </div>`;
+
+async function refreshInsights() {
+  const card = $('insightsCard');
+  if (!card || !currentUser) return;
+  let rules;
+  try { rules = await loadInsightRules(); } catch { rules = insightRules || []; }
+  if (!rules.length) { card.hidden = true; return; }
+  const ctx = buildInsightContext();
+  const top = evaluateInsights(rules, ctx, { max: 5 });
+  const all = evaluateInsights(rules, ctx, { max: 30, onePerCategory: false });
+  card.hidden = !top.length;
+  $('insightsList').innerHTML = (insightsShowAll ? all : top).map(insightHtml).join('');
+  const more = $('btnInsightsMore');
+  more.hidden = all.length <= top.length;
+  more.textContent = insightsShowAll ? 'Show fewer' : `Show all ${all.length}`;
+  // Body Battery popup: every matching battery rule.
+  const tips = evaluateInsights(rules, ctx, { max: 4, onePerCategory: false, categories: ['battery'] });
+  if ($('bbTips')) {
+    $('bbTips').innerHTML = tips.map(insightHtml).join('');
+    $('bbTipsTitle').hidden = !tips.length;
+  }
+}
+
+$('btnInsightsMore')?.addEventListener('click', () => { insightsShowAll = !insightsShowAll; refreshInsights(); });
 
 /* ═══════════════════════════════════════════════════════════
    HEALTH TILES
