@@ -362,7 +362,12 @@ async function sendToSubscriptions(
     try {
       const r = await sendWebPush({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth_key } }, payload);
       if (r.status >= 200 && r.status < 300) sent++; else failed++;
-    } catch { failed++; }
+    } catch (e) {
+      // e.g. 'APNs keys not configured' / 'VAPID keys not configured' — log it,
+      // it used to vanish here and every push just counted as failed.
+      console.error('push threw for ' + (s.endpoint.startsWith('apns:') ? 'apns' : new URL(s.endpoint).host) + ': ' + (e as Error).message);
+      failed++;
+    }
   }
   return { sent, failed };
 }
