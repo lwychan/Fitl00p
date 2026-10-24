@@ -3347,6 +3347,16 @@ function londonParts(ms) {
   return v;
 }
 
+// UTC ms of a London wall-clock hour on the London calendar date containing
+// ms (BST or GMT; the offset is read at that hour, so 06:00 on a
+// clock-change night is 5 or 7 hours after 00:00).
+const _londonDateFmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit' });
+function londonClockMs(ms, hour) {
+  const [y, m, d] = _londonDateFmt.format(new Date(ms)).split('-').map(Number);
+  const utc = Date.UTC(y, m - 1, d, hour);
+  return utc - ((londonParts(utc).hour - hour + 24) % 24) * 3600000;
+}
+
 // Pump profile segments sorted once per profile object.
 const _sortedSegCache = new WeakMap();
 function sortedProfileSegments(pumpProfile) {
@@ -3608,23 +3618,24 @@ function episodeReadings(P, startMs, endMs, loggedStart) {
 // Every logged insulin dose absorbing in the window (incl. prior IOB and
 // auto-boluses) and every logged carb bolus. The episode's own dose may
 // already be in boluses or corrections; it is added once if not.
-function episodeDoses(P, startMs, endMs, own) {
-  const units = Number(own.units) || 0;
+function episodeDoses(P, startMs, endMs, own = null) {
+  const units = Number(own?.units) || 0;
   const lookback = startMs - IOB_DURATION_MINUTES * 60000;
   const bol = sliceByMs(P.boluses, lookback, endMs);
   const corr = sliceByMs(P.corrections, lookback, endMs);
-  const included = [...bol, ...corr].some(d => d.ms === startMs && Number(d.units) === units);
+  const included = !own || [...bol, ...corr].some(d => d.ms === startMs && Number(d.units) === units);
   const doses = [...bol, ...corr, ...(included ? [] : [own])];
   const meals = sliceByMs(P.boluses, startMs - COB_DURATION_MINUTES * 60000, endMs).filter(d => (Number(d.carbs) || 0) > 0);
-  if (!included && (Number(own.carbs) || 0) > 0) meals.push({ ...own, time: startMs, ms: startMs });
+  if (!included && (Number(own?.carbs) || 0) > 0) meals.push({ ...own, time: startMs, ms: startMs });
   return { lookback, doses, meals };
 }
 
 // Per reading, what the model says was absorbed between the start and that
 // reading (model time CGM_LAG_MINUTES behind the reading): I = insulin units
 // from logged doses, B = basal-deviation units, C = logged carb grams.
-function episodeTerms(P, pumpProfile, startMs, endMs, after, { lookback, doses, meals }) {
-  const basalChunks = basalDeviationChunks(P.basal, pumpProfile, lookback, endMs);
+// win.basalChunks, when given, replaces the basal-deviation chunks (see scaleWindowToMmol).
+function episodeTerms(P, pumpProfile, startMs, endMs, after, { lookback, doses, meals, basalChunks: given = null }) {
+  const basalChunks = given || basalDeviationChunks(P.basal, pumpProfile, lookback, endMs);
   const lagMs = CGM_LAG_MINUTES * 60000, s0 = startMs - lagMs;
   const chunkStart = basalChunks.map(c => c.units * iobFraction(Math.max(0, (s0 - c.ms) / 60000)));
   const carbs = episodeCarbs(meals, startMs, after);
@@ -3636,7 +3647,7 @@ function episodeTerms(P, pumpProfile, startMs, endMs, after, { lookback, doses, 
       if (c.ms >= tEnd) continue;
       B += chunkStart[i] - c.units * iobFraction((tEnd - c.ms) / 60000);
     }
-    return { tMin: (r.ms - startMs) / 60000, value: r.value, I: insulinEffectBetween(doses, [], s0, tEnd), B };
+    return { ms: r.ms, tMin: (r.ms - startMs) / 60000, value: r.value, I: insulinEffectBetween(doses, [], s0, tEnd), B };
   }).map((t, i) => Object.assign(t, { C: carbs[i] }));
 }
 
@@ -3670,6 +3681,66 @@ function episodeMaxGap(after, startMs, endMs) {
   let maxGap = 0, prevMs = startMs;
   for (const r of after) { maxGap = Math.max(maxGap, (r.ms - prevMs) / 60000); prevMs = r.ms; }
   return Math.max(maxGap, (endMs - prevMs) / 60000);
+}
+
+// The window checks every episode kind shares, in order: missing-profile,
+// too-few-readings (< 70% of the expected 5-min readings), sensor-gap
+// (a gap > 20 min, no starting glucose, or no fit). null = none apply.
+function windowConfounder({ missingProfile, rows, after, startMs, endMs, g0, fitOk = true }) {
+  if (missingProfile) return 'missing-profile';
+  if (rows.length < EPISODE_MIN_READING_SHARE * Math.floor((endMs - startMs) / 60000 / EPISODE_STEP_MIN)) return 'too-few-readings';
+  if (episodeMaxGap(after, startMs, endMs) > EPISODE_MAX_GAP_MIN || g0 == null || !fitOk) return 'sensor-gap';
+  return null;
+}
+
+// ISF (mmol/L per U) in force at ms: opts.isfAt(ms) when given, else the pump
+// correction factor; null when missing or outside the reliable range.
+function resolveIsfAt(isfAt, pumpProfile, ms) {
+  const v = typeof isfAt === 'function' ? Number(isfAt(ms)) : profileValueAt(pumpProfile, ms, 'correctionFactor');
+  return v >= MIN_RELIABLE_FACTOR && v <= MAX_RELIABLE_FACTOR ? v : null;
+}
+
+// The window's doses re-expressed in mmol/L: each insulin dose and basal-
+// deviation chunk x ISF at its own time, each carb bolus x ISF/CR at its own
+// time (a dose acts with the sensitivity of the hour it was given — the
+// convention behind scoreCorrectionEpisode's per-hour ISF), so episodeTerms
+// then returns I, B, C in mmol/L even when the window crosses profile
+// segments (e.g. a whole night). ISF from opts.isfAt, else the pump; CR from
+// the pump. null when ISF (checked at startMs too), a needed CR, or the basal
+// schedule can't be resolved -> missing-profile.
+function scaleWindowToMmol(P, pumpProfile, isfAt, win, startMs, endMs) {
+  const isf = ms => resolveIsfAt(isfAt, pumpProfile, ms);
+  if (!hasProfileField(pumpProfile, 'basalRate') || isf(startMs) == null) return null;
+  const doses = [], meals = [], basalChunks = [];
+  for (const d of win.doses) {
+    const f = isf(d.ms);
+    if (f == null) return null;
+    doses.push({ ...d, units: (Number(d.units) || 0) * f });
+  }
+  for (const m of win.meals) {
+    const f = isf(m.ms), cr = profileValueAt(pumpProfile, m.ms, 'carbRatio');
+    if (f == null || !(cr > 0)) return null;
+    meals.push({ ...m, carbs: (Number(m.carbs) || 0) * f / cr });
+  }
+  for (const c of basalDeviationChunks(P.basal, pumpProfile, win.lookback, endMs)) {
+    const f = isf(c.ms);
+    if (f == null) return null;
+    basalChunks.push({ ms: c.ms, units: c.units * f });
+  }
+  return { lookback: win.lookback, doses, meals, basalChunks };
+}
+
+// Least squares y ~= a * x + b * x2 (no intercept) over rows with a finite y;
+// sets each row's residual. null coefficients when (near-)singular.
+function fitTwoThroughOrigin(rows) {
+  let s11 = 0, s12 = 0, s22 = 0, s1y = 0, s2y = 0;
+  for (const r of rows) if (Number.isFinite(r.y)) { s11 += r.x * r.x; s12 += r.x * r.x2; s22 += r.x2 * r.x2; s1y += r.x * r.y; s2y += r.x2 * r.y; }
+  const det = s11 * s22 - s12 * s12;
+  const ok = det > 1e-9 * s11 * s22 && det > 0;
+  const a = ok ? (s1y * s22 - s12 * s2y) / det : null, b = ok ? (s11 * s2y - s12 * s1y) / det : null;
+  let sse = 0;
+  for (const r of rows) { r.res = a == null ? NaN : r.y - a * r.x - b * r.x2; if (Number.isFinite(r.res)) sse += r.res * r.res; }
+  return { a, b, rmse: rows.length && a != null ? Math.sqrt(sse / rows.length) : null };
 }
 
 // Whole-curve fit of one correction. Over the window, glucose change
@@ -3713,12 +3784,9 @@ function scoreCorrectionEpisode(input, correction, opts = {}) {
   }
   const fit = { isf, rmse, n: missingProfile ? after.length : rows.length };
 
-  const expected = Math.floor(windowMin / EPISODE_STEP_MIN);
   let confounded = null;
   if (correction.auto) confounded = 'auto-bolus';
-  else if (missingProfile) confounded = 'missing-profile';
-  else if (rows.length < EPISODE_MIN_READING_SHARE * expected) confounded = 'too-few-readings';
-  else if (episodeMaxGap(after, startMs, endMs) > EPISODE_MAX_GAP_MIN || g0 == null || isf == null) confounded = 'sensor-gap';
+  else if ((confounded = windowConfounder({ missingProfile, rows, after, startMs, endMs, g0, fitOk: isf != null }))) { /* labelled */ }
   else if (win.meals.some(b => b.ms >= startMs)) confounded = 'carbs-in-window';
   else if (hasCompressionLow(rows)) confounded = 'compression-low';
   else if (hasUnexplainedRise(rows)) confounded = 'unexplained-rise';
@@ -3772,8 +3840,7 @@ function scoreMealEpisode(input, bolus, opts = {}) {
   const { after, g0 } = episodeReadings(P, startMs, endMs, bolus.startGlucose);
   if (context.startGlucose == null) context.startGlucose = g0;
 
-  const isfRaw = typeof isfAt === 'function' ? Number(isfAt(startMs)) : profileValueAt(pumpProfile, startMs, 'correctionFactor');
-  const isf = isfRaw >= MIN_RELIABLE_FACTOR && isfRaw <= MAX_RELIABLE_FACTOR ? isfRaw : null;
+  const isf = resolveIsfAt(isfAt, pumpProfile, startMs);
   const missingProfile = isf == null || !hasProfileField(pumpProfile, 'basalRate');
   const win = episodeDoses(P, startMs, endMs, bolus);
 
@@ -3823,12 +3890,9 @@ function scoreMealEpisode(input, bolus, opts = {}) {
 
   const stacked = sliceByMs(P.boluses, startMs - MEAL_STACK_MIN * 60000, startMs + MEAL_STACK_MIN * 60000)
     .some(d => d.ms !== startMs && (Number(d.carbs) || 0) > 0);
-  const expected = Math.floor(windowMin / EPISODE_STEP_MIN);
   let confounded = null;
   if (bolus.auto) confounded = 'auto-bolus';
-  else if (missingProfile) confounded = 'missing-profile';
-  else if (rows.length < EPISODE_MIN_READING_SHARE * expected) confounded = 'too-few-readings';
-  else if (episodeMaxGap(after, startMs, endMs) > EPISODE_MAX_GAP_MIN || g0 == null) confounded = 'sensor-gap';
+  else if ((confounded = windowConfounder({ missingProfile, rows, after, startMs, endMs, g0 }))) { /* labelled */ }
   else if (stacked) confounded = 'stacked-meal';
   else if (hasCompressionLow(rows)) confounded = 'compression-low';
   else if (slowAbsorption) confounded = 'late-absorption';
@@ -3840,6 +3904,126 @@ function scoreMealEpisode(input, bolus, opts = {}) {
     fit: { carbRatio, rmse, n: missingProfile ? after.length : rows.length, peakMin, idealUnits, slowAbsorption },
     deltaUnits: idealUnits == null ? null : idealUnits - units,
     macros, delayedRise: confounded === 'late-absorption' || lateResidual,
+    confounded,
+  };
+}
+
+const EXERCISE_AFTER_MIN        = 60;    // exercise window runs to workout end + 60 min
+const EXERCISE_MAX_DROP_PER_MIN = 0.3;   // |dropPerMin| above this (mmol/L per min) is implausible
+const NIGHT_START_HOUR          = 0;     // London 00:00-06:00
+const NIGHT_END_HOUR            = 6;
+const NIGHT_ISF_RATIO_MIN       = 0.3;   // night sensitivity multiplier outside [0.3, 3] is implausible
+const NIGHT_ISF_RATIO_MAX       = 3;
+const NIGHT_MIN_INSULIN_MMOL    = 1.0;   // logged insulin moving glucose < 1 mmol/L all night -> ratio undetermined
+
+// Shared start of an exercise / night window: readings, every logged dose
+// and carb absorbing in it, and per reading the modelled effects in mmol/L
+// (terms: I insulin, B basal deviation, C carbs; null -> missing-profile).
+function windowModel(P, pumpProfile, isfAt, startMs, endMs) {
+  const { after, g0 } = episodeReadings(P, startMs, endMs, null);
+  const win = episodeDoses(P, startMs, endMs);
+  const scaled = scaleWindowToMmol(P, pumpProfile, isfAt, win, startMs, endMs);
+  return { after, g0, win, terms: scaled && episodeTerms(P, pumpProfile, startMs, endMs, after, scaled) };
+}
+
+// The confounders exercise and night windows share after the window checks:
+// carbs-in-window (logged carbs eaten in the window: their effect rests on
+// the pump CR guess, which would leak into the fit), compression-low,
+// unexplained-rise, then implausible-fit when !plausible.
+function windowEventConfounder(rows, win, startMs, plausible) {
+  if (win.meals.some(b => b.ms >= startMs)) return 'carbs-in-window';
+  if (hasCompressionLow(rows)) return 'compression-low';
+  if (hasUnexplainedRise(rows)) return 'unexplained-rise';
+  return plausible ? null : 'implausible-fit';
+}
+
+// One workout, scored once workout end + 60 min has passed. The residual
+// glucose change after modelling every logged insulin dose (incl. auto-
+// boluses and prior IOB), basal deviation and logged carbs, at ISF from
+// opts.isfAt (else the pump correction factor) and the pump carb ratio:
+//   residual(t) ~= -dropPerMin * (exercise minutes elapsed by model time t)
+// fitted through the origin, so dropPerMin is mmol/L per exercise minute
+// (positive = drop), and the end..end+60 tail confirms the drop stopped with
+// the workout. Model time lags readings by CGM_LAG_MINUTES.
+// Confounders: missing-profile, too-few-readings, sensor-gap, carbs-in-window,
+// compression-low, unexplained-rise, implausible-fit (|dropPerMin| > 0.3 or
+// non-finite).
+function scoreExerciseEpisode(input, workout, opts = {}) {
+  const { pumpProfile = null, isfAt = null, nowMs = Date.now(), siteChanges = null, health = null } = opts;
+  const startMs = toMs(workout?.startTime), workEnd = toMs(workout?.endTime);
+  if (startMs == null || workEnd == null || !(workEnd > startMs)) return null;
+  const endMs = workEnd + EXERCISE_AFTER_MIN * 60000;
+  if (toMs(nowMs) < endMs) return null;
+  const minutes = (workEnd - startMs) / 60000;
+
+  const P = prepareLearningInput(input);
+  const context = episodeContext(P, startMs, { pumpProfile, siteChanges, health });
+  const { after, g0, win, terms } = windowModel(P, pumpProfile, isfAt, startMs, endMs);
+  if (context.startGlucose == null) context.startGlucose = g0;
+  const missingProfile = terms == null;
+
+  let rows = [], dropPerMin = null, rmse = null;
+  if (!missingProfile) {
+    const lagMs = CGM_LAG_MINUTES * 60000;
+    rows = terms.map(t => ({ tMin: t.tMin,
+      x: -clamp((t.ms - lagMs - startMs) / 60000, 0, minutes),
+      y: g0 == null ? NaN : t.value - g0 + t.I + t.B - t.C }));
+    ({ coef: dropPerMin, rmse } = fitThroughOrigin(rows));
+  }
+
+  const confounded = windowConfounder({ missingProfile, rows, after, startMs, endMs, g0, fitOk: dropPerMin != null })
+    || windowEventConfounder(rows, win, startMs, Math.abs(dropPerMin) <= EXERCISE_MAX_DROP_PER_MIN);
+
+  return {
+    kind: 'exercise', startMs, endMs, workoutType: workout.workoutType ?? null, minutes,
+    intensity: classifyIntensity(workout.workoutType), context,
+    fit: { dropPerMin, rmse, n: missingProfile ? after.length : rows.length },
+    confounded,
+  };
+}
+
+// One night: London 00:00-06:00 on the London date containing nightStartMs
+// (5 or 7 hours on a clock-change night), scored once 06:00 has passed.
+// With every logged insulin / basal-deviation / carb effect modelled at the
+// expected ISF (opts.isfAt, else pump) and the pump carb ratio:
+//   g(t) - g0 - carbs(t) ~= -isfRatio * insulin(t) + driftPerHr * hours(t)
+// isfRatio = the night's best-fit ISF / expected ISF (> 1 = more sensitive,
+// e.g. after exercise); driftPerHr = change the logged inputs don't explain
+// (basal schedule too low/high, dawn phenomenon). Confounders as
+// scoreExerciseEpisode, plus 'weak-signal' (checked after the window checks)
+// when the logged insulin would move glucose < 1 mmol/L all night, so the
+// ratio is undetermined (fit.insulinMmol); implausible-fit = isfRatio outside
+// [0.3, 3] or a non-finite drift. context (at 00:00) carries exercise24h / exercise48h.
+function scoreNight(input, nightStartMs, opts = {}) {
+  const { pumpProfile = null, isfAt = null, nowMs = Date.now(), siteChanges = null, health = null } = opts;
+  const t = toMs(nightStartMs);
+  if (t == null) return null;
+  const startMs = londonClockMs(t, NIGHT_START_HOUR), endMs = londonClockMs(t, NIGHT_END_HOUR);
+  if (toMs(nowMs) < endMs) return null;
+
+  const P = prepareLearningInput(input);
+  const context = episodeContext(P, startMs, { pumpProfile, siteChanges, health });
+  const { after, g0, win, terms } = windowModel(P, pumpProfile, isfAt, startMs, endMs);
+  if (context.startGlucose == null) context.startGlucose = g0;
+  const missingProfile = terms == null;
+
+  let rows = [], isfRatio = null, driftPerHr = null, rmse = null, insulinMmol = null;
+  if (!missingProfile) {
+    rows = terms.map(t => ({ tMin: t.tMin, x: -t.I - t.B, x2: t.tMin / 60,
+      y: g0 == null ? NaN : t.value - g0 - t.C }));
+    ({ a: isfRatio, b: driftPerHr, rmse } = fitTwoThroughOrigin(rows));
+    insulinMmol = Math.max(0, ...rows.map(r => Math.abs(r.x)));
+    for (const r of rows) r.y -= (driftPerHr ?? 0) * r.x2;   // rise checks see the drift-corrected curve
+  }
+
+  const confounded = windowConfounder({ missingProfile, rows, after, startMs, endMs, g0, fitOk: isfRatio != null })
+    || (insulinMmol < NIGHT_MIN_INSULIN_MMOL ? 'weak-signal' : null)
+    || windowEventConfounder(rows, win, startMs,
+      isfRatio >= NIGHT_ISF_RATIO_MIN && isfRatio <= NIGHT_ISF_RATIO_MAX && Number.isFinite(driftPerHr));
+
+  return {
+    kind: 'night', startMs, endMs, context,
+    fit: { isfRatio, driftPerHr, rmse, n: missingProfile ? after.length : rows.length, insulinMmol },
     confounded,
   };
 }
@@ -3934,6 +4118,8 @@ const DiabetesEngine = {
   episodeContext,
   scoreCorrectionEpisode,
   scoreMealEpisode,
+  scoreExerciseEpisode,
+  scoreNight,
 };
 
 // Dual environment: CommonJS (Node/Netlify functions) or a plain <script>
