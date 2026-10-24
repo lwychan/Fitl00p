@@ -72,6 +72,14 @@ function bedtimeLine({ needHours, wakeMin, strainHours = 0, debtHours = 0 }) {
 }
 
 // Cron runs every 15 min, so a target is due within ±7 min of now.
+// Briefings: due from 7 min before the target until graceMin after it, so a
+// run that fails, or a target that moves earlier between runs (evening sleep
+// need changes as the day's data syncs), is never skipped — briefing_log
+// stops it going twice.
+function dueSince(targetMin, nowMin, graceMin = 120) {
+  return targetMin != null && nowMin >= targetMin - 7 && nowMin <= targetMin + graceMin;
+}
+
 function isDue(targetMin, nowMin, toleranceMin = 7) {
   return targetMin != null && Math.abs(nowMin - targetMin) <= toleranceMin;
 }
@@ -125,7 +133,7 @@ function composeBriefing(items, { slot, extras = [], pinned = [], maxChars = 180
     body = build(reasons, extraLines);
   }
   if (body.length > maxChars && reasons.length) body = build([], extraLines);
-  if (body.length > maxChars) body = `${body.slice(0, maxChars - 1).trimEnd()}…`;
+  if (body.length > maxChars) body = `${Array.from(body).slice(0, maxChars - 2).join('').trimEnd()}…`;
 
   const base = slot === 'evening' ? '🌙 Evening' : '⚡ Morning';
   const title = top && `${base} · ${top.headline}`.length <= 50 ? `${base} · ${top.headline}` : base;
@@ -145,7 +153,9 @@ function londonHHMM(iso) {
 const sleepSynced = hrs => hrs != null && Number(hrs) >= 3;
 
 function fallbackNightPhrase({ snapshot = null, nightGlucose = null, partialHrs = null } = {}) {
-  const snap = snapshot && snapshot.battery != null && snapshot.takenAt ? snapshot : null;
+  // Only an evening app-open (20:00-02:59 London) is a hint at bedtime.
+  const eveningOpen = t => { const h = Number(londonHHMM(t).slice(0, 2)); return h >= 20 || h < 3; };
+  const snap = snapshot && snapshot.battery != null && snapshot.takenAt && eveningOpen(snapshot.takenAt) ? snapshot : null;
   const g = nightGlucose && Number.isFinite(nightGlucose.low) ? nightGlucose : null;
   if (!snap && !g && partialHrs == null) return null;
   let s = partialHrs != null ? `Only ${Number(partialHrs).toFixed(1)}h of last night's sleep has synced so far`
@@ -168,7 +178,10 @@ const words = s => String(s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').sp
 function sameExercise(a, b) {
   const full = s => words(s).sort().join(' ');
   const base = s => words(shortName(s)).join(' ');
-  return full(a) === full(b) || base(a) === base(b) || base(a) === full(b) || full(a) === base(b);
+  if (full(a) === full(b)) return true;
+  const bracketed = s => /\([^)]*\)\s*$/.test(String(s || ''));
+  if (bracketed(a) && bracketed(b)) return false; // "(Barbell)" vs "(Dumbbell)": different lifts
+  return base(a) === base(b) || base(a) === full(b) || full(a) === base(b);
 }
 
 const LB = 0.45359237;
@@ -296,7 +309,7 @@ function nightGlucoseSummary(readings, fromMs, toMs) {
   return { low: Math.round(Math.min(...v) * 10) / 10, mean: Math.round(mean * 10) / 10, cv: Math.round((sd / mean) * 100) };
 }
 
-const Briefings = { glucoseAlert, TIRZEPATIDE_NUDGE_MINUTES, PEPTIDE_NUDGE_MINUTE, nudgeDue, medsPushDue, wakeTime, bedtimeLine, sleepSynced, weighinDue, morningExtras, londonMidnightMs, nightGlucoseSummary, workoutLine, sameExercise, fitl00pSessionRow, DEFAULT_SCHEDULES, defaultSchedule, scheduleFor, isWeekend, morningTime, eveningTime, isDue,
+const Briefings = { dueSince, glucoseAlert, TIRZEPATIDE_NUDGE_MINUTES, PEPTIDE_NUDGE_MINUTE, nudgeDue, medsPushDue, wakeTime, bedtimeLine, sleepSynced, weighinDue, morningExtras, londonMidnightMs, nightGlucoseSummary, workoutLine, sameExercise, fitl00pSessionRow, DEFAULT_SCHEDULES, defaultSchedule, scheduleFor, isWeekend, morningTime, eveningTime, isDue,
   composeBriefing, fallbackNightPhrase };
 
 return Briefings;

@@ -284,3 +284,38 @@ test('glucose alerts: low says IOB and carbs; high names the factor source; neve
   assert.equal(B.glucoseAlert('low', { forecastGlucose: 4.1, iob: 0, trendPerMinute: -0.05, currentGlucose: 6 }).body,
     'Dropping to ~4.1 in 2h — have fast carbs ready.');
 });
+
+test('review fix: different equipment in brackets is a different exercise', () => {
+  assert.equal(B.sameExercise('Bench Press (Barbell)', 'Bench Press (Dumbbell)'), false);
+  assert.equal(B.sameExercise('Bench Press (Barbell)', 'Bench Press'), true);
+  const today = { title: 'Push A', volume_kg: 5000, exercises: [{ title: 'Bench Press (Barbell)', sets: 3, top_kg: 80 }] };
+  const last = { title: 'Push B', volume_kg: 4000, exercises: [{ title: 'Bench Press (Dumbbell)', sets: 3, top_kg: 30 }] };
+  assert.equal(B.workoutLine(today, null, [last]), '🏋️ Push A: 5,000 kg');
+});
+
+test('review fix: a briefing is due from 7 min before target until the grace runs out, so a moving target is never skipped', () => {
+  assert.equal(B.dueSince(1224, 1215), false); // 20:15 run, target 20:24
+  assert.equal(B.dueSince(1214, 1230), true);  // 20:30 run, target moved to 20:14
+  assert.equal(B.dueSince(345, 338), true);
+  assert.equal(B.dueSince(345, 345 + 121), false); // not hours late
+});
+
+test('review fix: dose reminders survive trimming; the workout line goes first', () => {
+  const b = B.composeBriefing([
+    item('battery_evening_low', 'battery', 50, { reason: 'Body Battery 22%', action: 'Wind down early — screens off 30 min before bed' }, 'evening'),
+    item('strain_over', 'strain', 60, { reason: 'strain 14.2, over target on a low-recovery day' }, 'evening'),
+  ], { slot: 'evening', headlineOverride: 'In bed by 21:06 (8.4h — catching up on sleep debt).',
+    pinned: ['💊 Finasteride, Minoxidil not logged yet.', '💉 Peptide not logged yet today.'],
+    extras: ['🏋️ Wk1-4 Upper B (Fri): 7,360 kg, +95 kg on last time; Shoulder Press top set +2.5 kg'] });
+  assert.ok(b.body.includes('💊 Finasteride, Minoxidil not logged yet.'), b.body);
+  assert.ok(b.body.includes('💉 Peptide not logged yet today.'), b.body);
+  assert.ok([...b.body].length <= 180, b.body.length);
+});
+
+test('review fix: only an evening app-open counts as a bedtime hint', () => {
+  assert.equal(B.fallbackNightPhrase({ snapshot: { battery: 61, takenAt: '2026-10-23T13:05:00Z' } }), null);
+  assert.equal(B.fallbackNightPhrase({ snapshot: { battery: 32, takenAt: '2026-10-23T22:40:00Z' } }),
+    'No sleep data from last night yet (bed ~23:40 on 32%)');
+  assert.equal(B.fallbackNightPhrase({ snapshot: { battery: 61, takenAt: '2026-10-23T13:05:00Z' }, nightGlucose: { low: 5, mean: 6, cv: 10 } }),
+    'No sleep data from last night yet — probably a settled night, glucose steady');
+});

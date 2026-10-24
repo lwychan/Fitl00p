@@ -12,7 +12,7 @@ import { fetchNightscoutInput } from '../_shared/nightscout-fetch.ts';
 import ReadinessModel from '../_shared/readiness-model.js';
 import Insights from '../_shared/insights.js';
 import Briefings from '../_shared/briefings.js';
-import { claim, recordBody } from '../_shared/briefing-log.ts';
+import { claim, recordBody, sentKinds } from '../_shared/briefing-log.ts';
 
 const SB_URL     = Deno.env.get('SUPABASE_URL');
 const SB_SERVICE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
@@ -145,10 +145,15 @@ async function morningBriefing(userId: string, profile: any, prefs: Record<strin
     });
     if (phrase) pinned.push(`${phrase}.`);
   }
-  extras.push(...Briefings.morningExtras({
-    weighinDue: prefs.weighin?.enabled !== false && Briefings.weighinDue({ isGemma, weekday: now.weekday, days: prefs.weighin?.days_of_week ?? null, loggedToday: weighedToday }),
+  // Dose reminders are pinned (never trimmed for length); the weigh-in line can go.
+  pinned.push(...Briefings.morningExtras({
+    weighinDue: false,
     tirzepatideDue: !isGemma && prefs.tirzepatide?.enabled !== false && await tirzepatideDueToday(userId, today),
     peptideDue: !isGemma && prefs.peptide?.enabled !== false && await peptideDueToday(userId, today),
+  }));
+  extras.push(...Briefings.morningExtras({
+    weighinDue: prefs.weighin?.enabled !== false && Briefings.weighinDue({ isGemma, weekday: now.weekday, days: prefs.weighin?.days_of_week ?? null, loggedToday: weighedToday }),
+    tirzepatideDue: false, peptideDue: false,
   }));
   return Briefings.composeBriefing(itemsFor(rules, ctx, 'morning'), { slot: 'morning', extras, pinned });
 }
@@ -217,13 +222,14 @@ async function eveningBriefing(userId: string, profile: any, prefs: Record<strin
 
   const isGemma = userId === GEMMA_USER_ID;
   const pending = prefs.oral_meds?.enabled !== false ? await medsPending(userId, today) : [];
-  const extras = [
-    await workoutForToday(userId, today),
+  // Meds and the peptide last call are pinned (never trimmed); the workout line can go.
+  const pinned = [
     pending.length ? `💊 ${pending.join(', ')} not logged yet.` : null,
     !isGemma && prefs.peptide?.enabled !== false && await peptideDueToday(userId, today) ? '💉 Peptide not logged yet today.' : null,
   ].filter(Boolean) as string[];
+  const extras = [await workoutForToday(userId, today)].filter(Boolean) as string[];
   return Briefings.composeBriefing(itemsFor(rules, ctx, 'evening'), {
-    slot: 'evening', extras,
+    slot: 'evening', extras, pinned,
     headlineOverride: Briefings.bedtimeLine({ needHours: need.needHours, wakeMin, strainHours: need.strainHours, debtHours: need.debtHours }),
   });
 }
@@ -257,10 +263,17 @@ Deno.serve(async () => {
     const profile = profileById[userId] || {};
     const schedule = Briefings.scheduleFor(userId, profile.briefing_schedule);
 
-    if (prefs.morning_briefing?.enabled !== false && Briefings.isDue(Briefings.morningTime(schedule, now.weekday), nowMin)) {
+    // Due from 7 min before the target until 2h after, so a failed run or a
+    // moved target is retried; skip cheaply once sent; compose BEFORE claiming
+    // so an error while composing doesn't lose the day's briefing.
+    let sent: string[] | null = null;
+    const alreadySent = async (kind: string) => (sent ??= await sentKinds(sbFetch, userId, now.dateStr)).includes(kind);
+
+    if (prefs.morning_briefing?.enabled !== false && Briefings.dueSince(Briefings.morningTime(schedule, now.weekday), nowMin)
+        && !(await alreadySent('morning'))) {
       try {
+        const b = await morningBriefing(userId, profile, prefs, now, await loadRules());
         if (await claim(userId, 'morning', now.dateStr)) {
-          const b = await morningBriefing(userId, profile, prefs, now, await loadRules());
           const pushed = await sendToSubscriptions(byUser[userId], { title: b.title, body: b.body, url: '/', tag: 'briefing-morning' });
           result.morning.sent += pushed.sent; result.morning.failed += pushed.failed;
           await recordBody(userId, 'morning', now.dateStr, b.body);
@@ -268,16 +281,16 @@ Deno.serve(async () => {
       } catch (e) { result.errors.push(`morning ${userId.slice(0, 8)}: ${(e as Error).message}`); }
     }
 
-    // Evening: only look inside the 19:00-23:00 window it's clamped to.
-    if (prefs.evening_briefing?.enabled !== false && nowMin >= 1133 && nowMin <= 1387) {
+    // Evening: its time is clamped to 19:00-23:00, so only look from 18:53.
+    if (prefs.evening_briefing?.enabled !== false && nowMin >= 1133 && !(await alreadySent('evening'))) {
       try {
         const need = await sleepNeedTonight(userId, profile, now.dateStr);
         const tomorrow = weekdayOf(addDays(now.dateStr, 1));
         const target = Briefings.eveningTime({ needHours: need.needHours, schedule, tomorrowWeekday: tomorrow });
-        if (Briefings.isDue(target, nowMin)) {
+        if (Briefings.dueSince(target, nowMin)) {
+          const wakeMin = Briefings.wakeTime(schedule, tomorrow);
+          const b = await eveningBriefing(userId, profile, prefs, now, await loadRules(), need, wakeMin);
           if (await claim(userId, 'evening', now.dateStr)) {
-            const wakeMin = Briefings.wakeTime(schedule, tomorrow);
-            const b = await eveningBriefing(userId, profile, prefs, now, await loadRules(), need, wakeMin);
             const pushed = await sendToSubscriptions(byUser[userId], { title: b.title, body: b.body, url: '/', tag: 'briefing-evening' });
             result.evening.sent += pushed.sent; result.evening.failed += pushed.failed;
             await recordBody(userId, 'evening', now.dateStr, b.body);
