@@ -193,7 +193,7 @@
 
 **Interfaces:**
 - `compareForecasts(oldEngine, newEngine, input, { fromMs, toMs, stepMin = 15, model }) -> { old: { mae30, mae60, mae120, lateLows }, new: {…}, n }` — at each step, both engines forecast with data up to that moment only (new one with `model` fitted from episodes before that moment); `lateLows` = actual lows (< 3.9) the forecast didn't predict ≥ 30 min ahead.
-- Script: `node scripts/replay-diabetes.mjs --days 60` — requires the archived engine (`archive/diabetes-engine-v1/diabetes-engine.js`) as `oldEngine`, fetches Lewis's data through the deployed `diabetes-sync` (NS URL/token read from the profile via service-role env vars set in the shell by the owner, never printed), loads `dx_episodes`, runs `compareForecasts`, writes the report.
+- Script: `node scripts/replay-diabetes.mjs --days 60` — loads the original engine at run time from the git tag (`git show diabetes-engine-v1:src/diabetes-engine.js` into a temp file, then `require` it) as `oldEngine` (owner: no archive in the repo), fetches Lewis's data through the deployed `diabetes-sync` (NS URL/token read from the profile via service-role env vars set in the shell by the owner, never printed), loads `dx_episodes`, runs `compareForecasts`, writes the report.
 - [ ] **Step 1: Failing test:** on a sim patient with strongly time-varying ISF, `compareForecasts(v1, current, …)` → `new.mae60 < old.mae60` and `new.lateLows ≤ old.lateLows`.
 - [ ] **Step 2–4:** FAIL → implement → PASS.
 - [ ] **Step 5: Gate:** run the script on Lewis's real data. Pass = `new.mae30/60/120 ≤ old` and `new.lateLows ≤ old.lateLows`. Commit the report. **If it fails: stop and report to the owner — do not go live.**
@@ -212,5 +212,5 @@
 
 - [ ] **Step 1:** Confirm Task 9's gate passed and Task 8's first model exists.
 - [ ] **Step 2:** Deploy `diabetes-learn`, `diabetes-sync`, `notify-glucose-forecast`, `notify-briefings` (engine copy); schedule the cron (Task 8 SQL).
-- [ ] **Step 3:** `node scripts/revert-diabetes-engine.mjs --check` → PASS (revert path still works).
+- [ ] **Step 3:** Confirm the previous TestFlight build is still installable (the owner's way back) and the tag `diabetes-engine-v1` exists on origin.
 - [ ] **Step 4:** Ask the owner for OK to push `main` + start the TestFlight build. Commit any doc updates.

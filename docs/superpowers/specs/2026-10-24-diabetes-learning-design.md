@@ -145,6 +145,8 @@ Episodes with a large residual or too few readings are flagged as confounded and
 
 Time of day (London), weekday/weekend, IOB and COB at start, basal deviation during, starting glucose and trend, exercise in the previous 24h and 48h (type, minutes, TRIMP/strain), and infusion site age. From fitl00p's health data: last night's sleep, recovery and resting-HR z-score. Meal macros from fitl00p's food log when matched. Sensor age and gaps.
 
+> **Update (owner, 2026-10-24):** "Remove the dependency on the old engine, we have the old version of the app to revert to." The archive folder and revert script were removed; the original lives only at git tag `diabetes-engine-v1`, and the way back is the previous TestFlight build. New code does not need to stay compatible with the original. The offline replay still compares against the original, loaded from the tag at run time.
+
 ## Rollout (owner's decisions, with Claude's calls marked)
 
 1. **Archive the original (owner).**

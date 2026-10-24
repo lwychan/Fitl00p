@@ -31,8 +31,4 @@ The dashboard's Insights card (and the Body Battery popup's suggestions) come fr
 
 ## Diabetes engine revert
 
-The pre-learning diabetes engine is archived in `archive/diabetes-engine-v1/` (tag `diabetes-engine-v1`). Nothing loads it; the build and `npm test` ignore it.
-
-- Check the archive still passes: `node scripts/revert-diabetes-engine.mjs --check`
-- Revert (copies v1 over `src/diabetes-engine.js` and `tests/diabetes-engine.test.js`, syncs shared copies, runs `npm test`): `node scripts/revert-diabetes-engine.mjs`
-- After a real revert, redeploy: Supabase functions `diabetes-sync` and `notify-glucose-forecast`; unschedule pg_cron job `diabetes-learn`; push main + TestFlight.
+The pre-learning diabetes engine is tagged `diabetes-engine-v1` in git; nothing in the build depends on it. To go back: reinstall the previous TestFlight build on the phone, or restore the code with `git checkout diabetes-engine-v1 -- src/diabetes-engine.js tests/diabetes-engine.test.js`, run `node scripts/sync-shared.mjs` and `npm test`, redeploy `diabetes-sync` and `notify-glucose-forecast`, unschedule the `diabetes-learn` cron, then push main + TestFlight (with the owner's OK). Code elsewhere may use the new engine's exports, so a code-level revert can need follow-up fixes; the TestFlight build is the clean way back.
