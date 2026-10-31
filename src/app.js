@@ -1314,6 +1314,14 @@ async function _loadDashboardInner(signal) {
     cal_fitl00p: foodCalByDate[h.log_date] ?? null,
   }));
   log.cal_fitl00p = foodCalByDate[todayISO()] ?? null;
+
+  // No watch-synced sleep for this night (not worn/charging/etc) — try to
+  // back-fill a reasonable estimate rather than silently losing the Sleep
+  // factor's weight in the Recovery/Sleep gauges below. See
+  // estimateMissingSleep for the two fallbacks it tries, in order.
+  const sleepFallback = await estimateMissingSleep(health, healthHistory);
+  if (sleepFallback) Object.assign(health, sleepFallback);
+
   const logs          = logsRes.data || [];
   const lastSession   = lastSessionRes.data;
   const lastSync      = lastSyncRes.data;
@@ -1677,6 +1685,105 @@ function tieredSleepDurationScore(hrs) {
   return 15;
 }
 
+// ── Sleep fallback when the watch wasn't worn ──────────────────
+// Apple Health only reports sleep_total_hrs (and HRV/resting HR) from an
+// overnight watch sync — take the watch off to charge, or just forget it,
+// and the night comes back completely null. Without a fallback that
+// silently zeroes the Sleep factor's weight in computeRecoveryScore/
+// computeSleepScore below, rather than reflecting what almost certainly
+// still happened. Two fallbacks, tried in order:
+//
+// 1. Infer the sleep window directly from the overnight Nightscout trace.
+//    A long, smooth, food-free stretch is a real physiological signal —
+//    no meals, no movement-driven glucose noise — not just a guess. This
+//    is the same signature a person would read off the graph by eye.
+// 2. If CGM data isn't configured, or the night was too noisy/gappy to
+//    read confidently, fall back to this person's own rolling average
+//    sleep duration (baselineMean already requires >=5 samples).
+//
+// Either path returns an ESTIMATE, flagged as such (`estimated: true`)
+// so the UI can label it rather than presenting it as a real reading.
+const SLEEP_SEARCH_START_HOUR      = 20;    // previous day, local time
+const SLEEP_SEARCH_END_HOUR        = 12;    // reference day, local time
+const SLEEP_MAX_GAP_MIN            = 20;    // bigger than this = sensor dropout, breaks the stretch
+const SLEEP_MAX_SLOPE_MMOL_PER_MIN = 0.09;  // ~1.6mmol/L per 5min reading; slow basal/correction drift passes, eating/movement spikes don't
+const SLEEP_MIN_HOURS              = 3;     // shorter than this isn't a confident enough read to act on
+const SLEEP_MIN_READINGS           = 20;    // not enough overnight coverage to trust at all below this
+
+async function inferSleepHoursFromGlucose(glucoseHistory, refDateISO) {
+  if (!glucoseHistory?.length || !refDateISO) return null;
+
+  const refDate = new Date(`${refDateISO}T00:00:00`);
+  const searchStart = new Date(refDate);
+  searchStart.setDate(searchStart.getDate() - 1);
+  searchStart.setHours(SLEEP_SEARCH_START_HOUR, 0, 0, 0);
+  const searchEnd = new Date(refDate);
+  searchEnd.setHours(SLEEP_SEARCH_END_HOUR, 0, 0, 0);
+  const startMs = searchStart.getTime(), endMs = searchEnd.getTime();
+
+  const points = glucoseHistory
+    .filter(g => g.time >= startMs && g.time <= endMs)
+    .sort((a, b) => a.time - b.time);
+  if (points.length < SLEEP_MIN_READINGS) return null;
+
+  let mealTimes = [];
+  try {
+    const { data } = await db.from('food_log')
+      .select('logged_at')
+      .eq('user_id', currentUser.id)
+      .gte('logged_at', searchStart.toISOString())
+      .lte('logged_at', searchEnd.toISOString());
+    mealTimes = (data || []).map(r => new Date(r.logged_at).getTime());
+  } catch {
+    // If this fails, just don't exclude anything on meal timing — the
+    // gap/slope checks below still catch most non-sleep activity.
+  }
+
+  // Break the trace into segments at CGM gaps, logged meals, and sharp
+  // glucose swings, then take the longest segment left standing.
+  const segments = [];
+  let segStart = points[0].time, prevTime = points[0].time, prevVal = points[0].value;
+  const flushSegment = (endTime) => { if (endTime > segStart) segments.push(endTime - segStart); };
+
+  for (let i = 1; i < points.length; i++) {
+    const p = points[i];
+    const dtMin = (p.time - prevTime) / 60000;
+    const brokenByGap  = dtMin > SLEEP_MAX_GAP_MIN;
+    const brokenByMeal = mealTimes.some(m => m > prevTime && m <= p.time);
+    const slope = dtMin > 0 ? Math.abs(p.value - prevVal) / dtMin : 0;
+    const brokenBySpike = slope > SLEEP_MAX_SLOPE_MMOL_PER_MIN;
+
+    if (brokenByGap || brokenByMeal || brokenBySpike) {
+      flushSegment(prevTime);
+      segStart = p.time;
+    }
+    prevTime = p.time;
+    prevVal = p.value;
+  }
+  flushSegment(prevTime);
+
+  const longestMs = segments.reduce((a, b) => Math.max(a, b), 0);
+  const hours = longestMs / 3600000;
+  return hours >= SLEEP_MIN_HOURS ? Math.round(hours * 10) / 10 : null;
+}
+
+async function estimateMissingSleep(health, healthHistory) {
+  if (health?.sleep_total_hrs != null) return null; // real data already present — nothing to fall back to
+
+  if (profile?.diabetes_ns_url) {
+    try {
+      const data = await fetchDiabetesData();
+      const hrs = await inferSleepHoursFromGlucose(data?.glucoseHistory, health?.log_date);
+      if (hrs != null) return { sleep_total_hrs: hrs, estimated: true, estimatedSource: 'cgm' };
+    } catch {
+      // Nightscout unreachable/misconfigured — fall through to the average.
+    }
+  }
+
+  const avg = baselineMean(healthHistory, 'sleep_total_hrs', health?.log_date);
+  return avg != null ? { sleep_total_hrs: Math.round(avg * 10) / 10, estimated: true, estimatedSource: 'average' } : null;
+}
+
 // ── Recovery ─────────────────────────────────────────────────
 // Physiological readiness — same four inputs WHOOP publicly states
 // theirs uses (HRV, resting HR, respiratory rate, sleep), each scored
@@ -1748,16 +1855,21 @@ function computeRecoveryScore(health, healthHistory) {
     const rem  = health?.sleep_rem_hrs  || 0;
     sleepScore = Math.min(100, sleepScore + Math.min(10, (deep + rem) * 5));
     totalScore += sleepScore * 0.25; totalWeight += 0.25;
-    factors.push({ label: 'Sleep', val: `${fmt1(sleep)}h`, pct: Math.round(sleepScore), cls: 'sleep' });
+    factors.push({ label: health?.estimated ? 'Sleep (est.)' : 'Sleep', val: `${fmt1(sleep)}h`, pct: Math.round(sleepScore), cls: 'sleep' });
   }
 
   if (totalWeight === 0) return { score: null, label: '', factors: [] };
   const score = Math.round(totalScore / totalWeight);
-  const label = score >= 80 ? 'Well recovered — great day to push hard.' :
-                score >= 60 ? 'Good recovery — normal training is fine.' :
-                score >= 40 ? 'Below your usual — consider a lighter session.' :
-                score >= 20 ? 'Low — prioritise recovery today.' :
-                              'Poorly recovered — rest day recommended.';
+  let label = score >= 80 ? 'Well recovered — great day to push hard.' :
+              score >= 60 ? 'Good recovery — normal training is fine.' :
+              score >= 40 ? 'Below your usual — consider a lighter session.' :
+              score >= 20 ? 'Low — prioritise recovery today.' :
+                            'Poorly recovered — rest day recommended.';
+  if (health?.estimated) {
+    label += health.estimatedSource === 'cgm'
+      ? ' Sleep estimated from last night’s glucose trace — watch wasn’t worn.'
+      : ' Sleep estimated from your recent average — watch wasn’t worn.';
+  }
   return { score, label, factors };
 }
 
@@ -1774,7 +1886,7 @@ function computeSleepScore(health, healthHistory) {
 
   const durScore = tieredSleepDurationScore(sleep);
   totalScore += durScore * 0.40; totalWeight += 0.40;
-  factors.push({ label: 'Duration', val: `${fmt1(sleep)}h`, pct: Math.round(durScore), cls: 'sleep' });
+  factors.push({ label: health?.estimated ? 'Duration (est.)' : 'Duration', val: `${fmt1(sleep)}h`, pct: Math.round(durScore), cls: 'sleep' });
 
   const scoreStagePct = (pct, idealLo, idealHi) => {
     if (pct >= idealLo && pct <= idealHi) return 100;
@@ -1818,10 +1930,15 @@ function computeSleepScore(health, healthHistory) {
 
   if (totalWeight === 0) return { score: null, label: '', factors: [] };
   const score = Math.round(totalScore / totalWeight);
-  const label = score >= 80 ? 'Great night — solid duration and architecture.' :
-                score >= 60 ? 'Good sleep, some room to improve.' :
-                score >= 40 ? 'Below par — try to catch up tonight.' :
-                              'Poor sleep — expect it to affect today.';
+  let label = score >= 80 ? 'Great night — solid duration and architecture.' :
+              score >= 60 ? 'Good sleep, some room to improve.' :
+              score >= 40 ? 'Below par — try to catch up tonight.' :
+                            'Poor sleep — expect it to affect today.';
+  if (health?.estimated) {
+    label = health.estimatedSource === 'cgm'
+      ? 'Estimated from last night’s glucose trace — watch wasn’t worn, so duration is a best guess and sleep stages aren’t available.'
+      : 'Estimated from your recent average — watch wasn’t worn and there wasn’t a clear enough glucose signal to read instead.';
+  }
   return { score, label, factors };
 }
 
