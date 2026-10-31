@@ -1721,10 +1721,22 @@ async function inferSleepHoursFromGlucose(glucoseHistory, refDateISO) {
   searchEnd.setHours(SLEEP_SEARCH_END_HOUR, 0, 0, 0);
   const startMs = searchStart.getTime(), endMs = searchEnd.getTime();
 
-  const points = glucoseHistory
+  let points = glucoseHistory
     .filter(g => g.time >= startMs && g.time <= endMs)
     .sort((a, b) => a.time - b.time);
   if (points.length < SLEEP_MIN_READINGS) return null;
+
+  // 3-point moving average before the slope check below — a single noisy
+  // reading (compression low, sensor blip; common overnight and usually
+  // bounces right back) shouldn't look like a real glucose swing. Tried a
+  // hard break on any one sharp delta first: a blip's recovery leg alone
+  // can swing enough to falsely end the stretch. Averaging it out catches
+  // that without smoothing away an actual sustained trend, which still
+  // comes through across several points.
+  points = points.map((p, i) => (i === 0 || i === points.length - 1) ? p : {
+    time: p.time,
+    value: (points[i - 1].value + p.value + points[i + 1].value) / 3,
+  });
 
   let mealTimes = [];
   try {
