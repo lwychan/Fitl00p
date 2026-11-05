@@ -2,6 +2,6 @@
 -- Morning side, run once the first morning briefing had delivered:
 select cron.unschedule(j) from unnest(array['notify-daily-summary','notify-weighin','notify-weighin-gemma']) j;
 -- Evening side, run once the first evening briefing has delivered:
--- select cron.unschedule('notify-sleep-target');
+select cron.unschedule('notify-sleep-target');  -- run 2026-11-05 after 24 evening briefings delivered
 -- Then: npx -y supabase@2.122.0 functions delete <name> --project-ref nxawnkpzjixishcerxcv
 -- for notify-daily-summary, notify-weighin, notify-weighin-gemma, notify-sleep-target.
