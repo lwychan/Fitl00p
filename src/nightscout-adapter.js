@@ -32,6 +32,29 @@
       null for pump-sourced boluses rather than populated with a
       generic technical string that would make every meal look like
       the same recurring meal in Stage 5's per-meal analysis.
+
+   Re-checked 2026-10-24 (400 treatments): Control-IQ AUTOMATIC boluses
+   arrive as eventType "Combo Bolus" with notes "Automatic Bolus" (carbs
+   null, enteredBy "Pump (tconnectsync)", no separate flag field). They
+   are insulin the pump gave on its own, not a correction the person
+   chose, so they go into boluses as { auto: true, carbs: 0 } — counted
+   in IOB and in every episode's insulin, never learned from as a manual
+   correction or flagged by stacking caution. Manual no-carb boluses come
+   through as "BLE Standard Bolus", "BLE Standard Bolus (Override)" or
+   "Standard Bolus" and stay corrections. "Extended Bolus" (no carbs) is the
+   delayed part of an extended meal bolus: insulin { extended: true, carbs:
+   0 }, never a correction episode.
+
+   The same Nightscout also holds two Trio (iOS loop, different pump) stints
+   (2026-09-14..17, 10-07..10): automatic doses are eventType "SMB" (auto,
+   as above), manual ones "Bolus", and food is a separate "Carb Correction"
+   carrying the carbs (a meal entry, not a correction).
+
+   Site changes: eventType "Site Change", logged by Tandem as two events a
+   minute apart — "Cartridge Filled (120u filled)" then "Cannula Filled
+   (0.3u primed)". The cannula fill is the new infusion site; a cartridge
+   fill on its own (refill, same site) isn't a site change. Events within
+   an hour of each other collapse into one.
    ═══════════════════════════════════════════════════════════ */
 
 const MGDL_PER_MMOL = 18.0182;
@@ -68,13 +91,26 @@ function adaptEntries(entries) {
    Resume" (informational markers; the zero/adjusted rate they
    describe already shows up in the Temp Basal stream itself, so
    they're not needed for the units math and are safely ignored). */
+// Tandem/tconnectsync: notes "Automatic Bolus". Trio / AndroidAPS / Loop
+// super-micro-boluses: eventType "SMB" (or isSMB / automatic flags).
+function isAutomaticBolus(t) {
+  return /automatic bolus/i.test(String(t.notes || '')) || /^smb$/i.test(String(t.eventType || '').trim())
+    || t.isSMB === true || t.automatic === true;
+}
+
 function classifyTreatment(t) {
   const type = String(t.eventType || '').toLowerCase();
   const carbs = Number(t.carbs) || 0;
   const insulin = Number(t.insulin) || 0;
 
   if (type.includes('temp basal')) return 'basal';
+  if (type.includes('site change')) return 'site';
+  if (insulin > 0 && carbs <= 0 && isAutomaticBolus(t)) return 'auto';
+  // the delayed part of a Tandem extended (meal) bolus — insulin, not a correction
+  if (insulin > 0 && carbs <= 0 && /extended bolus/i.test(String(t.notes || ''))) return 'extended';
   if (insulin > 0 || carbs > 0) {
+    // carbs first: Trio logs food as eventType "Carb Correction"
+    if (carbs > 0) return 'bolus';
     if (type.includes('correction')) return 'correction';
     if (type.includes('meal') || carbs > 0) return 'bolus';
     return 'correction'; // insulin with no carbs and no explicit label
@@ -86,6 +122,7 @@ function adaptTreatments(treatments) {
   const boluses = [];
   const corrections = [];
   const basalDoses = [];
+  const siteEvents = [];
 
   for (const t of treatments || []) {
     const ms = toMs(t.created_at ?? t.date ?? t.mills);
@@ -94,7 +131,15 @@ function adaptTreatments(treatments) {
     const insulin = Number(t.insulin) || 0;
     const carbs = Number(t.carbs) || 0;
 
-    if (kind === 'bolus') {
+    if (kind === 'auto') {
+      boluses.push({ time: ms, units: insulin, carbs: 0, mealName: null, auto: true });
+    } else if (kind === 'extended') {
+      boluses.push({ time: ms, units: insulin, carbs: 0, mealName: null, extended: true });
+    } else if (kind === 'site') {
+      const notes = String(t.notes || t.reason || '');
+      // cartridge / tubing fill alone = refill on the same site
+      if (/cannula/i.test(notes) || !/cartridge|tubing/i.test(notes)) siteEvents.push(ms);
+    } else if (kind === 'bolus') {
       boluses.push({ time: ms, units: insulin, carbs, mealName: t.foodType || null });
     } else if (kind === 'correction') {
       let startGlucose = null;
@@ -116,8 +161,17 @@ function adaptTreatments(treatments) {
     }
   }
 
-  return { boluses, corrections, basalDoses };
+  siteEvents.sort((a, b) => a - b);
+  const siteChanges = [];
+  for (const ms of siteEvents) {
+    const last = siteChanges[siteChanges.length - 1];
+    if (last && ms - last.time <= SITE_CHANGE_MERGE_MS) last.time = ms;
+    else siteChanges.push({ time: ms });
+  }
+
+  return { boluses, corrections, basalDoses, siteChanges };
 }
+const SITE_CHANGE_MERGE_MS = 60 * 60000;
 
 /* ── Profile history → profile-switch timeline ────────────────
    Nightscout doesn't log a distinct "Profile Switch" treatment event for
@@ -141,8 +195,8 @@ function adaptProfileSwitches(profileDocs) {
 /* ── Top-level adapter ─────────────────────────────────────── */
 function adaptNightscoutData({ entries, treatments } = {}) {
   const glucoseHistory = adaptEntries(entries);
-  const { boluses, corrections, basalDoses } = adaptTreatments(treatments);
-  return { glucoseHistory, boluses, corrections, basalDoses };
+  const { boluses, corrections, basalDoses, siteChanges } = adaptTreatments(treatments);
+  return { glucoseHistory, boluses, corrections, basalDoses, siteChanges };
 }
 
 const NightscoutAdapter = {

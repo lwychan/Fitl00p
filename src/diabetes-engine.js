@@ -514,11 +514,15 @@ function resolveCorrectionFactor(resolvedCorrections, settings, opts = {}) {
 // Any dose (bolus or correction) that's 15-110min old and still carries
 // >=0.5u of active IOB — the current high may already be dropping from
 // it. Returns the offending doses so the caller can show why.
+// Control-IQ automatic boluses (auto: true) are skipped: the caution is
+// about the person's own recent doses; the pump's insulin still counts in
+// IOB everywhere else.
 function detectStackingCaution(boluses, corrections, now, opts = {}) {
   const { peak = IOB_PEAK_MINUTES, duration = IOB_DURATION_MINUTES } = opts;
   const nowMs = toMs(now);
   const flagged = [];
   for (const dose of [...(boluses || []), ...(corrections || [])]) {
+    if (dose?.auto === true) continue;
     const units = Number(dose.units) || 0;
     if (units <= 0) continue;
     const doseMs = toMs(dose.time);
@@ -707,12 +711,12 @@ function nearestReading(readings, targetMs, toleranceMinutes = 15) {
 // happened at 7pm. Explicit Europe/London formatting is correct regardless
 // of the runtime's own timezone (browser device or Deno server) and matches
 // londonNow()/londonHourMinute() elsewhere in the app.
+// Uses londonParts' cached formatter (Stage 8): building a new Intl
+// formatter per call made forecast replays (forecastAccuracyByBlock in the
+// nightly job) take minutes.
 function londonHM(ms) {
-  const parts = new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
-  }).formatToParts(new Date(ms));
-  const get = t => parts.find(p => p.type === t).value;
-  return { hour: parseInt(get('hour'), 10), minute: parseInt(get('minute'), 10) };
+  const { hour, minute } = londonParts(toMs(ms));
+  return { hour, minute };
 }
 function hourOfDay(ms) { return londonHM(ms).hour; }
 function minutesSinceMidnight(ms) {
@@ -4422,6 +4426,94 @@ function modelCarbRatio(input, now) {
   return a && a.carbRatio > 0 ? a.carbRatio : null;
 }
 
+/* ── Nightly learning job (pure parts) ────────────────────────
+   diabetes-learn fetches Nightscout, then: shouldLearn (enough fresh CGM
+   to trust the fetch), episodesToScore (finished episodes not stored yet),
+   fitModel over the stored + new episodes. */
+const LEARN_MIN_READINGS_24H   = 144;   // 12h of 5-min readings in the last 24h
+const LEARN_SETTLE_MIN         = 60;    // pump uploads can lag: score only windows ended >= 1h ago
+const LEARN_LOOKBACK_MARGIN_MS = 6 * 3600000;   // prior IOB/COB must be inside the fetched data
+
+const episodeKey = ep => `${ep.kind}|${toMs(ep.startMs)}`;
+
+// false = the fetch is too thin to learn from tonight (keep the old model).
+function shouldLearn(input, nowMs = Date.now()) {
+  const now = toMs(nowMs);
+  const from = now - DAY_MS;
+  let n = 0;
+  for (const r of input?.glucoseHistory || []) {
+    const ms = toMs(r?.time);
+    if (ms != null && ms > from && ms <= now && Number(r.value) > 0) n++;
+  }
+  return n >= LEARN_MIN_READINGS_24H;
+}
+
+// ISF for scoring meals / workouts / nights: the latest model's block value
+// (allowFutureFit: the episode is older than the model), else the pump.
+function modelIsfAt(model, pumpProfile) {
+  if (!asModel(model)) return null;
+  return ms => {
+    const a = applyModel(model, ms, { nowMs: ms, allowFutureFit: true });
+    return a && isNum(a.isf) ? a.isf : profileValueAt(pumpProfile, ms, 'correctionFactor');
+  };
+}
+
+// Every finished episode in the input whose key `${kind}|${startMs}` isn't in
+// storedKeys, scored with opts.pumpProfile and the ISF of opts.model (or
+// opts.isfAt). Finished = window ended >= LEARN_SETTLE_MIN before nowMs AND
+// before the last CGM reading; episodes starting within 6h of the first reading
+// are skipped (their prior insulin wasn't fetched). Oldest first; opts.maxEpisodes
+// caps how many are scored in one call (Edge CPU budget) so the next run continues.
+// Auto-boluses (carbs 0) are never episodes. opts.siteChanges / opts.health go to
+// the episode context.
+function episodesToScore(input, storedKeys, nowMs = Date.now(), opts = {}) {
+  const { pumpProfile = null, model = null, siteChanges = null, health = null,
+    maxEpisodes = Infinity, settleMin = LEARN_SETTLE_MIN } = opts;
+  const P = prepareLearningInput(input);
+  if (!P.glucose.length) return [];
+  const stored = storedKeys instanceof Set ? storedKeys : new Set(storedKeys || []);
+  const firstMs = P.glucose[0].ms, lastMs = P.glucose[P.glucose.length - 1].ms;
+  const scoreNow = Math.min(toMs(nowMs) - settleMin * 60000, lastMs);
+  const earliest = firstMs + LEARN_LOOKBACK_MARGIN_MS;
+  const isfAt = opts.isfAt || modelIsfAt(model, pumpProfile);
+  const sopts = { pumpProfile, isfAt, nowMs: scoreNow, siteChanges, health };
+
+  // candidates: [startMs, kind, score()] — cheap key check before any scoring
+  const cands = [];
+  const add = (kind, startMs, score) => {
+    if (startMs == null || startMs < earliest || startMs > scoreNow) return;
+    if (stored.has(`${kind}|${startMs}`)) return;
+    cands.push({ kind, startMs, score });
+  };
+  for (const c of P.corrections) {
+    if (c.auto === true) continue;
+    add('correction', c.ms, () => scoreCorrectionEpisode(P, c, sopts));
+  }
+  for (const b of P.boluses) {
+    if (b.auto === true || !((Number(b.carbs) || 0) > 0)) continue;
+    add('meal', b.ms, () => scoreMealEpisode(P, b, sopts));
+  }
+  for (const w of P.activities?.workouts || []) {
+    add('exercise', toMs(w?.startTime), () => scoreExerciseEpisode(P, w, sopts));
+  }
+  for (let d = londonClockMs(firstMs, NIGHT_START_HOUR); d <= scoreNow; d = londonClockMs(d + 30 * 3600000, NIGHT_START_HOUR)) {
+    add('night', d, () => scoreNight(P, d, sopts));
+  }
+
+  cands.sort((a, b) => a.startMs - b.startMs || a.kind.localeCompare(b.kind));
+  const out = [], seen = new Set();
+  for (const c of cands) {
+    if (out.length >= maxEpisodes) break;
+    const key = `${c.kind}|${c.startMs}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const ep = c.score();
+    if (!ep || toMs(ep.startMs) !== c.startMs) continue;   // unfinished / invalid
+    out.push(ep);
+  }
+  return out;
+}
+
 const DiabetesEngine = {
   // constants
   IOB_PEAK_MINUTES,
@@ -4518,6 +4610,10 @@ const DiabetesEngine = {
   fitModel,
   applyModel,
   modelOpts,
+  // nightly learning job
+  shouldLearn,
+  episodesToScore,
+  episodeKey,
 };
 
 // Dual environment: CommonJS (Node/Netlify functions) or a plain <script>

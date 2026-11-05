@@ -34,18 +34,31 @@ async function nsFetch(url: string, headers: Record<string, string>) {
 }
 
 const NS_LOOKBACK_DAYS = 14; // matches fetchDiabetesData()'s live default
+// Per-day ceilings for the count= params: 288 CGM readings a day, and
+// Control-IQ logs a Temp Basal roughly every 5 min plus boluses/alarms
+// (~370/day on a real tconnectsync feed) — the old fixed 20000/5000
+// silently truncated treatments much past 2 weeks.
+const NS_ENTRIES_PER_DAY = 320;
+const NS_TREATMENTS_PER_DAY = 500;
 
-async function fetchNightscoutInput(profile: any) {
+// days: lookback (default 14). untilMs (optional): fetch only up to this
+// instant — diabetes-learn backfills history in chunks [untilMs - days, untilMs].
+async function fetchNightscoutInput(profile: any, { days = NS_LOOKBACK_DAYS, untilMs = null }: { days?: number; untilMs?: number | null } = {}) {
   const baseUrl = (profile.diabetes_ns_url || '').replace(/\/+$/, '');
   if (!baseUrl) return null;
-  const sinceMs = Date.now() - NS_LOOKBACK_DAYS * 24 * 60 * 60000;
+  const endMs = untilMs ?? Date.now();
+  const sinceMs = endMs - days * 24 * 60 * 60000;
+  const untilE = untilMs != null ? `&find[date][$lte]=${untilMs}` : '';
+  const untilT = untilMs != null ? `&find[created_at][$lte]=${new Date(untilMs).toISOString()}` : '';
+  const entriesCount = Math.max(20000, Math.ceil(days * NS_ENTRIES_PER_DAY));
+  const treatmentsCount = Math.max(5000, Math.ceil(days * NS_TREATMENTS_PER_DAY));
   const reqHeaders: Record<string, string> = {};
   if (profile.diabetes_ns_secret) reqHeaders['API-SECRET'] = await sha1Hex(profile.diabetes_ns_secret);
   const tokenQS = profile.diabetes_ns_token ? `&token=${encodeURIComponent(profile.diabetes_ns_token)}` : '';
 
   const [entries, treatments] = await Promise.all([
-    nsFetch(`${baseUrl}/api/v1/entries.json?count=20000&find[date][$gte]=${sinceMs}${tokenQS}`, reqHeaders),
-    nsFetch(`${baseUrl}/api/v1/treatments.json?count=5000&find[created_at][$gte]=${new Date(sinceMs).toISOString()}${tokenQS}`, reqHeaders),
+    nsFetch(`${baseUrl}/api/v1/entries.json?count=${entriesCount}&find[date][$gte]=${sinceMs}${untilE}${tokenQS}`, reqHeaders),
+    nsFetch(`${baseUrl}/api/v1/treatments.json?count=${treatmentsCount}&find[created_at][$gte]=${new Date(sinceMs).toISOString()}${untilT}${tokenQS}`, reqHeaders),
   ]);
   if (!entries.ok) return null;
 
@@ -64,7 +77,14 @@ async function fetchNightscoutInput(profile: any) {
     insulinDurationMinutes: Number(profile.diabetes_insulin_duration_min) || 240,
   };
 
-  return { ...adapted, settings, activities: {} };
+  // fetchInfo: what came back — diabetes-learn won't score episodes from a
+  // fetch that lost its treatments (insulin would look absent) or hit a
+  // count= ceiling (the oldest days would be missing doses).
+  const nE = (entries.data || []).length, nT = treatments.ok ? (treatments.data || []).length : 0;
+  const fetchInfo = { days, treatmentsOk: treatments.ok, entries: nE, treatments: nT,
+    truncated: nE >= entriesCount || nT >= treatmentsCount };
+
+  return { ...adapted, settings, activities: {}, fetchInfo };
 }
 
 export { fetchNightscoutInput, nsFetch, sha1Hex };
