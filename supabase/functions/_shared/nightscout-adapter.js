@@ -41,10 +41,11 @@ const NightscoutAdapterNS = (function () {
    chose, so they go into boluses as { auto: true, carbs: 0 } — counted
    in IOB and in every episode's insulin, never learned from as a manual
    correction or flagged by stacking caution. Manual no-carb boluses come
-   through as "BLE Standard Bolus", "BLE Standard Bolus (Override)" or
-   "Standard Bolus" and stay corrections. "Extended Bolus" (no carbs) is the
-   delayed part of an extended meal bolus: insulin { extended: true, carbs:
-   0 }, never a correction episode.
+   through (eventType "Combo Bolus") with notes "BLE Standard Bolus",
+   "BLE Standard Bolus (Override)" or "Standard Bolus" and stay corrections.
+   A "Combo Bolus" with notes "Extended Bolus" (and no carbs) is the delayed
+   part of an extended meal bolus: insulin { extended: true, carbs: 0 },
+   never a correction episode.
 
    The same Nightscout also holds two Trio (iOS loop, different pump) stints
    (2026-09-14..17, 10-07..10): automatic doses are eventType "SMB" (auto,

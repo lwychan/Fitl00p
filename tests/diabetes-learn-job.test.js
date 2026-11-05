@@ -177,3 +177,62 @@ test('episodesToScore: meals are scored with the model ISF (isfAt) when a model 
   assert.ok(shared.length > 5);
   assert.ok(shared.some(k => Math.abs(a.get(k) - b.get(k)) > 1e-6), 'model ISF changed meal fits');
 });
+
+/* ── Fix round 1 ─────────────────────────────────────────────────────── */
+test('mergeMealCarbsIntoBoluses: never attaches carbs to an auto bolus; prefers the manual dose', () => {
+  const t = Date.parse('2026-10-24T12:00:00Z');
+  const meal = { time: t, carbs: 40, matched_bolus_time: new Date(t).toISOString() };
+  // auto bolus at the exact matched time, manual bolus 3 min later
+  const out = E.mergeMealCarbsIntoBoluses([
+    { time: t, units: 0.4, carbs: 0, auto: true },
+    { time: t + 3 * 60000, units: 3, carbs: 0 },
+  ], [meal]);
+  const auto = out.find(b => b.auto);
+  assert.strictEqual(auto.carbs, 0);
+  assert.strictEqual(out.find(b => !b.auto && b.units === 3).carbs, 40);
+  // only an auto bolus nearby: the carbs become their own row
+  const only = E.mergeMealCarbsIntoBoluses([{ time: t, units: 0.4, carbs: 0, auto: true }], [meal]);
+  assert.strictEqual(only.find(b => b.auto).carbs, 0);
+  assert.ok(only.some(b => !b.auto && b.carbs === 40 && b.units === 0));
+  // extended-bolus portions don't take carbs either
+  const ext = E.mergeMealCarbsIntoBoluses([{ time: t, units: 1, carbs: 0, extended: true }], [meal]);
+  assert.strictEqual(ext.find(b => b.extended).carbs, 0);
+});
+
+test('a model from a partial backfill (learn.backfillComplete false) counts as absent', () => {
+  const base = E.episodesToScore(simIn, new Set(), simEnd, opts);
+  const model = E.fitModel(base, sim.pumpProfile, { nowMs: simEnd });
+  assert.ok(E.applyModel(model, simEnd - H));
+  assert.strictEqual(E.applyModel({ ...model, learn: { backfillComplete: false } }, simEnd - H), null);
+  assert.ok(E.applyModel({ ...model, learn: { backfillComplete: true } }, simEnd - H));
+  // and episodesToScore falls back to the pump ISF for it
+  const partial = { ...model, learn: { backfillComplete: false } };
+  partial.blocks = partial.blocks.map(b => ({ ...b, isf: { ...b.isf, value: b.isf.pump * 1.25 } }));
+  const a = E.episodesToScore(simIn, new Set(), simEnd, opts).filter(e => e.kind === 'meal').map(e => e.fit.carbRatio);
+  const b = E.episodesToScore(simIn, new Set(), simEnd, { ...opts, model: partial }).filter(e => e.kind === 'meal').map(e => e.fit.carbRatio);
+  assert.deepStrictEqual(b, a);
+});
+
+test('first model (no prevModel) cannot move toward more insulin than the pump', () => {
+  // corrections that all say "more sensitive is wrong": ISF 40% below pump (more insulin)
+  const pump = sim.pumpProfile;
+  const eps = [];
+  for (let d = 0; d < 20; d++) {
+    for (const h of [1, 4, 7, 10, 13, 16, 19, 22]) {
+      const startMs = Date.UTC(2026, 0, 10 + d, h);
+      const pumpIsf = E.prescribedRegimenTable(pump)[Math.floor(h / 3)].correctionFactor;
+      eps.push({ kind: 'correction', startMs, units: 1, context: {}, fit: { isf: pumpIsf * 0.6 }, confounded: null });
+    }
+  }
+  const nowMs = Date.UTC(2026, 1, 1);
+  const first = E.fitModel(eps, pump, { nowMs });
+  for (const b of first.blocks) {
+    assert.ok(b.isf.value >= b.isf.pump - 1e-9, `${b.label} ${b.isf.value} < pump ${b.isf.pump}`);
+  }
+  // the next nightly fit may move 10%/day from there
+  const next = E.fitModel(eps, pump, { nowMs: nowMs + 24 * H, prevModel: first });
+  for (const b of next.blocks) {
+    const r = b.isf.value / b.isf.pump;
+    assert.ok(r >= 0.9 - 1e-9 && r < 1, `${b.label} ratio ${r}`);
+  }
+});

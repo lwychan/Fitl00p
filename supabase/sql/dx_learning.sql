@@ -32,7 +32,12 @@ drop policy if exists "dx_model select own" on public.dx_model;
 create policy "dx_model select own" on public.dx_model
   for select to authenticated using ((select auth.uid()) = user_id);
 
-revoke insert, update, delete on public.dx_episodes, public.dx_model from anon, authenticated;
+-- Everything but SELECT revoked (TRUNCATE bypasses RLS, so revoking only
+-- insert/update/delete wasn't enough). Applied 2026-11-05 as migration
+-- 'dx_learning_grants'; verified via information_schema.role_table_grants:
+-- authenticated = SELECT only, anon = none.
+revoke all on public.dx_episodes, public.dx_model from anon, authenticated;
+grant select on public.dx_episodes, public.dx_model to authenticated;
 
 -- Nightly at 02:30 and 03:30 UTC; the function acts only when it is 03:xx in
 -- London (03:30 BST / 03:30 GMT), so it runs once a night across DST.

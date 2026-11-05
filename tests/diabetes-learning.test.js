@@ -588,8 +588,12 @@ test('fitModel: shape, 8 blocks with pump values, JSON-serialisable and determin
   assert.strictEqual(block(none, '09:00–12:00').isf.source, 'pump');
 });
 
+// A model fitted long ago at the pump values: no rate limit on the next fit. Tests of what
+// fitModel learns use it, since a first fit (no prevModel) can't move toward more insulin.
+const SETTLED = (profile, nowMs) => E.fitModel([], profile, { nowMs: nowMs - 30 * D });
+
 test('less insulin usable at n=5; more insulin needs n=10', () => {
-  const fit = eps => block(E.fitModel(eps, FLAT, { nowMs: AT10 }), '09:00–12:00');
+  const fit = eps => block(E.fitModel(eps, FLAT, { nowMs: AT10, prevModel: SETTLED(FLAT, AT10) }), '09:00–12:00');
   // ISF 30% below pump = more insulin: 6 is not enough, block and all-day alike
   const more6 = fit(many(6, i => corrEp(AT10 + i * 60000, 2.1 + 1e-9)));
   assert.notStrictEqual(more6.isf.source, 'learned');
@@ -609,7 +613,7 @@ test('less insulin usable at n=5; more insulin needs n=10', () => {
   assert.strictEqual(fit(many(6, i => mealEp(AT10 + i * 60000, 8))).carbRatio.source, 'pump');
   assert.strictEqual(fit(many(6, i => mealEp(AT10 + i * 60000, 12))).carbRatio.source, 'learned');
   // pooled: 6 + 6 more-insulin episodes in two blocks -> neither block alone, but all-day (n=12) is usable
-  const m = E.fitModel([...many(6, i => corrEp(AT10 + i * 60000, 2.4)), ...many(6, i => corrEp(AT10 + 6 * H + i * 60000, 2.4))], FLAT, { nowMs: AT10 + D });
+  const m = E.fitModel([...many(6, i => corrEp(AT10 + i * 60000, 2.4)), ...many(6, i => corrEp(AT10 + 6 * H + i * 60000, 2.4))], FLAT, { nowMs: AT10 + D, prevModel: SETTLED(FLAT, AT10 + D) });
   for (const label of ['09:00–12:00', '15:00–18:00']) {
     assert.strictEqual(block(m, label).isf.source, 'pooled');
     assert.ok(Math.abs(block(m, label).isf.value - 2.4) < 1e-9);
@@ -619,13 +623,13 @@ test('less insulin usable at n=5; more insulin needs n=10', () => {
 });
 
 test('guard band clamps and flags', () => {
-  const m = E.fitModel([...many(10, i => corrEp(AT10 + i * 60000, 6)), ...many(10, i => mealEp(AT10 + i * 60000, 4))], FLAT, { nowMs: AT10 });
+  const m = E.fitModel([...many(10, i => corrEp(AT10 + i * 60000, 6)), ...many(10, i => mealEp(AT10 + i * 60000, 4))], FLAT, { nowMs: AT10, prevModel: SETTLED(FLAT, AT10) });
   const b = block(m, '09:00–12:00');
   assert.ok(Math.abs(b.isf.value - 1.3 * 3) < 1e-9, `isf ${b.isf.value}`);
   assert.strictEqual(b.isf.outsideBand, true);
   assert.ok(Math.abs(b.carbRatio.value - 0.7 * 10) < 1e-9, `cr ${b.carbRatio.value}`);
   assert.strictEqual(b.carbRatio.outsideBand, true);
-  const inBand = block(E.fitModel(many(10, i => corrEp(AT10 + i * 60000, 3.3)), FLAT, { nowMs: AT10 }), '09:00–12:00');
+  const inBand = block(E.fitModel(many(10, i => corrEp(AT10 + i * 60000, 3.3)), FLAT, { nowMs: AT10, prevModel: SETTLED(FLAT, AT10) }), '09:00–12:00');
   assert.strictEqual(inBand.isf.outsideBand, false);
   // every block of every model stays inside the band
   for (const bb of m.blocks) for (const k of ['isf', 'carbRatio']) {
@@ -638,7 +642,7 @@ test('rate limit 10%/day', () => {
   const prof = cf => ({ default: [{ time: '00:00', correctionFactor: cf, carbRatio: 10, basalRate: 0.8 }] });
   const fitAt = (days, eps, prev, profile = FLAT) => block(E.fitModel(eps, profile, { nowMs: AT10 + days * D, prevModel: prev && JSON.parse(JSON.stringify(prev)) }), '09:00–12:00');
   const evidence = (days, isf, n = 10) => many(n, i => corrEp(AT10 + days * D + i * 60000, isf));
-  const prev3 = E.fitModel(evidence(0, 3.0), FLAT, { nowMs: AT10 });
+  const prev3 = E.fitModel(evidence(0, 3.0), FLAT, { nowMs: AT10, prevModel: SETTLED(FLAT, AT10) });
   assert.ok(Math.abs(block(prev3, '09:00–12:00').isf.value - 3.0) < 1e-9);
   // genuine learned move toward more insulin: 2.0 vs prev 3.0 a day earlier -> 2.7
   const more = fitAt(1, evidence(1, 2.0), prev3);
@@ -657,22 +661,22 @@ test('rate limit 10%/day', () => {
   const raised = fitAt(1, [], prev3, prof(4));
   assert.deepStrictEqual([raised.isf.value, raised.isf.pump, raised.isf.source, raised.isf.rateLimited, raised.isf.outsideBand], [4, 4, 'pump', false, false]);
   // evidence vanished after a more-insulin learn (2.4 vs pump 3): back to pump at once
-  const prev24 = E.fitModel(evidence(0, 2.4), FLAT, { nowMs: AT10 });
+  const prev24 = E.fitModel(evidence(0, 2.4), FLAT, { nowMs: AT10, prevModel: SETTLED(FLAT, AT10) });
   assert.ok(Math.abs(block(prev24, '09:00–12:00').isf.value - 2.4) < 1e-9);
   for (const eps of [[], evidence(1, 2.4, 6)]) {
     const back = fitAt(1, eps, prev24);
     assert.deepStrictEqual([back.isf.value, back.isf.source, back.isf.rateLimited], [3, 'pump', false]);
   }
   // from a less-insulin model (1.2 x pump) the step to pump is free, below it is slowed
-  const prev36 = E.fitModel(evidence(0, 3.6), FLAT, { nowMs: AT10 });
+  const prev36 = E.fitModel(evidence(0, 3.6), FLAT, { nowMs: AT10, prevModel: SETTLED(FLAT, AT10) });
   assert.ok(Math.abs(fitAt(1, evidence(1, 2.4), prev36).isf.value - 2.7) < 1e-9);
   // ratio space: prev 0.9 x pump 3, pump now 4, evidence 0.6 x pump -> floor 0.81 x 4
-  const prev27 = E.fitModel(evidence(0, 2.7), FLAT, { nowMs: AT10 });
+  const prev27 = E.fitModel(evidence(0, 2.7), FLAT, { nowMs: AT10, prevModel: SETTLED(FLAT, AT10) });
   const moved = fitAt(1, evidence(1, 2.4), prev27, prof(4));
   assert.ok(Math.abs(moved.isf.value - 0.81 * 4) < 1e-9, `value ${moved.isf.value}`);
   assert.strictEqual(moved.isf.rateLimited, true);
   // same rule for the carb ratio
-  const prevCr = E.fitModel(many(10, i => mealEp(AT10 + i * 60000, 10)), FLAT, { nowMs: AT10 });
+  const prevCr = E.fitModel(many(10, i => mealEp(AT10 + i * 60000, 10)), FLAT, { nowMs: AT10, prevModel: SETTLED(FLAT, AT10) });
   const cr = fitAt(1, many(10, i => mealEp(AT10 + D + i * 60000, 7.5)), prevCr);
   assert.ok(Math.abs(cr.carbRatio.value - 9) < 1e-9 && cr.carbRatio.rateLimited === true);
 });
@@ -799,7 +803,7 @@ function assertIsfWithin(rows, tol) {
 test('learns time-of-day ISF from the sim', () => {
   const p = sim90[0];
   const nowMs = p.glucoseHistory[p.glucoseHistory.length - 1].time;
-  const m = E.fitModel(pooled90(), p.pumpProfile, { nowMs });
+  const m = E.fitModel(pooled90(), p.pumpProfile, { nowMs, prevModel: SETTLED(p.pumpProfile, nowMs) });
   const { rows, text } = isfVsTruth(m, p);
   console.log(`fitModel ISF per block (boost ${m.exercise.boost.multiplier.toFixed(3)}, nights ${m.exercise.boost.n}/${m.exercise.boost.nWithout}): ${text}`);
   assert.ok(m.exercise.boost.multiplier > 1);
@@ -810,7 +814,7 @@ test('daily-ish training: post-exercise episodes normalised by the learned boost
   const eps = daily90();
   const p = sim90[0];   // same truth + pump profile as the daily-run sims
   const nowMs = p.glucoseHistory[p.glucoseHistory.length - 1].time;
-  const m = E.fitModel(eps, p.pumpProfile, { nowMs });
+  const m = E.fitModel(eps, p.pumpProfile, { nowMs, prevModel: SETTLED(p.pumpProfile, nowMs) });
   const { rows, text } = isfVsTruth(m, p);
   console.log(`daily-run ISF (boost ${m.exercise.boost.multiplier.toFixed(3)}, nights ${m.exercise.boost.n}/${m.exercise.boost.nWithout}): ${text}`);
   assert.ok(m.exercise.boost.multiplier > 1.1, `boost ${m.exercise.boost.multiplier}`);
@@ -825,7 +829,7 @@ test('daily-ish training: post-exercise episodes normalised by the learned boost
   }
   console.log(`  per block n with normalisation vs exclusion: ${m.blocks.map(b => `${b.isf.n}/${b.isf.n - b.isf.nPostExercise}`).join(' ')}`);
   // without the nights the boost is unlearned and the post-exercise episodes go in raw: biased up
-  const raw = E.fitModel(eps.filter(ep => ep.kind !== 'night'), p.pumpProfile, { nowMs });
+  const raw = E.fitModel(eps.filter(ep => ep.kind !== 'night'), p.pumpProfile, { nowMs, prevModel: SETTLED(p.pumpProfile, nowMs) });
   const rawRows = isfVsTruth(raw, p).rows;
   console.log(`  unnormalised: ${rawRows.map(r => `${r.label} ${(r.err * 100).toFixed(1)}%`).join(' ')}`);
   assert.ok(meanOf(rawRows.map(r => r.err)) > meanOf(rows.map(r => r.err)));

@@ -5,24 +5,27 @@
 // store them in dx_episodes (written once, never updated), refit the model
 // from the last 180 days of stored episodes and insert it into dx_model.
 //
-// Backfill: until model.learn.backfillComplete, each run learns the next
-// BACKFILL_CHUNK_DAYS of history starting 90 days back (progress in
-// model.learn.backfillThroughMs). After that, each night re-reads the last
-// NIGHTLY_DAYS (already-stored episodes are skipped by key).
+// Backfill: while a user has no model, each run scores the next
+// BACKFILL_CHUNK_DAYS of history (from 90 days back / the newest stored
+// episode). Episodes are stored per chunk, but no dx_model row is written until
+// a chunk reaches now — a model from partial history is never stored (and
+// asModel ignores one with learn.backfillComplete false). After that, each night
+// re-reads the last NIGHTLY_DAYS (stored episodes are skipped by key).
 //
 // Safety: if Nightscout can't be reached, lost its treatments, hit a count=
 // ceiling, or (tonight's run) has less than 12h of CGM in the last 24h, the user
-// is reported `skipped` and NOTHING is written or deleted — the previous model
-// stays in force (the app falls back to pump settings once it is 48h old).
+// is skipped and NOTHING is written or deleted — the previous model stays in
+// force (the app falls back to pump settings once it is 48h old).
 //
 // `?force=1` bypasses the London-hour guard (first run / manual rerun). It is
-// anon-callable on purpose: the job is idempotent — episodes are insert-once
-// and it only recomputes each user's own model from their own data.
+// anon-callable: the response is only { ok }, details go to the function logs;
+// a user whose model is < 15 min old is skipped, and no model row is added when
+// nothing new was stored and the model is < 1h old.
 //
 // CPU: Edge Functions get ~2 s CPU per request. Each run scores at most
 // MAX_EPISODES_PER_RUN episodes, the model is written before the forecast-bias
-// replay (the costliest step, run only once backfilled, on FORECAST_BIAS_DAYS)
-// and the bias is patched in afterwards — so a CPU kill there keeps the model.
+// replay (the costliest step, on FORECAST_BIAS_DAYS) and the bias is patched in
+// afterwards — so a CPU kill there keeps the model.
 
 import { sbFetch, londonNow, GEMMA_USER_ID } from '../_shared/webpush.ts';
 import DiabetesEngine from '../_shared/diabetes-engine.js';
@@ -40,6 +43,9 @@ const EPISODE_WINDOW_DAYS = 180;      // episodes fitModel learns from
 const MODEL_KEEP_DAYS = 60;           // dx_model history kept (plus the newest)
 const MAX_EPISODES_PER_RUN = 250;     // CPU cap per user per run
 const FORECAST_BIAS_DAYS = 5;         // ~15 hourly checks per 3h block (n >= 10 needed)
+const MAX_CHUNKS_PER_RUN = 10;            // empty chunks (before the data starts) passed per run
+const FORCE_MIN_INTERVAL_MS = 15 * 60000; // ?force=1 skips a user whose model is this fresh
+const MODEL_REFIT_MIN_MS = 3600000;       // no new episodes + a model this fresh -> no new row
 const DAY = 86400000;
 
 const HEADERS = { 'Content-Type': 'application/json' };
@@ -122,44 +128,17 @@ async function loadHealth(userId: string, sinceMs: number) {
   };
 }
 
-async function learnUser(profile: any, nowMs: number) {
+// Fetch + score + store one window [fromMs, untilMs ?? now]. A skip result
+// means nothing was written.
+async function scoreWindow(profile: any, pumpProfile: any, prevModel: any, fromMs: number, untilMs: number | null, nowMs: number) {
   const userId = profile.id;
-  const t0 = performance.now();
-  const lap = (label: string) => console.log(`diabetes-learn ${String(userId).slice(0, 8)} ${label} @${Math.round(performance.now() - t0)}ms`);
-  const pumpProfile = profile.diabetes_pump_profile;
-  if (!pumpProfile?.default?.length) return { status: 'skipped', reason: 'no-pump-profile' };
-
-  const { data: prevRows } = await sbFetch(`/rest/v1/dx_model?user_id=eq.${userId}&select=fitted_at,model&order=fitted_at.desc&limit=1`);
-  const prevModel = (prevRows as any[])?.[0]?.model ?? null;
-  const learn = prevModel?.learn || {};
-  const backfilling = learn.backfillComplete !== true;
-
-  // Backfill: the chunk after learn.backfillThroughMs (from now - 90d), with a
-  // day of overlap so episodes cut off at the last chunk's end are scored now.
-  // Nightly: the last NIGHTLY_DAYS up to now.
-  let fromMs: number, untilMs: number | null;
-  if (backfilling) {
-    fromMs = Math.max(nowMs - BACKFILL_DAYS * DAY, Number(learn.backfillThroughMs) || 0) - DAY;
-    const end = fromMs + (BACKFILL_CHUNK_DAYS + 1) * DAY;
-    untilMs = end >= nowMs ? null : end;
-    // the last chunk also feeds the forecast-bias replay, which needs NIGHTLY_DAYS
-    if (untilMs == null) fromMs = Math.min(fromMs, nowMs - NIGHTLY_DAYS * DAY);
-  } else {
-    fromMs = nowMs - NIGHTLY_DAYS * DAY;
-    untilMs = null;
-  }
   const endMs = untilMs ?? nowMs;
-  const days = (endMs - fromMs) / DAY;
-
-  const ns = await fetchNightscoutInput(profile, { days, untilMs });
-  if (!ns) return { status: 'skipped', reason: 'nightscout-unreachable', backfilling };
-  if (!ns.fetchInfo?.treatmentsOk) return { status: 'skipped', reason: 'treatments-fetch-failed', backfilling };
-  if (ns.fetchInfo.truncated) return { status: 'skipped', reason: 'fetch-hit-count-limit', backfilling, fetched: ns.fetchInfo };
+  const ns = await fetchNightscoutInput(profile, { days: (endMs - fromMs) / DAY, untilMs });
+  if (!ns) return { skip: 'nightscout-unreachable' };
+  if (!ns.fetchInfo?.treatmentsOk) return { skip: 'treatments-fetch-failed' };
+  if (ns.fetchInfo.truncated) return { skip: 'fetch-hit-count-limit' };
   // Tonight's data must be there (a past backfill chunk may legitimately be thin or empty).
-  if (untilMs == null && !DiabetesEngine.shouldLearn(ns, nowMs)) {
-    return { status: 'skipped', reason: 'under-12h-cgm-in-24h', backfilling, readings: ns.glucoseHistory.length };
-  }
-  lap('fetched');
+  if (untilMs == null && !DiabetesEngine.shouldLearn(ns, nowMs)) return { skip: 'under-12h-cgm-in-24h' };
 
   const [workouts, macroMealLog, health, storedRows] = await Promise.all([
     loadWorkouts(userId, fromMs - 2 * DAY, endMs),
@@ -180,14 +159,9 @@ async function learnUser(profile: any, nowMs: number) {
     activities: { workouts },
     macroMealLog,
   };
-
-  const prepared = DiabetesEngine.prepareLearningInput(input);
-  const episodes = DiabetesEngine.episodesToScore(prepared, storedKeys, nowMs, {
+  const episodes = DiabetesEngine.episodesToScore(DiabetesEngine.prepareLearningInput(input), storedKeys, nowMs, {
     pumpProfile, model: prevModel, siteChanges: ns.siteChanges, health, maxEpisodes: MAX_EPISODES_PER_RUN,
   });
-  lap(`scored ${episodes.length}`);
-  const truncated = episodes.length >= MAX_EPISODES_PER_RUN;
-
   const byKind: Record<string, number> = {};
   const rows = episodes.map((ep: any) => {
     byKind[ep.kind] = (byKind[ep.kind] || 0) + 1;
@@ -197,17 +171,68 @@ async function learnUser(profile: any, nowMs: number) {
     await sbWrite('/rest/v1/dx_episodes?on_conflict=user_id,kind,start_at', 'POST', rows.slice(i, i + 200),
       'resolution=ignore-duplicates,return=minimal');
   }
+  return { input, macroMealLog, scored: episodes.length, byKind, truncated: episodes.length >= MAX_EPISODES_PER_RUN, fetched: ns.fetchInfo };
+}
 
-  // backfill progress: through the chunk end, or the last scored episode when capped
-  const through = truncated ? Math.max(...episodes.map((e: any) => e.startMs)) : endMs;
-  const backfillComplete = !backfilling || (untilMs == null && !truncated);
+async function learnUser(profile: any, nowMs: number, force: boolean) {
+  const userId = profile.id;
+  const t0 = performance.now();
+  const lap = (label: string) => console.log(`diabetes-learn ${String(userId).slice(0, 8)} ${label} @${Math.round(performance.now() - t0)}ms`);
+  const pumpProfile = profile.diabetes_pump_profile;
+  if (!pumpProfile?.default?.length) return { status: 'skipped', reason: 'no-pump-profile' };
+
+  // Only complete models are stored, so the newest row (if any) is one.
+  const { data: prevRows } = await sbFetch(`/rest/v1/dx_model?user_id=eq.${userId}&select=fitted_at,model&order=fitted_at.desc&limit=1`);
+  const prevRow = (prevRows as any[])?.[0] ?? null;
+  const prevModel = DiabetesEngine.asModel(prevRow?.model) ? prevRow.model : null;
+  const prevAgeMs = prevRow ? nowMs - new Date(prevRow.fitted_at).getTime() : Infinity;
+  if (force && prevAgeMs < FORCE_MIN_INTERVAL_MS) return { status: 'skipped', reason: 'forced-too-soon' };
+  const backfilling = !prevModel;
+
+  // Backfill (no model yet): 10-day chunks from just before the newest stored
+  // episode (or 90 days back), a day of overlap so episodes cut off at a chunk's
+  // end are scored by the next. Empty chunks (before the data starts) are passed
+  // within the same run. No model is written until a chunk reaches now.
+  // Nightly: the last NIGHTLY_DAYS up to now.
+  let scored = 0;
+  const byKind: Record<string, number> = {};
+  let last: any = null, complete = false, fromMs = 0;
+  if (backfilling) {
+    const { data: newest } = await sbFetch(`/rest/v1/dx_episodes?user_id=eq.${userId}&select=start_at&order=start_at.desc&limit=1`);
+    let cursor = (newest as any[])?.[0] ? new Date((newest as any[])[0].start_at).getTime() : nowMs - BACKFILL_DAYS * DAY;
+    for (let i = 0; i < MAX_CHUNKS_PER_RUN; i++) {
+      fromMs = cursor - DAY;
+      const end = fromMs + (BACKFILL_CHUNK_DAYS + 1) * DAY;
+      const untilMs = end >= nowMs ? null : end;
+      // the last chunk also feeds the forecast-bias replay, which needs NIGHTLY_DAYS
+      if (untilMs == null) fromMs = Math.min(fromMs, nowMs - NIGHTLY_DAYS * DAY);
+      last = await scoreWindow(profile, pumpProfile, null, fromMs, untilMs, nowMs);
+      if (last.skip) return { status: 'skipped', reason: last.skip, backfilling };
+      scored += last.scored;
+      for (const [k, v] of Object.entries(last.byKind)) byKind[k] = (byKind[k] || 0) + (v as number);
+      lap(`chunk ${iso(fromMs).slice(0, 10)} scored ${last.scored}`);
+      if (untilMs == null) { complete = !last.truncated; break; }
+      if (last.scored > 0) break;          // one chunk with data per run (CPU)
+      cursor = end;
+    }
+    if (!complete) return { status: 'backfilling', scored, byKind };
+  } else {
+    fromMs = nowMs - NIGHTLY_DAYS * DAY;
+    last = await scoreWindow(profile, pumpProfile, prevModel, fromMs, null, nowMs);
+    if (last.skip) return { status: 'skipped', reason: last.skip, backfilling };
+    scored = last.scored;
+    Object.assign(byKind, last.byKind);
+    // nothing new and a model less than an hour old: keep it
+    if (scored === 0 && prevAgeMs < MODEL_REFIT_MIN_MS) return { status: 'unchanged', scored };
+  }
+  lap(`scored ${scored}`);
 
   const all = await sbFetchAll(`/rest/v1/dx_episodes?user_id=eq.${userId}&start_at=gte.${iso(nowMs - EPISODE_WINDOW_DAYS * DAY)}&select=episode&order=start_at`);
   const stored = all.map(r => r.episode);
   const model: any = DiabetesEngine.fitModel(stored, pumpProfile, { nowMs, prevModel });
   // keep the previous bias until it is recomputed below
   model.forecastBias = Array.isArray(prevModel?.forecastBias) ? prevModel.forecastBias : [];
-  model.learn = { backfillComplete, backfillThroughMs: backfillComplete ? nowMs : through, scored: episodes.length, byKind };
+  model.learn = { backfillComplete: true, scored, byKind };
   lap(`fitted from ${stored.length}`);
 
   // Written BEFORE the forecast-bias replay (the costliest step), so running
@@ -216,34 +241,28 @@ async function learnUser(profile: any, nowMs: number) {
   await sbWrite('/rest/v1/dx_model', 'POST', { user_id: userId, fitted_at: fittedAt, model, episodes_used: stored.length });
   await sbWrite(`/rest/v1/dx_model?user_id=eq.${userId}&fitted_at=lt.${iso(Math.min(nowMs - MODEL_KEEP_DAYS * DAY, model.fittedAt - 1))}`, 'DELETE', undefined);
 
-  let biasUpdated = false;
-  if (backfillComplete) {
-    const from = nowMs - (FORECAST_BIAS_DAYS + 1) * DAY;   // + a day of history for the first forecasts
-    const recent = (xs: any[]) => (xs || []).filter(x => new Date(x.time).getTime() >= from);
-    model.forecastBias = DiabetesEngine.forecastAccuracyByBlock({
-      ...input,
-      glucoseHistory: recent(input.glucoseHistory), boluses: recent(input.boluses),
-      corrections: recent(input.corrections), basalDoses: recent(input.basalDoses),
-      macroMealLog: recent(macroMealLog), model,
-    }, nowMs);
-    lap('forecast bias');
-    await sbWrite(`/rest/v1/dx_model?user_id=eq.${userId}&fitted_at=eq.${fittedAt}`, 'PATCH', { model });
-    biasUpdated = true;
-  }
+  const { input, macroMealLog } = last;
+  const from = nowMs - (FORECAST_BIAS_DAYS + 1) * DAY;   // + a day of history for the first forecasts
+  const recent = (xs: any[]) => (xs || []).filter(x => new Date(x.time).getTime() >= from);
+  model.forecastBias = DiabetesEngine.forecastAccuracyByBlock({
+    ...input,
+    glucoseHistory: recent(input.glucoseHistory), boluses: recent(input.boluses),
+    corrections: recent(input.corrections), basalDoses: recent(input.basalDoses),
+    macroMealLog: recent(macroMealLog), model,
+  }, nowMs);
+  lap('forecast bias');
+  await sbWrite(`/rest/v1/dx_model?user_id=eq.${userId}&fitted_at=eq.${fittedAt}`, 'PATCH', { model });
 
-  return {
-    status: 'learned', backfilling, backfillComplete, chunk: { from: iso(fromMs), until: iso(endMs) },
-    scored: episodes.length, byKind, episodesUsed: stored.length, fittedAt, biasUpdated,
-    fetched: ns.fetchInfo, ms: Math.round(performance.now() - t0),
-  };
+  return { status: 'learned', backfilling, scored, byKind, episodesUsed: stored.length, fittedAt, ms: Math.round(performance.now() - t0) };
 }
 
 Deno.serve(async (req: Request) => {
-  if (!SB_URL || !SB_SERVICE) return new Response('Supabase env vars missing', { status: 500 });
+  if (!SB_URL || !SB_SERVICE) return new Response(JSON.stringify({ ok: false }), { status: 500, headers: HEADERS });
   const force = new URL(req.url).searchParams.get('force') === '1';
   const { hour } = londonNow();
   if (!force && hour !== LEARN_HOUR_LONDON) {
-    return new Response(JSON.stringify({ skipped: `London hour ${hour}, runs at ${LEARN_HOUR_LONDON}` }), { headers: HEADERS });
+    console.log(`diabetes-learn: London hour ${hour}, runs at ${LEARN_HOUR_LONDON}`);
+    return new Response(JSON.stringify({ ok: true }), { headers: HEADERS });
   }
 
   const { data: profiles } = await sbFetch(
@@ -257,12 +276,14 @@ Deno.serve(async (req: Request) => {
     if (profile.id === GEMMA_USER_ID) continue;   // no diabetes data
     const user = String(profile.id).slice(0, 8);
     try {
-      results.push({ user, ...(await learnUser(profile, nowMs)) });
+      results.push({ user, ...(await learnUser(profile, nowMs, force)) });
     } catch (err) {
       // a failed write mid-run leaves the previous model in place
       results.push({ user, status: 'error', error: (err as Error).message.slice(0, 300) });
     }
   }
-  console.log(JSON.stringify(results));
-  return new Response(JSON.stringify({ forced: force, results }), { headers: HEADERS });
+  // Details go to the function logs only: the endpoint is anon-callable.
+  console.log(JSON.stringify({ forced: force, results }));
+  const ok = results.every(r => r.status !== 'error');
+  return new Response(JSON.stringify({ ok }), { status: ok ? 200 : 500, headers: HEADERS });
 });

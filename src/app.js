@@ -10816,6 +10816,9 @@ function renderDxTodaysMeals(items, boluses) {
       const NEARBY_BOLUS_WINDOW_MS = 4 * 3600000;
       const mealDayStr = new Date(eatenMs).toDateString();
       const nearbyBoluses = boluses.filter(b => {
+        // Control-IQ / SMB auto-boluses and extended-bolus portions aren't
+        // doses someone gave for a meal
+        if (b.auto === true || b.extended === true) return false;
         if (Number(b.units) <= 0) return false;
         const bTimeMs = Number(b.time);
         if (Math.abs(bTimeMs - eatenMs) <= NEARBY_BOLUS_WINDOW_MS) return true;

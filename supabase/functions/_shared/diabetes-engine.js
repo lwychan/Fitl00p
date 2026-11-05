@@ -176,10 +176,19 @@ function mergeMealCarbsIntoBoluses(boluses, macroMealLog) {
     const eatenAt = meal.eaten_at ?? meal.time;
     if (carbs <= 0 || eatenAt == null) continue;
 
+    // the nearest manual dose within 5 min — never a Control-IQ / SMB auto
+    // bolus or an extended-bolus portion (carbs on those would turn the pump's
+    // own insulin into a "meal")
     const matchedAt = meal.matched_bolus_time ? toMs(meal.matched_bolus_time) : null;
-    const match = matchedAt != null
-      ? list.find(d => { const dMs = toMs(d.time); return dMs != null && Math.abs(dMs - matchedAt) < 5 * 60000; })
-      : null;
+    let match = null, best = Infinity;
+    if (matchedAt != null) {
+      for (const d of list) {
+        if (d.auto === true || d.extended === true) continue;
+        const dMs = toMs(d.time);
+        const diff = dMs != null ? Math.abs(dMs - matchedAt) : Infinity;
+        if (diff < 5 * 60000 && diff < best) { match = d; best = diff; }
+      }
+    }
 
     if (match) {
       match.carbs = carbs;
@@ -4177,9 +4186,13 @@ function fitModel(episodes, pumpProfile, opts = {}) {
 
   const table = prescribedRegimenTable(pumpProfile) || REGIMEN_TOD_BUCKETS.map(() => ({}));
   const prevFitted = prevModel ? toMs(prevModel.fittedAt) : null;
-  const daysSincePrev = prevFitted != null ? (nowMs - prevFitted) / DAY_MS : null;
+  const daysSincePrev = prevModel ? (prevFitted != null ? (nowMs - prevFitted) / DAY_MS : null) : 0;
+  // No previous model: treat it as "at the pump value, fitted just now", so a
+  // first model can't jump to the more-insulin band edge — it can move toward
+  // more insulin only from the next fit, at the 10%/day rate.
+  const atPump = { isf: { value: 1, pump: 1 }, carbRatio: { value: 1, pump: 1 } };
   const blocks = REGIMEN_TOD_BUCKETS.map((bk, i) => {
-    const prev = prevModel?.blocks.find(b => b.label === bk.label);
+    const prev = prevModel ? prevModel.blocks.find(b => b.label === bk.label) : atPump;
     const inBlock = xs => xs.filter(x => x.hour >= bk.from && x.hour < bk.to);
     return {
       label: bk.label, from: bk.from, to: bk.to,
@@ -4236,6 +4249,8 @@ const isObj = v => v != null && typeof v === 'object' && !Array.isArray(v);
 // forecastBias → []. Callers never throw on a bad model — they fall back.
 function asModel(model) {
   if (!isObj(model) || !Array.isArray(model.blocks)) return null;
+  // fitted mid-backfill from partial history — never used (the job doesn't store these)
+  if (isObj(model.learn) && model.learn.backfillComplete === false) return null;
   return {
     ...model,
     blocks: model.blocks.filter(b => isObj(b) && isNum(b.from) && isNum(b.to)),
@@ -4611,6 +4626,7 @@ const DiabetesEngine = {
   fitModel,
   applyModel,
   modelOpts,
+  asModel,
   // nightly learning job
   shouldLearn,
   episodesToScore,
