@@ -10986,7 +10986,7 @@ async function renderDxSettingsReview() {
     const none = !items ? '<p class="empty-state">No settings change is supported by your data right now.</p>' : '';
     // Where the app doses differently from the pump profile (same carbs / correction).
     const kindName = k => (k === 'isf' ? 'Correction factor' : 'Carb ratio');
-    const applied = review.applied || [];
+    const applied = review.applied || (window.SettingsReview ? SettingsReview.appliedDiffs(row.model) : []);
     const appliedHtml = applied.length ? `
       <div class="dx-section-label" style="margin-top:12px">Where the app differs from your pump</div>
       <p class="dx-disclaimer" style="margin:0 0 6px">Doses are worked out with the "App" value. To make the pump match, change the pump to it — or ignore it and the app's dose will keep differing. “All-day” means little data in that block, so the overall average is used.</p>
