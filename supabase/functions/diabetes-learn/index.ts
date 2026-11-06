@@ -30,6 +30,7 @@
 import { sbFetch, londonNow, GEMMA_USER_ID } from '../_shared/webpush.ts';
 import DiabetesEngine from '../_shared/diabetes-engine.js';
 import ReadinessModel from '../_shared/readiness-model.js';
+import SettingsReview from '../_shared/settings-review.js';
 import { fetchNightscoutInput } from '../_shared/nightscout-fetch.ts';
 
 const SB_URL = Deno.env.get('SUPABASE_URL');
@@ -233,6 +234,10 @@ async function learnUser(profile: any, nowMs: number, force: boolean) {
   // keep the previous bias until it is recomputed below
   model.forecastBias = Array.isArray(prevModel?.forecastBias) ? prevModel.forecastBias : [];
   model.learn = { backfillComplete: true, scored, byKind };
+  // Settings review (ISF / carb ratio / overnight basal by time of day) — recomputed
+  // below again once the forecast bias is in.
+  const reviewNow = () => SettingsReview.settingsReview({ model, nights: stored.filter((e: any) => e?.kind === 'night'), pumpProfile, nowMs });
+  model.review = reviewNow();
   lap(`fitted from ${stored.length}`);
 
   // Written BEFORE the forecast-bias replay (the costliest step), so running
@@ -251,6 +256,7 @@ async function learnUser(profile: any, nowMs: number, force: boolean) {
     macroMealLog: recent(macroMealLog), model,
   }, nowMs);
   lap('forecast bias');
+  model.review = reviewNow();
   await sbWrite(`/rest/v1/dx_model?user_id=eq.${userId}&fitted_at=eq.${fittedAt}`, 'PATCH', { model });
 
   return { status: 'learned', backfilling, scored, byKind, episodesUsed: stored.length, fittedAt, ms: Math.round(performance.now() - t0) };

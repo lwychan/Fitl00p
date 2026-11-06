@@ -13,6 +13,7 @@ const MODULES = [
   { name: 'readiness-model',    global: 'ReadinessModel' },
   { name: 'insights',           global: 'Insights' },
   { name: 'briefings',          global: 'Briefings' },
+  { name: 'settings-review',    global: 'SettingsReview' },
 ];
 const check = process.argv.includes('--check');
 let stale = false;

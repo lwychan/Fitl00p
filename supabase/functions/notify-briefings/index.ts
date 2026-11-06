@@ -157,6 +157,14 @@ async function morningBriefing(userId: string, profile: any, prefs: Record<strin
     });
     if (phrase) pinned.push(`${phrase}.`);
   }
+  // Sundays: point at the pump-settings review when the nightly learner found something.
+  if (!isGemma && now.weekday === 'Sun') {
+    const { data: mrows } = await sbFetch(`/rest/v1/dx_model?user_id=eq.${userId}&select=model->review&order=fitted_at.desc&limit=1`);
+    const rv = (mrows as any[])?.[0]?.review;
+    const n = (rv?.items?.length || 0);
+    if (n) pinned.push(`Settings review: ${n} pump-setting suggestion${n > 1 ? 's' : ''} to look at in the Diabetes tab.`);
+    else if (rv?.observations?.length) pinned.push('Settings review: a few time-of-day patterns worth a look in the Diabetes tab.');
+  }
   // Dose reminders are pinned (never trimmed for length); the weigh-in line can go.
   pinned.push(...Briefings.morningExtras({
     weighinDue: false,

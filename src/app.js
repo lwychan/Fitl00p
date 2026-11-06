@@ -466,6 +466,7 @@ const el = {
   dxTodaysMealsBody: $('dxTodaysMealsBody'),
   dxSensitivityBody: $('dxSensitivityBody'),
   dxRegimenBody:     $('dxRegimenBody'),
+  dxSettingsReviewBody: $('dxSettingsReviewBody'),
   dxWorkoutImpactCard: $('dxWorkoutImpactCard'),
   dxWorkoutImpactPills: $('dxWorkoutImpactPills'),
   dxUnplugMode:        $('dxUnplugMode'),
@@ -9663,6 +9664,7 @@ async function renderDiabetesTab(data) {
   const regimenInput = { ...regimenSource, boluses: wideCarbBoluses, settings, activities: { workouts }, macroMealLog, pumpProfile: profile?.diabetes_pump_profile };
   const regimenByProfile = await engineAsync('regimenReviewByProfile', regimenInput, now);
   renderDxRegimen(regimenByProfile, profile?.diabetes_pump_profile, hasThuProfile);
+  renderDxSettingsReview();
 
   el.dxLastSync.textContent = `Last synced ${new Date(diabetesFetchedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
 
@@ -10959,6 +10961,33 @@ function dxProfileLabel(name) {
 function dxProfileSegments(pumpProfile, name) {
   const n = String(name || '').toLowerCase();
   return (n.startsWith('thu') ? pumpProfile?.thu : pumpProfile?.default) || null;
+}
+
+// Settings review: computed nightly by diabetes-learn and stored in dx_model.model.review.
+async function renderDxSettingsReview() {
+  const body = el.dxSettingsReviewBody;
+  if (!body) return;
+  try {
+    const { data, error } = await db.from('dx_model').select('model, fitted_at').order('fitted_at', { ascending: false }).limit(1);
+    if (error) throw error;
+    const row = data?.[0];
+    const review = row?.model?.review;
+    if (!review) { body.innerHTML = '<p class="empty-state">No review yet — it is calculated after the nightly learning run.</p>'; return; }
+    const dir = i => (i.direction === 'raise' ? '↑' : '↓');
+    const items = (review.items || []).map(i => `
+      <div class="dx-regimen-item" style="margin-bottom:12px">
+        <strong>${escapeHtml(i.window)} · ${i.kind === 'isf' ? 'Correction factor' : i.kind === 'icr' ? 'Carb ratio' : 'Basal'}</strong>
+        <div>${escapeHtml(String(i.current))} → <strong>${escapeHtml(String(i.suggested))}</strong> ${escapeHtml(i.unit)} ${dir(i)} <span class="dx-regimen-cell__n">n=${i.n}, ${escapeHtml(i.confidence)} evidence</span></div>
+        <div style="opacity:.8;font-size:.9em">${escapeHtml(i.text)}</div>
+      </div>`).join('');
+    const notes = (review.observations || []).map(o => `<p style="margin:6px 0;font-size:.9em">👀 ${escapeHtml(o.text)}</p>`).join('');
+    const none = !items ? '<p class="empty-state">No settings change is supported by your data right now.</p>' : '';
+    body.innerHTML = items + none + (notes ? `<div class="dx-section-label" style="margin-top:8px">Worth a look</div>${notes}` : '') +
+      `<p class="dx-last-sync">Updated ${escapeHtml(new Date(row.fitted_at).toLocaleDateString())} from ${row.model?.allDay?.nIsf ?? '?'} corrections.</p>`;
+  } catch (e) {
+    body.innerHTML = '<p class="empty-state">Could not load the review.</p>';
+    console.warn('settings review:', e?.message || e);
+  }
 }
 
 function renderDxRegimen(regimenByProfile, pumpProfile, hasThuProfile) {
