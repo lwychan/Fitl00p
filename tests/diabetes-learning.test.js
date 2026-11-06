@@ -869,3 +869,47 @@ test('post-exercise episodes: normalised when the boost is learned, as-is when n
   assert.ok(Math.abs(z.isf.value - 3.6) < 1e-9);
   assert.strictEqual(z.isf.nPostExercise, 0);
 });
+
+/* ── all-day fallback follows the pump profile's shape (2026-11-06) ── */
+const SHAPED = { default: [
+  { time: '00:00', correctionFactor: 7, carbRatio: 20, basalRate: 1.0 },
+  { time: '07:00', correctionFactor: 3.5, carbRatio: 26, basalRate: 1.2 }] };
+const AT12 = Date.UTC(2026, 0, 6, 12);   // 12:00 London -> block 12:00-15:00, pump CR 26 / ISF 3.5
+
+test('no clear overall tendency: blocks without data of their own keep the pump profile exactly', () => {
+  const ratios = [18, 34, 20, 30, 22, 28, 19, 33, 21, 31, 24, 29];                 // wide scatter around ~26
+  const eps = ratios.map((r, i) => mealEp(AT12 + i * 60000, r));
+  const m = E.fitModel(eps, SHAPED, { nowMs: AT12, prevModel: SETTLED(SHAPED, AT12) });
+  assert.strictEqual(m.allDay.crMultApplied, false);
+  const night = block(m, '00:00–03:00').carbRatio, day = block(m, '09:00–12:00').carbRatio;
+  assert.strictEqual(night.value, 20); assert.strictEqual(night.source, 'pump');
+  assert.strictEqual(day.value, 26);   assert.strictEqual(day.source, 'pump');
+});
+
+test('clear overall tendency: it scales the pump profile (shape kept), not a flat all-day number', () => {
+  const eps = many(12, i => mealEp(AT12 + i * 60000, 26 * 1.15 + (i % 2 ? 0.05 : -0.05)));   // ~15% above pump, tight
+  const m = E.fitModel(eps, SHAPED, { nowMs: AT12, prevModel: SETTLED(SHAPED, AT12) });
+  assert.strictEqual(m.allDay.crMultApplied, true);
+  assert.ok(Math.abs(m.allDay.crMult - 1.15) < 0.01);
+  const night = block(m, '00:00–03:00').carbRatio, early = block(m, '06:00–09:00').carbRatio;
+  assert.strictEqual(night.source, 'pooled');
+  assert.ok(Math.abs(night.value - 20 * 1.15) < 0.1, `night ${night.value}`);           // 23, not the flat ~29.9
+  assert.ok(night.value < 26);                                                           // still below the daytime ratio
+  assert.ok(early.value > night.value);
+});
+
+test('overall tendency toward MORE insulin needs n >= 10; fewer episodes -> exactly the pump', () => {
+  const mk = n => many(n, i => mealEp(AT12 + i * 60000, 26 * 0.8 + (i % 2 ? 0.05 : -0.05)));
+  assert.strictEqual(E.fitModel(mk(6), SHAPED, { nowMs: AT12, prevModel: SETTLED(SHAPED, AT12) }).allDay.crMultApplied, false);
+  assert.strictEqual(block(E.fitModel(mk(6), SHAPED, { nowMs: AT12, prevModel: SETTLED(SHAPED, AT12) }), '00:00–03:00').carbRatio.value, 20);
+  assert.strictEqual(E.fitModel(mk(10), SHAPED, { nowMs: AT12, prevModel: SETTLED(SHAPED, AT12) }).allDay.crMultApplied, true);
+});
+
+test('a block with its own data is pulled toward pump x multiplier, not toward a flat all-day mean', () => {
+  const own = many(6, i => mealEp(Date.UTC(2026, 0, 6, 2) + i * 60000, 22));     // night meals at 22 vs pump 20
+  const rest = many(12, i => mealEp(AT12 + i * 60000, 26 + (i % 2 ? 0.05 : -0.05)));   // day meals exactly at the pump -> mult 1
+  const m = E.fitModel([...own, ...rest], SHAPED, { nowMs: AT12, prevModel: SETTLED(SHAPED, AT12) });
+  const night = block(m, '00:00–03:00').carbRatio;
+  assert.strictEqual(night.source, 'learned');
+  assert.ok(night.value > 20 && night.value < 22, `night ${night.value}`);               // between the pump (prior) and its own data
+});

@@ -4078,24 +4078,43 @@ function weightedStats(items) {
   return { n, sw, mean: m, se: n >= 2 && nEff > 1 ? Math.sqrt(variance * nEff / (nEff - 1) / nEff) : null };
 }
 
+// Overall multiplier of the person's fitted values relative to the pump profile at each episode's
+// own time (ISF / CR). Applied only when it differs from 1 by more than 2 SE and meets the same
+// evidence thresholds as a block value (more insulin = a lower ratio needs more episodes).
+function overallMultiplier(items, pumpProfile, field) {
+  const rel = [];
+  for (const x of items) {
+    const pump = profileValueAt(pumpProfile, x.ep.startMs, field);
+    if (isNum(pump) && pump > 0) rel.push({ w: x.w, v: x.v / pump });
+  }
+  const s = weightedStats(rel);
+  const apply = s.mean != null && s.se != null && Math.abs(s.mean - 1) > 2 * s.se
+    && s.n >= (s.mean > 1 ? MODEL_N_LESS_INSULIN : MODEL_N_MORE_INSULIN);
+  return { mult: s.mean, se: s.se, n: s.n, apply };
+}
+
 // One block parameter (ISF or CR — for both, a higher value = less insulin).
 // Shrinkage weighs the block by sum w (recency-weighted) by design; the asymmetry thresholds
 // count raw clean episodes (n).
 // Rate limit, in ratio-to-pump space (a pump-setting change doesn't drag the value back): only
 // moves toward MORE insulin than both the previous model and the pump are slowed, to 10%/day
 // below min(prev ratio, 1). Moves toward the pump or toward less insulin apply immediately.
-function fitBlockParam(items, all, pump, prev, daysSincePrev, shrinkK) {
+function fitBlockParam(items, all, pump, prev, daysSincePrev, shrinkK, rel = null) {
   const b = weightedStats(items);
   const out = { value: pump, pump, n: b.n, nPostExercise: items.filter(x => x.post).length, source: 'pump',
     outsideBand: false, rateLimited: false, se: b.se };
   if (!isNum(pump) || !(pump > 0)) return { ...out, value: null, pump: null };
   const usable = (value, n) => isNum(value) && n >= (value > pump ? MODEL_N_LESS_INSULIN : MODEL_N_MORE_INSULIN);
+  // The all-day evidence is a MULTIPLIER on the pump profile (rel.mult, 1 unless clearly different from 1),
+  // never a flat number: a block with little data of its own keeps the shape of the pump profile.
+  const mult = rel && rel.apply && isNum(rel.mult) ? rel.mult : 1;
+  const prior = pump * mult;
   let value = null;
-  if (b.mean != null && all.mean != null) {
-    const shrunk = (b.sw * b.mean + shrinkK * all.mean) / (b.sw + shrinkK);
+  if (b.mean != null) {
+    const shrunk = (b.sw * b.mean + shrinkK * prior) / (b.sw + shrinkK);
     if (usable(shrunk, b.n)) { value = shrunk; out.source = 'learned'; }
   }
-  if (value == null && usable(all.mean, all.n)) { value = all.mean; out.source = 'pooled'; }
+  if (value == null && mult !== 1) { value = prior; out.source = 'pooled'; }
   if (value == null) value = pump;
   const lo = pump * MODEL_BAND_LO, hi = pump * MODEL_BAND_HI;
   if (value < lo || value > hi) { out.outsideBand = true; value = clamp(value, lo, hi); }
@@ -4182,6 +4201,7 @@ function fitModel(episodes, pumpProfile, opts = {}) {
   const isfItems = items('correction', ep => ep.fit?.isf);
   const crItems = items('meal', ep => ep.fit?.carbRatio);
   const allIsf = weightedStats(isfItems), allCr = weightedStats(crItems);
+  const relIsf = overallMultiplier(isfItems, pumpProfile, 'correctionFactor'), relCr = overallMultiplier(crItems, pumpProfile, 'carbRatio');
 
   const table = prescribedRegimenTable(pumpProfile) || REGIMEN_TOD_BUCKETS.map(() => ({}));
   const prevFitted = prevModel ? toMs(prevModel.fittedAt) : null;
@@ -4195,8 +4215,8 @@ function fitModel(episodes, pumpProfile, opts = {}) {
     const inBlock = xs => xs.filter(x => x.hour >= bk.from && x.hour < bk.to);
     return {
       label: bk.label, from: bk.from, to: bk.to,
-      isf: fitBlockParam(inBlock(isfItems), allIsf, finiteOrNull(table[i].correctionFactor), prev?.isf, daysSincePrev, shrinkK),
-      carbRatio: fitBlockParam(inBlock(crItems), allCr, finiteOrNull(table[i].carbRatio), prev?.carbRatio, daysSincePrev, shrinkK),
+      isf: fitBlockParam(inBlock(isfItems), allIsf, finiteOrNull(table[i].correctionFactor), prev?.isf, daysSincePrev, shrinkK, relIsf),
+      carbRatio: fitBlockParam(inBlock(crItems), allCr, finiteOrNull(table[i].carbRatio), prev?.carbRatio, daysSincePrev, shrinkK, relCr),
     };
   });
 
@@ -4216,7 +4236,8 @@ function fitModel(episodes, pumpProfile, opts = {}) {
     version: MODEL_VERSION,
     fittedAt: nowMs,
     blocks,
-    allDay: { isf: allIsf.mean, carbRatio: allCr.mean, nIsf: allIsf.n, nCr: allCr.n },
+    allDay: { isf: allIsf.mean, carbRatio: allCr.mean, nIsf: allIsf.n, nCr: allCr.n,
+      isfMult: finiteOrNull(relIsf.mult), crMult: finiteOrNull(relCr.mult), isfMultApplied: relIsf.apply, crMultApplied: relCr.apply },
     exercise,
     modifiers,
     meals: { delayedRiseHighFat: rate(riseMeals.filter(highFat)), delayedRiseOther: rate(riseMeals.filter(ep => !highFat(ep))) },
