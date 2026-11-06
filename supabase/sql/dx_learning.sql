@@ -49,3 +49,7 @@ grant select on public.dx_episodes, public.dx_model to authenticated;
 -- First run 2026-11-05: 10 calls (Nightscout data starts 2026-09-09).
 select cron.unschedule('diabetes-learn') where exists (select 1 from cron.job where jobname = 'diabetes-learn');
 select cron.schedule('diabetes-learn', '30 2,3 * * *', $$select private.invoke_edge_fn('diabetes-learn')$$);
+
+-- Nightly settings review (applied 2026-11-06): 03:45 London, after diabetes-learn.
+select cron.unschedule('diabetes-review') where exists (select 1 from cron.job where jobname = 'diabetes-review');
+select cron.schedule('diabetes-review', '45 2,3 * * *', $$select private.invoke_edge_fn('diabetes-review')$$);
