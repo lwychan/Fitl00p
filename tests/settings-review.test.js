@@ -67,3 +67,11 @@ test('real model 2026-11-06: no setting change, three observations', () => {
   assert.equal(r.items.length, 0);
   assert.deepEqual(r.observations.map(o => o.from), [0, 9, 15]);
 });
+
+test('frequent unexplained-rise nights become an observation', () => {
+  const n = (flag, i) => ({ ...night(0, i + 1), confounded: flag });
+  const mk = k => [...Array.from({ length: k }, (_, i) => n('unexplained-rise', i)), ...Array.from({ length: 10 - k }, (_, i) => n(null, i + k))];
+  assert.equal(SR.nightRiseObservation(mk(5), now), null);
+  assert.equal(SR.nightRiseObservation(mk(6), now).kind, 'observation');
+  assert.ok(SR.settingsReview({ model: {}, nights: mk(7), pumpProfile: pump, nowMs: now }).observations.some(o => o.id === 'night-rise'));
+});

@@ -32,6 +32,7 @@ const BASAL = {
   minConsistency: 0.75, // share of nights drifting the same way
 };
 const OBS = { minN: 15, minBias: 1.5 };
+const RISE = { minNights: 6, minShare: 0.4 };
 
 const DAY = 86400000;
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -123,16 +124,31 @@ function observations(model) {
   return out;
 }
 
+// Nights where glucose rose by more than the logged insulin/carbs explain are excluded
+// from the basal fit (they are confounded), but when they are common that IS the finding.
+function nightRiseObservation(nights, nowMs) {
+  const from = nowMs - BASAL.lookbackDays * DAY;
+  const recent = (nights || []).filter(e => e && (e.startMs == null || e.startMs >= from));
+  const rises = recent.filter(e => e.confounded === 'unexplained-rise');
+  if (rises.length < RISE.minNights || rises.length / recent.length < RISE.minShare) return null;
+  return {
+    id: 'night-rise', kind: 'observation', window: '00:00–06:00', from: 0, to: 6, direction: 'higher', n: rises.length,
+    text: `Overnight (00:00–06:00): on ${rises.length} of the last ${recent.length} nights glucose rose more than your logged insulin and food explain. Common causes are unlogged late food, a late meal's slow tail, a rebound after a low, or overnight basal / dawn rise. Worth checking those nights, and it is why a basal change cannot be suggested yet.`,
+  };
+}
+
 function settingsReview({ model, nights, pumpProfile, nowMs = Date.now() } = {}) {
   const items = blockItems(model);
   const basal = basalItem(nights, pumpProfile, nowMs);
   if (basal) items.push(basal);
   items.sort((a, b) => a.from - b.from);
   const notes = observations(model);
+  const rise = nightRiseObservation(nights, nowMs);
+  if (rise) notes.push(rise);
   return { generatedAt: nowMs, items, observations: notes, nothing: !items.length && !notes.length };
 }
 
-const SettingsReview = { settingsReview, blockItems, basalItem, observations, MAX_CHANGE };
+const SettingsReview = { settingsReview, blockItems, basalItem, observations, nightRiseObservation, MAX_CHANGE };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = SettingsReview;
