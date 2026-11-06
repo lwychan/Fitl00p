@@ -123,6 +123,18 @@ async function peptideDueToday(userId: string, todayStr: string) {
   return false;
 }
 
+// Morning gate: hold until last night's sleep has synced (+5 min), or 90 min
+// past the usual time. sleep_received_at is set by a DB trigger.
+async function sleepGateOpen(userId: string, now: any, targetMin: number, nowMin: number) {
+  const { data } = await sbFetch(`/rest/v1/health_daily?user_id=eq.${userId}&log_date=eq.${now.dateStr}&select=sleep_total_hrs,sleep_received_at`);
+  const row = (data as any[])?.[0];
+  return Briefings.morningDue({
+    targetMin, nowMin, nowMs: Date.now(),
+    receivedMs: row?.sleep_received_at ? Date.parse(row.sleep_received_at) : null,
+    sleepPresent: Briefings.sleepSynced(row?.sleep_total_hrs),
+  });
+}
+
 async function morningBriefing(userId: string, profile: any, prefs: Record<string, any>, now: any, rules: any[]) {
   const today = now.dateStr;
   const { ctx, todayHealth, readings, weighedToday } = await buildContext(userId, profile, today, now.hour);
@@ -269,8 +281,9 @@ Deno.serve(async () => {
     let sent: string[] | null = null;
     const alreadySent = async (kind: string) => (sent ??= await sentKinds(sbFetch, userId, now.dateStr)).includes(kind);
 
-    if (prefs.morning_briefing?.enabled !== false && Briefings.dueSince(Briefings.morningTime(schedule, now.weekday), nowMin)
-        && !(await alreadySent('morning'))) {
+    const morningTarget = Briefings.morningTime(schedule, now.weekday);
+    if (prefs.morning_briefing?.enabled !== false && Briefings.dueSince(morningTarget, nowMin)
+        && !(await alreadySent('morning')) && await sleepGateOpen(userId, now, morningTarget, nowMin)) {
       try {
         const b = await morningBriefing(userId, profile, prefs, now, await loadRules());
         if (await claim(userId, 'morning', now.dateStr)) {

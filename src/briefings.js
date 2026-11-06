@@ -79,6 +79,18 @@ function dueSince(targetMin, nowMin, graceMin = 120) {
   return targetMin != null && nowMin >= targetMin - 7 && nowMin <= targetMin + graceMin;
 }
 
+// Morning briefing: wait for last night's sleep to sync, then send 5 min after
+// it lands. Never before the usual time (cron slack 7 min); if sleep still
+// hasn't arrived 90 min after the usual time, send anyway (fallback phrase).
+// receivedMs = health_daily.sleep_received_at (null => not received);
+// preMigration = sleep already present but no timestamp (send straight away).
+function morningDue({ targetMin, nowMin, nowMs, receivedMs = null, sleepPresent = false, waitMin = 5, maxWaitMin = 90 }) {
+  if (targetMin == null || nowMin < targetMin - 7 || nowMin > targetMin + 120) return false;
+  if (receivedMs != null) return nowMs >= receivedMs + waitMin * 60000;
+  if (sleepPresent) return true;
+  return nowMin >= targetMin + maxWaitMin;
+}
+
 function isDue(targetMin, nowMin, toleranceMin = 7) {
   return targetMin != null && Math.abs(nowMin - targetMin) <= toleranceMin;
 }
@@ -328,7 +340,7 @@ function nightGlucoseSummary(readings, fromMs, toMs) {
   return { low: Math.round(Math.min(...v) * 10) / 10, mean: Math.round(mean * 10) / 10, cv: Math.round((sd / mean) * 100) };
 }
 
-const Briefings = { dueSince, glucoseAlert, TIRZEPATIDE_NUDGE_MINUTES, PEPTIDE_NUDGE_MINUTE, nudgeDue, medsPushDue, wakeTime, bedtimeLine, sleepSynced, weighinDue, morningExtras, londonMidnightMs, nightGlucoseSummary, workoutLine, sameExercise, fitl00pSessionRow, DEFAULT_SCHEDULES, defaultSchedule, scheduleFor, isWeekend, morningTime, eveningTime, isDue,
+const Briefings = { dueSince, morningDue, glucoseAlert, TIRZEPATIDE_NUDGE_MINUTES, PEPTIDE_NUDGE_MINUTE, nudgeDue, medsPushDue, wakeTime, bedtimeLine, sleepSynced, weighinDue, morningExtras, londonMidnightMs, nightGlucoseSummary, workoutLine, sameExercise, fitl00pSessionRow, DEFAULT_SCHEDULES, defaultSchedule, scheduleFor, isWeekend, morningTime, eveningTime, isDue,
   composeBriefing, fallbackNightPhrase };
 
 if (typeof module !== 'undefined' && module.exports) {

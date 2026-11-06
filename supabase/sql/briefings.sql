@@ -21,3 +21,20 @@ alter table public.profiles add column if not exists briefing_schedule jsonb;
 grant update (briefing_schedule) on public.profiles to authenticated;
 
 select cron.schedule('notify-briefings', '*/15 * * * *', $$select private.invoke_edge_fn('notify-briefings')$$);
+
+-- Morning briefing waits for sleep (applied: NOT YET). sleep_received_at is
+-- stamped the first time a row's sleep_total_hrs reaches >= 3h (same threshold
+-- as Briefings.sleepSynced); notify-briefings sends 5 min after it.
+alter table public.health_daily add column if not exists sleep_received_at timestamptz;
+create or replace function public.stamp_sleep_received() returns trigger
+language plpgsql as $$
+begin
+  if coalesce(new.sleep_total_hrs, 0) >= 3
+     and (tg_op = 'INSERT' or coalesce(old.sleep_total_hrs, 0) < 3) then
+    new.sleep_received_at := now();
+  end if;
+  return new;
+end $$;
+drop trigger if exists health_daily_sleep_received on public.health_daily;
+create trigger health_daily_sleep_received before insert or update on public.health_daily
+  for each row execute function public.stamp_sleep_received();
