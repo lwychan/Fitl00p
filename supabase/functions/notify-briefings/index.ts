@@ -76,7 +76,7 @@ async function buildContext(userId: string, profile: any, todayStr: string, nowH
   ctx.hrv_z = zScore(health, 'hrv_ms', todayStr, todayHealth.hrv_ms, true, 0.05);
   ctx.rhr_z = zScore(health, 'resting_hr', todayStr, todayHealth.resting_hr, false, 1);
   ctx.rr_z = zScore(health, 'respiratory_rate', todayStr, todayHealth.respiratory_rate, false, 0.25);
-  if (todayHealth.wrist_temp_dev != null) ctx.wrist_temp = Number(todayHealth.wrist_temp_dev);
+  { const wt = ReadinessModel.wristTempDeviation(todayHealth.wrist_temp_dev, health, todayStr); if (wt != null) ctx.wrist_temp = wt; }
   if (strainY.score != null) ctx.strain_yday = strainY.score;
   Object.assign(ctx, Insights.healthTrendMetrics(health, todayStr));
   Object.assign(ctx, Insights.dailyContextMetrics({

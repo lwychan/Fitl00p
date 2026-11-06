@@ -2487,7 +2487,7 @@ function computeRecoveryScore(health, healthHistory, sleepNeed, weights = recove
   // Elevated wrist temp overnight is the same kind of early illness/
   // overreach signal Oura popularized; small supporting weight, same as
   // respiratory rate.
-  const wristTemp = health?.wrist_temp_dev;
+  const wristTemp = ReadinessModel.wristTempDeviation(health?.wrist_temp_dev, healthHistory, todayDate);
   if (wristTemp != null) {
     const tempScore = wristTemp <= 0.3 ? 100 : wristTemp <= 0.6 ? 80 : wristTemp <= 1.0 ? 55 : wristTemp <= 1.5 ? 30 : 10;
     totalScore += tempScore * RECOVERY_TEMP_WEIGHT; totalWeight += RECOVERY_TEMP_WEIGHT;
@@ -4095,7 +4095,7 @@ function buildInsightContext() {
     ctx.hrv_z = bbZScore(hist, 'hrv_ms', day, health?.hrv_ms, true, 0.05);
     ctx.rhr_z = bbZScore(hist, 'resting_hr', day, health?.resting_hr, false, 1);
     ctx.rr_z = bbZScore(hist, 'respiratory_rate', day, health?.respiratory_rate, false, 0.25);
-    if (health?.wrist_temp_dev != null) ctx.wrist_temp = Number(health.wrist_temp_dev);
+    { const wt = ReadinessModel.wristTempDeviation(health?.wrist_temp_dev, hist, day); if (wt != null) ctx.wrist_temp = wt; }
     Object.assign(ctx, healthTrendMetrics(hist, day));
     if (strain?.score != null) {
       ctx.strain = strain.score;
@@ -4243,8 +4243,8 @@ function renderHealthTiles(today, history) {
   // Each tile: show only if data exists in today or history
 
   // ── SpO2 ─────────────────────────────────────────────────
-  const spo2 = today?.spo2_avg;
   const spo2Hist = hist('spo2_avg');
+  const spo2 = today?.spo2_avg ?? (spo2Hist.length ? spo2Hist[spo2Hist.length - 1] : null);
   showTile('tileSpo2', spo2 != null || spo2Hist.length > 0);
   $('tileSpo2Val').textContent = spo2 != null ? fmt1(spo2) : '—';
   setTileState('tileSpo2',
@@ -4258,8 +4258,8 @@ function renderHealthTiles(today, history) {
   });
 
   // ── Respiratory Rate ─────────────────────────────────────
-  const resp = today?.respiratory_rate;
   const respHist = hist('respiratory_rate');
+  const resp = today?.respiratory_rate ?? (respHist.length ? respHist[respHist.length - 1] : null);
   showTile('tileResp', resp != null || respHist.length > 0);
   $('tileRespVal').textContent = resp != null ? fmt1(resp) : '—';
   setTileState('tileResp',
@@ -4312,8 +4312,8 @@ function renderHealthTiles(today, history) {
   // Max, a whole-day average blends rest and activity together and has no
   // single established reference range, so a colored state would imply
   // false precision. The sparkline shows the trend instead.
-  const hrAvg = today?.heart_rate_avg;
   const hrHist = hist('heart_rate_avg');
+  const hrAvg = today?.heart_rate_avg ?? (hrHist.length ? hrHist[hrHist.length - 1] : null);
   showTile('tileHr', hrAvg != null || hrHist.length > 0);
   $('tileHrVal').textContent = hrAvg != null ? Math.round(hrAvg) : '—';
   if (hrHist.length) drawSparkline('sparkHr', hrHist, {
@@ -4325,8 +4325,8 @@ function renderHealthTiles(today, history) {
   // tracking is actually turned on (an incidental glucose reading from
   // some other source shouldn't surface a diabetes-specific tile for
   // someone who's said they don't want that feature at all).
-  const glucose     = today?.glucose_avg_mmol;
   const glucoseHist = hist('glucose_avg_mmol');
+  const glucose     = today?.glucose_avg_mmol ?? (glucoseHist.length ? glucoseHist[glucoseHist.length - 1] : null);
   const diabetesOn  = profile?.diabetes_enabled !== false;
   showTile('tileGlucose', diabetesOn && (glucose != null || glucoseHist.length > 0));
   $('tileGlucoseVal').textContent = glucose != null ? fmt1(glucose) : '—';
@@ -11352,7 +11352,7 @@ function vo2ToFitnessAge(vo2) {
 const METRIC_CONFIG = {
   spo2:       { icon:'🫁', title:'Blood Oxygen (SpO2)',  unit:'%',         field:'spo2_avg',         format: v => fmt1(v),    label:'SpO2',        color:'#16A34A', min:90, max:100, polarity:'higher' },
   resp:       { icon:'💨', title:'Respiratory Rate',     unit:'brpm',      field:'respiratory_rate', format: v => fmt1(v),    label:'Resp rate',   color:'#3B7FF5', min:10, max:25,  polarity:'neutral' },
-  temp:       { icon:'🌡️', title:'Wrist Temperature',    unit:'°C dev',    field:'wrist_temp_dev',   format: v => (v>0?'+':'')+fmt1(v), label:'Wrist temp', color:'#7C3AED', polarity:'neutral' },
+  temp:       { icon:'🌡️', title:'Wrist Temperature',    unit:'°C',        field:'wrist_temp_dev',   format: v => fmt1(v), label:'Wrist temp', color:'#7C3AED', polarity:'neutral' },
   vo2:        { icon:'❤️‍🔥', title:'VO2 Max',           unit:'mL/kg/min', field:'vo2_max',           format: v => fmt1(v),    label:'VO2 Max',     color:'#7C3AED', polarity:'higher' },
   hr:         { icon:'❤️', title:'Average Heart Rate',      unit:'bpm',       field:'heart_rate_avg',    format: v => fmtInt(v),  label:'Avg HR',      color:'#DC2626', polarity:'lower' },
   glucose:    { icon:'🩸', title:'Blood Glucose',         unit:'mmol/L',    field:'glucose_avg_mmol', format: v => fmt1(v),    label:'Glucose',     color:'#DC2626', min:3,  max:12,  polarity:'neutral' },

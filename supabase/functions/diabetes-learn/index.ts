@@ -27,7 +27,7 @@
 // replay (the costliest step, on FORECAST_BIAS_DAYS) and the bias is patched in
 // afterwards — so a CPU kill there keeps the model.
 
-import { sbFetch, londonNow, GEMMA_USER_ID } from '../_shared/webpush.ts';
+import { sbFetch, londonNow, londonDateStrOf, GEMMA_USER_ID } from '../_shared/webpush.ts';
 import DiabetesEngine from '../_shared/diabetes-engine.js';
 import ReadinessModel from '../_shared/readiness-model.js';
 import SettingsReview from '../_shared/settings-review.js';
@@ -131,11 +131,26 @@ async function loadHealth(userId: string, sinceMs: number) {
 
 // Fetch + score + store one window [fromMs, untilMs ?? now]. A skip result
 // means nothing was written.
+// Daily mean CGM glucose -> health_daily.glucose_avg_mmol (the dashboard Glucose tile and the
+// estimated HbA1c read it; it used to come from Health Auto Export, removed 2026-09-15).
+// Only days with >= 4h of readings; the in-progress day is refreshed every run.
+async function writeDailyGlucose(userId: string, readings: any[]) {
+  const byDay: Record<string, number[]> = {};
+  for (const r of readings || []) {
+    if (!Number.isFinite(r?.time) || !Number.isFinite(r?.value)) continue;
+    (byDay[londonDateStrOf(new Date(r.time))] ||= []).push(r.value);
+  }
+  const rows = Object.entries(byDay).filter(([, v]) => v.length >= 48)
+    .map(([log_date, v]) => ({ user_id: userId, log_date, glucose_avg_mmol: Math.round((v.reduce((a, b) => a + b, 0) / v.length) * 10) / 10 }));
+  if (rows.length) await sbWrite('/rest/v1/health_daily?on_conflict=user_id,log_date', 'POST', rows, 'resolution=merge-duplicates,return=minimal');
+}
+
 async function scoreWindow(profile: any, pumpProfile: any, prevModel: any, fromMs: number, untilMs: number | null, nowMs: number) {
   const userId = profile.id;
   const endMs = untilMs ?? nowMs;
   const ns = await fetchNightscoutInput(profile, { days: (endMs - fromMs) / DAY, untilMs });
   if (!ns) return { skip: 'nightscout-unreachable' };
+  try { await writeDailyGlucose(userId, ns.glucoseHistory); } catch (e) { console.error('daily glucose:', (e as Error).message); }
   if (!ns.fetchInfo?.treatmentsOk) return { skip: 'treatments-fetch-failed' };
   if (ns.fetchInfo.truncated) return { skip: 'fetch-hit-count-limit' };
   // Tonight's data must be there (a past backfill chunk may legitimately be thin or empty).

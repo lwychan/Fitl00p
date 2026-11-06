@@ -162,7 +162,21 @@ function spearman(xs, ys) {
   return dx && dy ? num / Math.sqrt(dx * dy) : null;
 }
 
-const ReadinessModel = { personalHrMax, personalBaseline, scoreVsPersonalBaseline, weightedSleepDebt, fitRecoveryWeights, spearman, addDaysISO };
+// Apple's sleeping wrist temperature is an ABSOLUTE temperature (~35 C), not a
+// deviation. Return today's value minus the median of the previous <=28 nights
+// (needs >= 7); a value already near zero is assumed to be a deviation.
+function wristTempDeviation(value, history, todayDate) {
+  if (value == null || !Number.isFinite(Number(value))) return null;
+  const v = Number(value);
+  if (Math.abs(v) < 5) return v;
+  const prior = (history || []).filter(h => h && h.log_date < todayDate && h.wrist_temp_dev != null && Math.abs(Number(h.wrist_temp_dev)) >= 5)
+    .map(h => ({ d: h.log_date, v: Number(h.wrist_temp_dev) })).sort((a, b) => (a.d < b.d ? -1 : 1)).slice(-28).map(x => x.v);
+  if (prior.length < 7) return null;
+  const s = [...prior].sort((a, b) => a - b), m = s.length >> 1;
+  return v - (s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2);
+}
+
+const ReadinessModel = { wristTempDeviation, personalHrMax, personalBaseline, scoreVsPersonalBaseline, weightedSleepDebt, fitRecoveryWeights, spearman, addDaysISO };
 
 return ReadinessModel;
 

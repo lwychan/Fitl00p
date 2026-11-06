@@ -88,3 +88,12 @@ test('personalHrMax: formula unless a higher max was really reached, capped at +
   assert.equal(R.personalHrMax(37, 230), 208 - 0.7 * 37 + 15);   // capped
   assert.equal(R.personalHrMax(null, null), 208 - 0.7 * 35);
 });
+
+test('wristTempDeviation converts absolute temperature to a deviation from the recent baseline', () => {
+  const hist = Array.from({ length: 10 }, (_, i) => ({ log_date: `2026-10-${String(i + 1).padStart(2, '0')}`, wrist_temp_dev: 35 + (i % 2) * 0.2 }));
+  const dev = R.wristTempDeviation(35.7, hist, '2026-10-20');
+  assert.ok(Math.abs(dev - 0.6) < 0.01);                                   // baseline median 35.1
+  assert.equal(R.wristTempDeviation(35.7, hist.slice(0, 5), '2026-10-20'), null); // < 7 prior nights
+  assert.equal(R.wristTempDeviation(0.4, [], '2026-10-20'), 0.4);          // already a deviation
+  assert.equal(R.wristTempDeviation(null, hist, '2026-10-20'), null);
+});

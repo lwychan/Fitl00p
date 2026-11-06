@@ -98,7 +98,7 @@ function computeRecoveryScore(health, healthHistory, savedWeights = null) {
     }
   }
 
-  const wristTemp = health?.wrist_temp_dev;
+  const wristTemp = ReadinessModel.wristTempDeviation(health?.wrist_temp_dev, healthHistory, todayDate);
   if (wristTemp != null) {
     const tempScore = wristTemp <= 0.3 ? 100 : wristTemp <= 0.6 ? 80 : wristTemp <= 1.0 ? 55 : wristTemp <= 1.5 ? 30 : 10;
     totalScore += tempScore * RECOVERY_TEMP_WEIGHT; totalWeight += RECOVERY_TEMP_WEIGHT;
