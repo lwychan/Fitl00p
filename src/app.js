@@ -4243,7 +4243,9 @@ function renderHealthTiles(today, history) {
   // Each tile: show only if data exists in today or history
 
   // ── SpO2 ─────────────────────────────────────────────────
-  const spo2Hist = hist('spo2_avg');
+  // SpO2 is only shown while the Watch is actually recording it: hidden with no reading in the last 7 days.
+  const spo2Cutoff = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+  const spo2Hist = history.filter(h => h.log_date >= spo2Cutoff && h.spo2_avg != null).map(h => h.spo2_avg);
   const spo2 = today?.spo2_avg ?? (spo2Hist.length ? spo2Hist[spo2Hist.length - 1] : null);
   showTile('tileSpo2', spo2 != null || spo2Hist.length > 0);
   $('tileSpo2Val').textContent = spo2 != null ? fmt1(spo2) : '—';
