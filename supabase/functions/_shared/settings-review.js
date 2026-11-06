@@ -138,6 +138,28 @@ function nightRiseObservation(nights, nowMs) {
   };
 }
 
+// Every block where the value the app DOSES with (model.blocks[].value) differs from the pump
+// profile by >= 3%: this is what makes a suggested dose deviate from the pump's for the same
+// carbs / correction. 'pooled' = little data in that block, so the all-day average is used.
+function appliedDiffs(model) {
+  const out = [];
+  for (const b of model?.blocks || []) {
+    for (const [field, kind, name, unit, step] of [['isf', 'isf', 'Correction factor', 'mmol/L per U', 0.1], ['carbRatio', 'icr', 'Carb ratio', 'g per U', 0.1]]) {
+      const x = b[field];
+      if (!x || !(x.value > 0) || !(x.pump > 0)) continue;
+      const dev = x.value / x.pump - 1;
+      if (Math.abs(dev) < 0.03) continue;
+      out.push({
+        id: `applied-${kind}-${b.from}`, kind, window: b.label, from: b.from, to: b.to, name, unit,
+        pump: round(x.pump, step), app: round(x.value, step), changePct: dev, source: x.source, n: x.n,
+        // more insulin than the pump = a lower ratio value
+        effect: dev > 0 ? 'less insulin than pump' : 'more insulin than pump',
+      });
+    }
+  }
+  return out;
+}
+
 function settingsReview({ model, nights, pumpProfile, nowMs = Date.now() } = {}) {
   const items = blockItems(model);
   const basal = basalItem(nights, pumpProfile, nowMs);
@@ -146,10 +168,10 @@ function settingsReview({ model, nights, pumpProfile, nowMs = Date.now() } = {})
   const notes = observations(model);
   const rise = nightRiseObservation(nights, nowMs);
   if (rise) notes.push(rise);
-  return { generatedAt: nowMs, items, observations: notes, nothing: !items.length && !notes.length };
+  return { generatedAt: nowMs, items, observations: notes, applied: appliedDiffs(model), nothing: !items.length && !notes.length };
 }
 
-const SettingsReview = { settingsReview, blockItems, basalItem, observations, nightRiseObservation, MAX_CHANGE };
+const SettingsReview = { settingsReview, blockItems, basalItem, observations, nightRiseObservation, appliedDiffs, MAX_CHANGE };
 
 return SettingsReview;
 

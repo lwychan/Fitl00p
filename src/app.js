@@ -10984,7 +10984,17 @@ async function renderDxSettingsReview() {
       </div>`).join('');
     const notes = (review.observations || []).map(o => `<p style="margin:6px 0;font-size:.9em">👀 ${escapeHtml(o.text)}</p>`).join('');
     const none = !items ? '<p class="empty-state">No settings change is supported by your data right now.</p>' : '';
-    body.innerHTML = items + none + (notes ? `<div class="dx-section-label" style="margin-top:8px">Worth a look</div>${notes}` : '') +
+    // Where the app doses differently from the pump profile (same carbs / correction).
+    const kindName = k => (k === 'isf' ? 'Correction factor' : 'Carb ratio');
+    const applied = review.applied || [];
+    const appliedHtml = applied.length ? `
+      <div class="dx-section-label" style="margin-top:12px">Where the app differs from your pump</div>
+      <p class="dx-disclaimer" style="margin:0 0 6px">Doses are worked out with the "App" value. To make the pump match, change the pump to it — or ignore it and the app's dose will keep differing. “All-day” means little data in that block, so the overall average is used.</p>
+      <table style="width:100%;border-collapse:collapse;font-size:.9em">
+        <tr style="text-align:left;opacity:.7"><th>Time</th><th></th><th>Pump</th><th>App</th><th>Basis</th></tr>
+        ${applied.map(a => `<tr><td>${escapeHtml(a.window)}</td><td>${a.kind === 'isf' ? 'ISF' : 'ICR'}</td><td>${escapeHtml(String(a.pump))}</td><td><strong>${escapeHtml(String(a.app))}</strong> <span style="opacity:.7">${a.changePct > 0 ? '↑' : '↓'}${Math.round(Math.abs(a.changePct) * 100)}%</span></td><td>${a.source === 'learned' ? 'learned, n=' + a.n : a.source === 'pooled' ? 'all-day' : escapeHtml(a.source)}</td></tr>`).join('')}
+      </table>` : '';
+    body.innerHTML = items + none + appliedHtml + (notes ? `<div class="dx-section-label" style="margin-top:8px">Worth a look</div>${notes}` : '') +
       `<p class="dx-last-sync">Updated ${escapeHtml(new Date(row.fitted_at).toLocaleDateString())} from ${row.model?.allDay?.nIsf ?? '?'} corrections.</p>`;
   } catch (e) {
     body.innerHTML = '<p class="empty-state">Could not load the review.</p>';

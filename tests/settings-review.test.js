@@ -75,3 +75,11 @@ test('frequent unexplained-rise nights become an observation', () => {
   assert.equal(SR.nightRiseObservation(mk(6), now).kind, 'observation');
   assert.ok(SR.settingsReview({ model: {}, nights: mk(7), pumpProfile: pump, nowMs: now }).observations.some(o => o.id === 'night-rise'));
 });
+
+test('appliedDiffs lists every block where the dosing value differs from the pump by >= 3%', () => {
+  const m = { blocks: [blk(0, learned(6.72, 7.22, 6), pooled(24.85, 20)), blk(3, pooled(4, 4.05), pooled(24, 26)), blk(6, learned(4.5, 4.85, 11), learned(23.03, 23, 5))] };
+  const d = SR.appliedDiffs(m);
+  assert.deepEqual(d.map(x => x.id), ['applied-isf-0', 'applied-icr-0', 'applied-icr-3', 'applied-isf-6']);
+  const icr0 = d.find(x => x.id === 'applied-icr-0');
+  assert.equal(icr0.pump, 20); assert.equal(icr0.app, 24.9); assert.equal(icr0.source, 'pooled'); assert.equal(icr0.effect, 'less insulin than pump');
+});
