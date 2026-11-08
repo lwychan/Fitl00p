@@ -123,7 +123,7 @@ async function peptideDueToday(userId: string, todayStr: string) {
   return false;
 }
 
-// Morning gate: hold until last night's sleep has synced (+5 min), or 90 min
+// Morning gate: hold until last night's sleep has synced (+5 min), or 150 min
 // past the usual time. sleep_received_at is set by a DB trigger.
 async function sleepGateOpen(userId: string, now: any, targetMin: number, nowMin: number) {
   const { data } = await sbFetch(`/rest/v1/health_daily?user_id=eq.${userId}&log_date=eq.${now.dateStr}&select=sleep_total_hrs,sleep_received_at`);

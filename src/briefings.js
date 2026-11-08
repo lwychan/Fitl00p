@@ -81,11 +81,11 @@ function dueSince(targetMin, nowMin, graceMin = 120) {
 
 // Morning briefing: wait for last night's sleep to sync, then send 5 min after
 // it lands. Never before the usual time (cron slack 7 min); if sleep still
-// hasn't arrived 90 min after the usual time, send anyway (fallback phrase).
+// hasn't arrived 150 min after the usual time, send anyway (fallback phrase).
 // receivedMs = health_daily.sleep_received_at (null => not received);
 // preMigration = sleep already present but no timestamp (send straight away).
-function morningDue({ targetMin, nowMin, nowMs, receivedMs = null, sleepPresent = false, waitMin = 5, maxWaitMin = 90 }) {
-  if (targetMin == null || nowMin < targetMin - 7 || nowMin > targetMin + 120) return false;
+function morningDue({ targetMin, nowMin, nowMs, receivedMs = null, sleepPresent = false, waitMin = 5, maxWaitMin = 150 }) {
+  if (targetMin == null || nowMin < targetMin - 7 || nowMin > targetMin + 180) return false;
   if (receivedMs != null) return nowMs >= receivedMs + waitMin * 60000;
   if (sleepPresent) return true;
   return nowMin >= targetMin + maxWaitMin;

@@ -330,13 +330,14 @@ test('review fix: only an evening app-open counts as a bedtime hint', () => {
     'No sleep data from last night yet — probably a settled night, glucose steady');
 });
 
-test('morningDue waits for sleep, +5 min, with a 90 min fallback', () => {
+test('morningDue waits for sleep, +5 min, with a 150 min fallback', () => {
   const t = 345, M = 60000, base = 1e12;
   assert.equal(B.morningDue({ targetMin: t, nowMin: t - 10, nowMs: base, receivedMs: base - 60 * M }), false); // before usual time
   assert.equal(B.morningDue({ targetMin: t, nowMin: t, nowMs: base, receivedMs: base - 2 * M }), false);       // <5 min after sleep
   assert.equal(B.morningDue({ targetMin: t, nowMin: t, nowMs: base, receivedMs: base - 5 * M }), true);
   assert.equal(B.morningDue({ targetMin: t, nowMin: t + 30, nowMs: base, receivedMs: null }), false);          // still waiting
   assert.equal(B.morningDue({ targetMin: t, nowMin: t + 30, nowMs: base, sleepPresent: true }), true);         // pre-migration row
-  assert.equal(B.morningDue({ targetMin: t, nowMin: t + 90, nowMs: base, receivedMs: null }), true);           // fallback
-  assert.equal(B.morningDue({ targetMin: t, nowMin: t + 121, nowMs: base, receivedMs: base - 99 * M }), false); // too late
+  assert.equal(B.morningDue({ targetMin: t, nowMin: t + 120, nowMs: base, receivedMs: null }), false);         // still inside the wait
+  assert.equal(B.morningDue({ targetMin: t, nowMin: t + 150, nowMs: base, receivedMs: null }), true);           // fallback
+  assert.equal(B.morningDue({ targetMin: t, nowMin: t + 181, nowMs: base, receivedMs: base - 99 * M }), false); // too late
 });
