@@ -4723,3 +4723,20 @@ body { font-size: 15px; }
   background: none; border: none; color: var(--blue); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
 }
 .insights__more[hidden] { display: none; }
+
+/* Photo-estimate allowance gauge, shown above the photo buttons.
+   Looks like a phone battery: fills left-to-right with the % remaining. */
+.lf-quota { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.lf-quota[hidden] { display: none; }
+.lf-quota__battery {
+  position: relative; flex: 0 0 56px; height: 24px; box-sizing: border-box;
+  border: 2px solid var(--text-muted, #888); border-radius: 5px; padding: 2px; overflow: hidden;
+}
+.lf-quota__battery::after {
+  content: ''; position: absolute; right: -6px; top: 6px; width: 4px; height: 8px;
+  background: var(--text-muted, #888); border-radius: 0 2px 2px 0;
+}
+.lf-quota__fill { height: 100%; width: 0; border-radius: 2px; background: var(--accent, #2ecc71); transition: width .4s ease; }
+.lf-quota[data-tone="low"] .lf-quota__fill { background: #e6a23c; }
+.lf-quota[data-tone="empty"] .lf-quota__fill { background: var(--danger, #c0392b); }
+.lf-quota__text { margin: 0; }

@@ -293,6 +293,24 @@ const el = {
   lfFoodName:       $('lfFoodName'),
   lfBrand:          $('lfBrand'),
   lfQuantity:       $('lfQuantity'),
+  lfPhotoPanel: $('lfPhotoPanel'),
+  lfPhotoButtons: $('lfPhotoButtons'),
+  lfPhotoInputCamera: $('lfPhotoInputCamera'),
+  lfPhotoInputLibrary: $('lfPhotoInputLibrary'),
+  lfPhotoThumbs: $('lfPhotoThumbs'),
+  lfPhotoTimeNote: $('lfPhotoTimeNote'),
+  lfPhotoAfterInputCamera: $('lfPhotoAfterInputCamera'),
+  lfPhotoAfterInputLibrary: $('lfPhotoAfterInputLibrary'),
+  lfPhotoAfterPreview: $('lfPhotoAfterPreview'),
+  lfPhotoAfterPreviewWrap: $('lfPhotoAfterPreviewWrap'),
+  lfPhotoDesc: $('lfPhotoDesc'),
+  lfEstimateStatus: $('lfEstimateStatus'),
+  lfEstimateNote: $('lfEstimateNote'),
+  lfQuotaGauge: $('lfQuotaGauge'),
+  lfQuotaFill: $('lfQuotaFill'),
+  lfQuotaText: $('lfQuotaText'),
+  btnLfPhotoAfterClear: $('btnLfPhotoAfterClear'),
+  btnLfEstimate: $('btnLfEstimate'),
   lfServingDesc:    $('lfServingDesc'),
   lfCals:           $('lfCals'),
   lfProtein:        $('lfProtein'),
@@ -13105,12 +13123,308 @@ el.lfRecentList?.addEventListener('click', e => {
 
 
 /* ── Mode switching ──────────────────────────────────────── */
+
+/* ── EXIF capture-time extraction ────────────────────────────
+   Reads DateTimeOriginal straight out of the JPEG's own EXIF bytes — no
+   library, just walking the APP1/TIFF segment structure by hand (same
+   "no external deps" approach as the rest of this app). Has to run on
+   the ORIGINAL file, before resizeImageToBase64's canvas round-trip,
+   since re-encoding through <canvas> always strips EXIF entirely. Only
+   reads the first 256KB (EXIF always lives right after the JPEG SOI
+   marker, long before any actual image data) so this stays cheap even
+   on a full-resolution photo. */
+function readExifDateTaken(file) {
+  return new Promise(resolve => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const view = new DataView(reader.result);
+        if (view.byteLength < 4 || view.getUint16(0, false) !== 0xFFD8) return resolve(null); // not a JPEG
+        let offset = 2;
+        while (offset + 4 <= view.byteLength) {
+          const marker = view.getUint16(offset, false);
+          if ((marker & 0xFF00) !== 0xFF00) break;
+          if (marker === 0xFFDA) break; // start of scan — no more metadata segments follow
+          const segLen = view.getUint16(offset + 2, false);
+          if (marker === 0xFFE1 && offset + 4 + 6 <= view.byteLength) {
+            const exifStart = offset + 4;
+            if (view.getUint32(exifStart, false) === 0x45786966 && view.getUint16(exifStart + 4, false) === 0x0000) {
+              return resolve(readExifDateFromTiff(view, exifStart + 6));
+            }
+          }
+          offset += 2 + segLen;
+        }
+        resolve(null);
+      } catch {
+        resolve(null); // malformed/truncated segment — just skip the prefill, never block logging
+      }
+    };
+    reader.onerror = () => resolve(null);
+    reader.readAsArrayBuffer(file.slice(0, 256 * 1024));
+  });
+}
+
+function readExifDateFromTiff(view, tiffStart) {
+  const bom = view.getUint16(tiffStart, false);
+  if (bom !== 0x4949 && bom !== 0x4D4D) return null;
+  const little = bom === 0x4949;
+  const get16 = o => view.getUint16(o, little);
+  const get32 = o => view.getUint32(o, little);
+  const readAscii = (offset, count) => {
+    let s = '';
+    for (let i = 0; i < count - 1; i++) s += String.fromCharCode(view.getUint8(offset + i));
+    return s;
+  };
+  const readIFD = ifdOffset => {
+    const entries = [];
+    const count = get16(ifdOffset);
+    for (let i = 0; i < count; i++) {
+      const entryOffset = ifdOffset + 2 + i * 12;
+      const tag = get16(entryOffset);
+      const type = get16(entryOffset + 2);
+      const valCount = get32(entryOffset + 4);
+      const valueOffset = entryOffset + 8;
+      entries.push({ tag, type, count: valCount, valueOffset });
+    }
+    return entries;
+  };
+  const stringTag = (entries, tag) => {
+    const e = entries.find(x => x.tag === tag && x.type === 2);
+    if (!e) return null;
+    const strOffset = e.count <= 4 ? e.valueOffset : tiffStart + get32(e.valueOffset);
+    return readAscii(strOffset, e.count);
+  };
+
+  const ifd0 = readIFD(tiffStart + get32(tiffStart + 4));
+  const exifPtr = ifd0.find(x => x.tag === 0x8769);
+  if (exifPtr) {
+    const subEntries = readIFD(tiffStart + get32(exifPtr.valueOffset));
+    const original = stringTag(subEntries, 0x9003); // DateTimeOriginal
+    if (original) return original;
+  }
+  return stringTag(ifd0, 0x0132); // DateTime — IFD0 fallback
+}
+
+// EXIF dates are "YYYY:MM:DD HH:MM:SS", the camera's own local wall-clock
+// time with no reliable timezone info attached — treated as local time
+// here, same as reading it off the camera's own clock display would be.
+function parseExifDateTime(str) {
+  if (!str) return null;
+  const m = /^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(str.trim());
+  if (!m) return null;
+  const [, y, mo, d, h, mi, s] = m.map(Number);
+  const dt = new Date(y, mo - 1, d, h, mi, s);
+  if (Number.isNaN(dt.getTime())) return null;
+  // An unset/wrong camera clock is common enough to guard against —
+  // silently skip the prefill rather than set a nonsense logged time.
+  const now = Date.now();
+  if (dt.getTime() > now + 5 * 60000 || dt.getTime() < now - 5 * 365 * 24 * 3600000) return null;
+  return dt;
+}
+
+function lfFormatPhotoTime(d) {
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const isToday = d.toDateString() === new Date().toDateString();
+  const dayLabel = isToday ? 'today' : d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+  return `${dayLabel} at ${time}`;
+}
+
+// Downscales to a max 1024px side and re-encodes as JPEG — keeps the
+// upload small regardless of the original resolution.
+function resizeImageToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const MAX = 1024;
+      const scale = Math.min(1, MAX / Math.max(img.width, img.height));
+      const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+      resolve({ base64: dataUrl.split(',')[1], mediaType: 'image/jpeg', dataUrl });
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not load image')); };
+    img.src = url;
+  });
+}
+
+/* ── Photo mode (Log Food) ─────────────────────────────────────
+   Up to 3 "before" photos of one plate from different angles, plus an
+   optional "after" photo of the leftovers. The Edge Function estimates
+   what was eaten and returns the day's remaining Cloudflare allowance,
+   which drives the battery gauge on the estimate button. */
+const LF_PHOTO_MAX_ANGLES = 3;
+let lfPhotoAngles = []; // [{base64, mediaType, dataUrl}]
+let lfPhotoAfter = null; // {base64, mediaType, dataUrl} or null
+let lfQuota = null; // {day, used, limit, remaining, percent}
+
+function renderLfPhotoThumbs() {
+  if (el.lfPhotoThumbs) {
+    el.lfPhotoThumbs.hidden = lfPhotoAngles.length === 0;
+    el.lfPhotoThumbs.innerHTML = lfPhotoAngles.map((p, i) => `
+      <div style="position:relative">
+        <img src="${p.dataUrl}" alt="Meal photo ${i + 1}" style="width:72px;height:72px;object-fit:cover;border-radius:var(--r-md);display:block">
+        <button type="button" class="lf-photo-thumb-remove" data-idx="${i}" aria-label="Remove photo" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--danger,#c0392b);color:#fff;border:none;font-size:12px;line-height:1;cursor:pointer">✕</button>
+      </div>`).join('');
+  }
+  if (el.lfPhotoButtons) el.lfPhotoButtons.style.display = lfPhotoAngles.length >= LF_PHOTO_MAX_ANGLES ? 'none' : 'flex';
+  updateLfEstimateButton();
+}
+
+function updateLfEstimateButton() {
+  if (el.btnLfEstimate) el.btnLfEstimate.disabled = lfPhotoAngles.length === 0 || (lfQuota && lfQuota.remaining < 1);
+}
+
+async function handleLfPhotoInputChange(inputEl) {
+  const file = inputEl.files?.[0];
+  inputEl.value = ''; // so picking the same file again still fires 'change'
+  if (!file || lfPhotoAngles.length >= LF_PHOTO_MAX_ANGLES) return;
+  try {
+    const isFirstPhoto = lfPhotoAngles.length === 0;
+    const [{ base64, mediaType, dataUrl }, exifDateStr] = await Promise.all([
+      resizeImageToBase64(file),
+      isFirstPhoto ? readExifDateTaken(file) : Promise.resolve(null),
+    ]);
+    lfPhotoAngles.push({ base64, mediaType, dataUrl });
+    renderLfPhotoThumbs();
+    // Only the first photo's capture time seeds "Logged at".
+    if (isFirstPhoto && el.lfLoggedAt) {
+      const takenAt = parseExifDateTime(exifDateStr);
+      if (takenAt) {
+        el.lfLoggedAt.value = toDatetimeLocalValue(takenAt);
+        if (el.lfPhotoTimeNote) {
+          el.lfPhotoTimeNote.hidden = false;
+          el.lfPhotoTimeNote.textContent = `📷 Photo taken ${lfFormatPhotoTime(takenAt)} — set as the logged time (adjust above if needed)`;
+        }
+      } else if (el.lfPhotoTimeNote) el.lfPhotoTimeNote.hidden = true;
+    }
+  } catch (err) {
+    showToast("Couldn't read that photo: " + err.message, true);
+  }
+}
+el.lfPhotoInputCamera?.addEventListener('change', () => handleLfPhotoInputChange(el.lfPhotoInputCamera));
+el.lfPhotoInputLibrary?.addEventListener('change', () => handleLfPhotoInputChange(el.lfPhotoInputLibrary));
+el.lfPhotoThumbs?.addEventListener('click', e => {
+  const btn = e.target.closest('.lf-photo-thumb-remove');
+  if (!btn) return;
+  lfPhotoAngles.splice(Number(btn.dataset.idx), 1);
+  renderLfPhotoThumbs();
+});
+
+async function handleLfPhotoAfterInputChange(inputEl) {
+  const file = inputEl.files?.[0];
+  inputEl.value = '';
+  if (!file) return;
+  try {
+    lfPhotoAfter = await resizeImageToBase64(file);
+    if (el.lfPhotoAfterPreview) el.lfPhotoAfterPreview.src = lfPhotoAfter.dataUrl;
+    if (el.lfPhotoAfterPreviewWrap) el.lfPhotoAfterPreviewWrap.hidden = false;
+  } catch (err) {
+    showToast("Couldn't read that photo: " + err.message, true);
+  }
+}
+el.lfPhotoAfterInputCamera?.addEventListener('change', () => handleLfPhotoAfterInputChange(el.lfPhotoAfterInputCamera));
+el.lfPhotoAfterInputLibrary?.addEventListener('change', () => handleLfPhotoAfterInputChange(el.lfPhotoAfterInputLibrary));
+el.btnLfPhotoAfterClear?.addEventListener('click', () => clearLfPhotoAfter());
+
+function clearLfPhotoAfter() {
+  lfPhotoAfter = null;
+  if (el.lfPhotoAfterPreviewWrap) el.lfPhotoAfterPreviewWrap.hidden = true;
+  if (el.lfPhotoAfterPreview) el.lfPhotoAfterPreview.src = '';
+}
+
+function resetLfPhotoState() {
+  lfPhotoAngles = [];
+  clearLfPhotoAfter();
+  renderLfPhotoThumbs();
+  if (el.lfPhotoTimeNote) el.lfPhotoTimeNote.hidden = true;
+  if (el.lfPhotoDesc) el.lfPhotoDesc.value = '';
+  if (el.lfEstimateStatus) el.lfEstimateStatus.textContent = '';
+  if (el.lfEstimateNote) el.lfEstimateNote.textContent = '';
+}
+
+// ── Battery gauge: remaining free photo-estimate allowance for today ──
+
+function renderLfQuotaGauge() {
+  const g = el.lfQuotaGauge;
+  if (!g) return;
+  if (!lfQuota) { g.hidden = true; return; }
+  g.hidden = false;
+  const pct = Math.max(0, Math.min(100, lfQuota.percent));
+  const tone = pct <= 0 ? 'empty' : pct < 20 ? 'low' : 'ok';
+  g.dataset.tone = tone;
+  if (el.lfQuotaFill) el.lfQuotaFill.style.width = pct + '%';
+  if (el.lfQuotaText) el.lfQuotaText.textContent = pct <= 0
+    ? "Today's photo allowance is used up — resets at midnight UTC"
+    : `${pct}% of today's photo estimates left`;
+  g.setAttribute('aria-label', `Photo estimate allowance ${pct}% remaining`);
+  updateLfEstimateButton();
+}
+
+async function refreshLfQuota() {
+  try {
+    const session = (await db.auth.getSession()).data.session;
+    if (!session) return;
+    const res = await fetch(`${FUNCTIONS_ORIGIN}/food-photo-estimate`, {
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    });
+    const data = await res.json();
+    if (res.ok && data.quota) { lfQuota = data.quota; renderLfQuotaGauge(); }
+  } catch { /* gauge stays hidden; estimating still works */ }
+}
+
+el.btnLfEstimate?.addEventListener('click', async () => {
+  if (lfPhotoAngles.length === 0) return;
+  setBtn(el.btnLfEstimate, true, 'Estimate calories & macros', 'Estimating…');
+  if (el.lfEstimateStatus) el.lfEstimateStatus.textContent = '';
+  try {
+    const session = (await db.auth.getSession()).data.session;
+    const res = await fetch(`${FUNCTIONS_ORIGIN}/food-photo-estimate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
+      body: JSON.stringify({
+        images: lfPhotoAngles.map(p => ({ base64: p.base64, media_type: p.mediaType })),
+        description: el.lfPhotoDesc?.value || '',
+        image_base64_after: lfPhotoAfter?.base64 || undefined,
+        media_type_after: lfPhotoAfter?.mediaType || undefined,
+      }),
+    });
+    const data = await res.json();
+    if (data.quota) { lfQuota = data.quota; renderLfQuotaGauge(); }
+    if (!res.ok) {
+      if (el.lfEstimateStatus) el.lfEstimateStatus.textContent = data.error || 'Estimate failed.';
+      return;
+    }
+    lfSelectedCustomFoodId = null;
+    if (el.lfFoodName && (!el.lfFoodName.value || data.food_name)) el.lfFoodName.value = data.food_name || el.lfPhotoDesc?.value?.slice(0, 60) || 'Photo estimate';
+    if (el.lfQuantity) el.lfQuantity.value = '1';
+    if (el.lfServingDesc) el.lfServingDesc.value = lfPhotoAfter ? 'estimated, after leftovers' : 'estimated meal';
+    if (el.lfCals) el.lfCals.value = data.calories_kcal;
+    if (el.lfProtein) el.lfProtein.value = data.protein_g;
+    if (el.lfCarbs) el.lfCarbs.value = data.carbs_g;
+    if (el.lfFat) el.lfFat.value = data.fat_g;
+    if (el.lfEstimateNote) {
+      el.lfEstimateNote.textContent = `Estimate (${data.confidence} confidence): ${data.note || 'no notes'} — review and adjust before saving.`;
+    }
+    showLfReviewForm();
+  } catch (err) {
+    if (el.lfEstimateStatus) el.lfEstimateStatus.textContent = "Couldn't reach the estimator — enter the numbers manually.";
+  } finally {
+    setBtn(el.btnLfEstimate, false, 'Estimate calories & macros');
+    updateLfEstimateButton();
+  }
+});
+
 function selectLfMode(mode) {
   if (lfSelectedMode === 'scan' && mode !== 'scan') stopBarcodeScan();
   lfSelectedMode = mode;
   el.lfModePills?.querySelectorAll('.pill').forEach(p => p.classList.toggle('active', p.dataset.mode === mode));
   if (el.lfScanPanel)   el.lfScanPanel.hidden   = mode !== 'scan';
   if (el.lfSearchPanel) el.lfSearchPanel.hidden = mode !== 'search';
+  if (el.lfPhotoPanel)  el.lfPhotoPanel.hidden  = mode !== 'photo';
   if (el.lfRecentPanel) el.lfRecentPanel.hidden = mode !== 'recent';
   if (el.lfMealsPanel)  el.lfMealsPanel.hidden  = mode !== 'meals';
   if (mode === 'manual') { resetLfForm(); showLfReviewForm(); }
@@ -13118,6 +13432,7 @@ function selectLfMode(mode) {
   if (mode === 'scan') startBarcodeScan();
   if (mode === 'recent') renderLfRecent();
   if (mode === 'meals') renderLfSavedMeals();
+  if (mode === 'photo') refreshLfQuota();
 }
 el.lfModePills?.addEventListener('click', e => {
   const btn = e.target.closest('.pill');
@@ -13125,6 +13440,7 @@ el.lfModePills?.addEventListener('click', e => {
 });
 
 function resetLfForm() {
+  resetLfPhotoState();
   lfSelectedCustomFoodId = null;
   lfRecentSource = null;
   lfPendingBarcode = null;
@@ -13631,7 +13947,7 @@ el.btnLfSave?.addEventListener('click', async () => {
       logged_at: loggedAt.toISOString(),
       meal_slot: mealSlot,
       source: (lfSelectedMode === 'recent' && lfRecentSource) ? lfRecentSource
-        : lfSelectedCustomFoodId ? (lfSelectedMode === 'search' ? 'search' : 'scan') : (lfPendingBarcode ? 'scan' : 'manual'),
+        : lfSelectedCustomFoodId ? (lfSelectedMode === 'search' ? 'search' : 'scan') : (lfPhotoAngles.length > 0 ? 'photo' : (lfPendingBarcode ? 'scan' : 'manual')),
       food_name: name, brand, serving_desc: servingDesc,
       quantity,
       calories_kcal: Math.round(baseCals * quantity),

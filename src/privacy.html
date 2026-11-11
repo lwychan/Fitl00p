@@ -45,6 +45,7 @@ and how it's handled.</p>
   <li><strong>Account info</strong> — name and email address, used to sign you in and identify your data.</li>
   <li><strong>Health &amp; fitness data</strong> — steps, sleep, heart rate, HRV, weight, and workouts, synced from Apple Health/HealthKit (or entered manually), used to power your dashboard and recovery scores.</li>
   <li><strong>Diabetes/glucose data</strong> — for accounts with diabetes tracking enabled, blood glucose and insulin dosing data (via Nightscout) is used for the app's Diabetes tab and dosing suggestions.</li>
+  <li><strong>Meal photos</strong> — photos you choose for a food estimate are sent to Cloudflare Workers AI, which estimates calories and macros from them and returns only the numbers. Photos are not kept by the app after the estimate is returned,. Cloudflare processes these requests under its own terms and privacy policy.</li>
   <li><strong>Device/notification identifiers</strong> — used only to deliver push notifications you've opted into (e.g. reminders).</li>
 </ul>
 
