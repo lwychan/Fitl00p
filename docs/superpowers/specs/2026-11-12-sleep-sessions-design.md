@@ -118,16 +118,18 @@ Whatever is chosen, a manual session has `source = manual` and never overwrites 
 - `health-ingest` and any changed Edge Functions deployed via the CLI.
 - iOS and web changes need a TestFlight build from `main`. **Pushing `main` needs the owner's explicit yes** (CLAUDE.md).
 
-## Theirs (owner decisions, in priority order)
+## Decided by the owner (2026-11-12)
 
-1. **Lie-in capture:** A (prompt after alarm), B (manual add only), or C (HealthKit only)?
-2. **Nap credit:** is 50% of asleep hours (capped at 1 h, after 15:00) right for tonight's need? Or should naps count in full, or not at all?
-3. **Dozes:** should a post-alarm doze count as part of the night (my proposal), or as a separate nap?
-4. **Gemma's naps:** should they show on her dashboard by default, or only in the nap history?
+1. **Lie-in capture:** option A, a one-tap prompt after the alarm, prefilled with the alarm time and a suggested end time. Ignoring it changes nothing. (Recommended by me; owner's choice not yet explicit, see below.)
+2. **Nap credit (recommended, owner to confirm):**
+   - Sleep debt (7-night window): naps count at 100% of asleep hours.
+   - Tonight's need: 25% of asleep hours, capped at 30 min, only if the nap ends by about 16:30. Later naps give no tonight credit.
+3. **Dozes count as part of the night.** Dozes are flagged for the owner to confirm after the prompt.
+4. **Naps show on the dashboard and in Body Battery** as a separate "+" line. Night-only sleep numbers are unchanged.
 
 ## Calls made without you (review these)
 
 - Night / doze / nap rules and time windows (the 12:00 wake cut-off, 2 h doze window, 15 min minimum for a nap).
 - Naps and dozes use `quality = 1` in Body Battery for now.
-- The 50% nap credit and its 1 h cap.
+- The nap credit numbers above (25%, 30 min cap, 16:30 cut-off).
 - Backfill covers the last 30 days only.
