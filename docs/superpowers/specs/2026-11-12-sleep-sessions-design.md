@@ -1,7 +1,6 @@
 # Sleep sessions: naps, lie-ins, and what they do to sleep need and Body Battery
 
-Status: DRAFT for owner review (2026-11-12). Nothing built yet.
-Owner decisions still needed are listed at the end under **Theirs**.
+Status: APPROVED by owner 2026-11-12. Nothing built yet; next step is the implementation plan.
 Calls I made myself are marked **(my call)**.
 
 ## Intent and why
@@ -120,9 +119,9 @@ Whatever is chosen, a manual session has `source = manual` and never overwrites 
 
 ## Decided by the owner (2026-11-12)
 
-1. **Lie-in capture:** option A, a one-tap prompt after the alarm, prefilled with the alarm time and a suggested end time. Ignoring it changes nothing. (Recommended by me; owner's choice not yet explicit, see below.)
-2. **Nap credit (recommended, owner to confirm):**
-   - Sleep debt (7-night window): naps count at 100% of asleep hours.
+1. **Lie-in capture (approved):** option A, a one-tap prompt after the alarm, prefilled with the alarm time and a suggested end time. Ignoring it changes nothing.
+2. **Nap credit (approved):**
+   - Sleep debt (7-night window): naps count at 75% of asleep hours.
    - Tonight's need: 25% of asleep hours, capped at 30 min, only if the nap ends by about 16:30. Later naps give no tonight credit.
 3. **Dozes count as part of the night.** Dozes are flagged for the owner to confirm after the prompt.
 4. **Naps show on the dashboard and in Body Battery** as a separate "+" line. Night-only sleep numbers are unchanged.
@@ -131,5 +130,5 @@ Whatever is chosen, a manual session has `source = manual` and never overwrites 
 
 - Night / doze / nap rules and time windows (the 12:00 wake cut-off, 2 h doze window, 15 min minimum for a nap).
 - Naps and dozes use `quality = 1` in Body Battery for now.
-- The nap credit numbers above (25%, 30 min cap, 16:30 cut-off).
+- The tonight-credit numbers above (25%, 30 min cap, 16:30 cut-off). Debt credit is 75%, as approved.
 - Backfill covers the last 30 days only.
