@@ -1,5 +1,3 @@
-'use strict';
-
 // Sleep sessions: classify every sleep session as the night, a doze (a short
 // sleep right after the night) or a nap, and work out how much a nap counts
 // toward sleep debt and tonight's sleep need. Pure functions — the browser,
@@ -15,11 +13,7 @@
 //   - Nap debt credit: 75% of asleep hours. Tonight's credit: 25% of asleep
 //     hours, capped at 0.5 h, only for a nap that ends by 16:30 on that date.
 //   - A session over 14 h is kept but flagged 'long' for review.
-(function (root, factory) {
-  const api = factory();
-  if (typeof module === 'object' && module.exports) module.exports = api;
-  else root.SleepSessions = api;
-})(typeof self !== 'undefined' ? self : this, function () {
+(function () {
 
 const MIN_NAP_HRS = 0.25;
 const NIGHT_END_CUTOFF_H = 12;
@@ -88,6 +82,20 @@ function napTonightCreditHrs(naps, todayDate) {
   return Math.min(raw, NAP_TONIGHT_CAP_HRS);
 }
 
+// Applies both nap credits to a sleep need. debtNaps are naps before todayDate
+// (their 75% reduces debt); tonight's 25% (capped) reduces the need for todayDate.
+function applyNapCredit({ needHours, debtHours }, naps, todayDate) {
+  const debtNaps = naps.filter(n => n.wakeDate < todayDate);
+  const debtCredit = napDebtCreditHrs(debtNaps);
+  const tonightCredit = napTonightCreditHrs(naps, todayDate);
+  return {
+    needHours: Math.max(0, needHours - tonightCredit),
+    debtHours: Math.max(0, debtHours - debtCredit),
+    napDebtCreditHrs: debtCredit,
+    napTonightCreditHrs: tonightCredit,
+  };
+}
+
 // Should the app offer the one-tap "did you doze after your alarm?" prompt?
 // Only in the window 15 min to 3 h after the alarm, with no doze or morning
 // sleep already recorded for today. Ignoring it changes nothing.
@@ -107,11 +115,12 @@ function dozePromptNeeded(nowMs, alarmHour, sessions, localDate, localHour) {
   };
 }
 
-return {
-  classifySessions,
-  napDebtCreditHrs,
-  napTonightCreditHrs,
-  dozePromptNeeded,
-};
+const SleepSessions = { classifySessions, napDebtCreditHrs, napTonightCreditHrs, dozePromptNeeded, applyNapCredit };
 
-});
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = SleepSessions;
+} else if (typeof window !== 'undefined') {
+  window.SleepSessions = SleepSessions;
+}
+
+})();

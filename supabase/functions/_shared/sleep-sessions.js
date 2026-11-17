@@ -83,6 +83,20 @@ function napTonightCreditHrs(naps, todayDate) {
   return Math.min(raw, NAP_TONIGHT_CAP_HRS);
 }
 
+// Applies both nap credits to a sleep need. debtNaps are naps before todayDate
+// (their 75% reduces debt); tonight's 25% (capped) reduces the need for todayDate.
+function applyNapCredit({ needHours, debtHours }, naps, todayDate) {
+  const debtNaps = naps.filter(n => n.wakeDate < todayDate);
+  const debtCredit = napDebtCreditHrs(debtNaps);
+  const tonightCredit = napTonightCreditHrs(naps, todayDate);
+  return {
+    needHours: Math.max(0, needHours - tonightCredit),
+    debtHours: Math.max(0, debtHours - debtCredit),
+    napDebtCreditHrs: debtCredit,
+    napTonightCreditHrs: tonightCredit,
+  };
+}
+
 // Should the app offer the one-tap "did you doze after your alarm?" prompt?
 // Only in the window 15 min to 3 h after the alarm, with no doze or morning
 // sleep already recorded for today. Ignoring it changes nothing.
@@ -102,7 +116,7 @@ function dozePromptNeeded(nowMs, alarmHour, sessions, localDate, localHour) {
   };
 }
 
-const SleepSessions = { classifySessions, napDebtCreditHrs, napTonightCreditHrs, dozePromptNeeded };
+const SleepSessions = { classifySessions, napDebtCreditHrs, napTonightCreditHrs, dozePromptNeeded, applyNapCredit };
 
 return SleepSessions;
 

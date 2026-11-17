@@ -72,3 +72,19 @@ test('napTonightCreditHrs: 25% of a nap ending by 16:30, capped at 0.5 h; zero i
   const late = classify([night, raw(at(2026, 11, 3, 15, 0), at(2026, 11, 3, 17, 0), 1.0)]).filter(s => s.kind === 'nap');
   assert.equal(S.napTonightCreditHrs(late, '2026-11-03'), 0);
 });
+
+test('applyNapCredit: earlier naps cut debt (never below 0); tonight\'s nap cuts tonight\'s need', () => {
+  const naps = classify([
+    raw(at(2026, 11, 1, 23, 0), at(2026, 11, 2, 7, 0), 8),
+    raw(at(2026, 11, 2, 13, 35), at(2026, 11, 2, 16, 2), 2.42),   // debt nap (before today)
+    raw(at(2026, 11, 2, 23, 0), at(2026, 11, 3, 7, 0), 8),
+    raw(at(2026, 11, 3, 13, 35), at(2026, 11, 3, 16, 2), 2.42),   // tonight's nap (today)
+  ]).filter(s => s.kind === 'nap');
+  assert.equal(naps.length, 2);
+  const r = S.applyNapCredit({ needHours: 9, debtHours: 2.5 }, naps, '2026-11-03');
+  assert.ok(Math.abs(r.napDebtCreditHrs - 0.75 * 2.42) < 1e-9);
+  assert.ok(Math.abs(r.debtHours - (2.5 - 0.75 * 2.42)) < 1e-9);
+  assert.equal(r.napTonightCreditHrs, 0.5);
+  assert.equal(r.needHours, 8.5);
+  assert.equal(S.applyNapCredit({ needHours: 9, debtHours: 0.5 }, naps, '2026-11-03').debtHours, 0);
+});

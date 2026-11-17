@@ -2055,7 +2055,8 @@ async function _loadDashboardInner(signal) {
     return t >= yesterdayStart.getTime() && t < yesterdayEnd.getTime();
   });
   const yesterdayStrainScore = computeStrainScore(yesterdayHealth, healthHistory, {}, yesterdayWorkouts).score;
-  const sleepNeedResult = computeSleepNeed(healthHistory, todayDateStr, yesterdayStrainScore);
+  const napsForSleep = await loadRecentNaps(todayDateStr);
+  const sleepNeedResult = computeSleepNeed(healthHistory, todayDateStr, yesterdayStrainScore, napsForSleep);
   const recoveryResult  = computeRecoveryScore(health, healthHistory, sleepNeedResult);
   const todayStrainResult = computeStrainScore(health, healthHistory, log, todayWorkouts, recoveryResult.score);
 
@@ -2070,7 +2071,7 @@ async function _loadDashboardInner(signal) {
   // than as always-visible chrome on the gauge itself, plus the 20:00
   // push notification (notify-sleep-target.js) for whoever wants it
   // without opening the app at all.
-  const tonightSleepNeed = computeSleepNeed(healthHistory, todayDateStr, todayStrainResult.score);
+  const tonightSleepNeed = computeSleepNeed(healthHistory, todayDateStr, todayStrainResult.score, napsForSleep);
 
   const sleepResult = computeSleepScore(health, healthHistory, sleepNeedResult, tonightSleepNeed);
   const nutritionResult = computeNutritionScore(health, log, smartTarget);
@@ -2396,7 +2397,9 @@ const SLEEP_NAP_THRESHOLD_HRS = 4;   // nights under this are naps — excluded 
 // calls for. debt: shortfall vs baseline over the last 7 REAL (non-nap)
 // nights before today, older nights counting less (see weightedSleepDebt
 // in src/readiness-model.js), capped so it can't compound forever.
-function computeSleepNeed(healthHistory, todayDate, yesterdayStrainScore) {
+// naps: Session-like { wakeDate, endHour, asleepHrs } from sleep_sessions
+// (see loadRecentNaps). Earlier naps cut sleep debt; tonight's cut tonight's need.
+function computeSleepNeed(healthHistory, todayDate, yesterdayStrainScore, naps = []) {
   const strainHours = yesterdayStrainScore != null
     ? 1.7 / (1 + Math.exp((17 - yesterdayStrainScore) / 3.5))
     : 0;
@@ -2407,11 +2410,34 @@ function computeSleepNeed(healthHistory, todayDate, yesterdayStrainScore) {
     .slice(0, 7);
   const debtHours = weightedSleepDebt(priorNights.map(h => SLEEP_NEED_BASELINE_HRS - h.sleep_total_hrs), { cap: SLEEP_DEBT_CAP_HRS });
 
-  const needHours = SLEEP_NEED_BASELINE_HRS + strainHours + debtHours;
+  const credit = SleepSessions.applyNapCredit(
+    { needHours: SLEEP_NEED_BASELINE_HRS + strainHours + debtHours, debtHours }, naps, todayDate);
   return {
-    needHours, baselineHours: SLEEP_NEED_BASELINE_HRS, strainHours, debtHours,
+    needHours: credit.needHours, baselineHours: SLEEP_NEED_BASELINE_HRS, strainHours, debtHours: credit.debtHours,
+    napDebtCreditHrs: credit.napDebtCreditHrs, napTonightCreditHrs: credit.napTonightCreditHrs,
     yesterdayStrainScore, priorNightsUsed: priorNights.length,
   };
+}
+
+// Naps from the last 8 days up to todayDate, for computeSleepNeed. Naps are
+// not in health_daily any more, so they come from sleep_sessions. RLS limits
+// the rows to the signed-in user. Failure just means no nap credit.
+async function loadRecentNaps(todayDate) {
+  const fromDate = new Date(new Date(todayDate + 'T00:00:00Z').getTime() - 8 * 86400000).toISOString().slice(0, 10);
+  let data = null;
+  try {
+    const res = await db.from('sleep_sessions')
+      .select('wake_date, end_at, asleep_hrs')
+      .eq('kind', 'nap')
+      .gte('wake_date', fromDate)
+      .lte('wake_date', todayDate);
+    if (res.error) throw res.error;
+    data = res.data;
+  } catch (err) { console.warn('loadRecentNaps failed:', err?.message || err); return []; }
+  return (data || []).map(r => {
+    const d = new Date(r.end_at);
+    return { wakeDate: r.wake_date, endHour: d.getHours() + d.getMinutes() / 60, asleepHrs: Number(r.asleep_hrs) };
+  });
 }
 
 // ── Recovery ─────────────────────────────────────────────────
