@@ -2613,6 +2613,14 @@ function computeSleepScore(health, healthHistory, sleepNeed, tonightSleepNeed) {
     if (sleepNeed.debtHours > 0.02) {
       factors.push({ label: 'Sleep debt', val: `+${fmt1(sleepNeed.debtHours)}h (last ${sleepNeed.priorNightsUsed}n)`, pct: Math.round(clamp((sleepNeed.debtHours / SLEEP_DEBT_CAP_HRS) * 100, 0, 100)), cls: 'active' });
     }
+    // Naps count toward debt repayment (75%, see sleep-sessions.js).
+    if ((sleepNeed.napDebtCreditHrs || 0) > 0.02) {
+      factors.push({ label: 'Nap credit', val: `−${fmt1(sleepNeed.napDebtCreditHrs)}h of debt from naps`, pct: Math.round(clamp((sleepNeed.napDebtCreditHrs / SLEEP_DEBT_CAP_HRS) * 100, 0, 100)), cls: 'sleep' });
+    }
+    // Tonight's need is lowered by a nap that ended by 16:30 (25%, capped at 0.5 h).
+    if ((tonightSleepNeed?.napTonightCreditHrs || 0) > 0.02) {
+      factors.push({ label: "Tonight's nap credit", val: `−${fmt1(tonightSleepNeed.napTonightCreditHrs)}h off tonight's need`, pct: Math.round(clamp((tonightSleepNeed.napTonightCreditHrs / 0.5) * 100, 0, 100)), cls: 'sleep' });
+    }
   } else {
     const durScore = tieredSleepDurationScore(sleep);
     totalScore += durScore * 0.40; totalWeight += 0.40;
@@ -4032,7 +4040,8 @@ async function loadBodyBattery(healthHistory) {
       stressFactor, breakdownFrom: lastNight ? lastNight.start : midnight.getTime(),
     });
     const wakePoint = lastNight ? result.series.find(p => p.t >= lastNight.end) : null;
-    bbState = { result, computedAt: now, source, lastNight, stressFactor, wakeLevel: wakePoint ? wakePoint.level : null };
+    const naps = sleeps.filter(s => s.kind === 'nap' || s.kind === 'doze');
+    bbState = { result, computedAt: now, source, lastNight, naps, stressFactor, wakeLevel: wakePoint ? wakePoint.level : null };
     renderBodyBatteryBadge();
     if (!$('bbModal')?.hidden) renderBodyBatteryModal();
     refreshInsights();
@@ -4105,6 +4114,12 @@ function renderBodyBatteryModal() {
     const q = lastNight?.quality ?? 1;
     const qWord = q >= 1.1 ? 'restful' : q <= 0.85 ? 'restless' : 'normal';
     rows.push({ icon: '😴', label: 'Sleep', detail: lastNight ? `${fmt1(lastNight.asleepHrs)}h asleep, ${qWord} HRV/heart rate` : '', val: fmtBbDelta(p.sleep), cls: 'up' });
+  }
+  // Naps and dozes are already inside the simulation (quality 1); listed here
+  // for what they were, with their asleep time rather than a separate delta.
+  for (const n of bbState.naps || []) {
+    rows.push({ icon: n.kind === 'doze' ? '🛌' : '💤', label: n.kind === 'doze' ? 'Lie-in' : 'Nap',
+      detail: `${fmtBbClock(n.start)}–${fmtBbClock(n.end)}, ${fmt1(n.asleepHrs)}h asleep`, val: '', cls: 'up' });
   }
   if (p.rest > 0.5) rows.push({ icon: '🧘', label: 'Rest', detail: 'calm stretches, heart rate near resting', val: fmtBbDelta(p.rest), cls: 'up' });
   for (const w of result.workouts) {
