@@ -2038,6 +2038,7 @@ async function _loadDashboardInner(signal) {
   // both feed the scores below. Never allowed to break the dashboard.
   try { await loadRecoveryModel({ signal }); } catch (e) { console.warn('Recovery model load failed:', e?.message || e); }
   renderFeelCheckin();
+  loadDozeSessions().then(renderDozePrompt);
   loadBodyBattery(healthHistory); // app-bar battery — not awaited, never blocks the dashboard
 
   // Sleep need (see computeSleepNeed) folds in yesterday's strain, so
@@ -3766,6 +3767,105 @@ async function loadRecoveryModel({ signal, force = false } = {}) {
   }
   recoveryModelKey = key;
 }
+
+// ── Lie-in prompt ─────────────────────────────────────────────
+// After the alarm, offer one tap to count the morning doze HealthKit missed.
+// The alarm time is a per-device convenience, kept in localStorage (not shared
+// state). Every storage call is wrapped: private windows can throw.
+const DOZE_ALARM_KEY = 'fitloop.alarmHour';
+function readAlarmHour() {
+  try { const v = localStorage.getItem(DOZE_ALARM_KEY); const n = v == null ? NaN : Number(v); return Number.isFinite(n) ? n : null; }
+  catch { return null; }
+}
+function writeAlarmHour(hour) {
+  try { localStorage.setItem(DOZE_ALARM_KEY, String(hour)); } catch { /* storage blocked: prompt just stays hidden */ }
+}
+let dozeSessionsCache = [];
+
+async function loadDozeSessions() {
+  const today = hkLocalDateStr(Date.now());
+  const yesterday = hkLocalDateStr(Date.now() - 86400000);
+  try {
+    const { data, error } = await db.from('sleep_sessions')
+      .select('start_at, end_at, wake_date, kind')
+      .gte('wake_date', yesterday).lte('wake_date', today);
+    if (error) throw error;
+    dozeSessionsCache = (data || []).map(r => {
+      const end = new Date(r.end_at);
+      return { wakeDate: r.wake_date, kind: r.kind, endHour: end.getHours() + end.getMinutes() / 60 };
+    });
+  } catch (err) { console.warn('loadDozeSessions failed:', err?.message || err); dozeSessionsCache = []; }
+}
+
+function renderDozePrompt() {
+  const box = $('dozePrompt');
+  if (!box || !currentUser) return;
+  const alarm = readAlarmHour();
+  const $alarmRow = $('dozeAlarmRow');
+  const localHour = ms => { const d = new Date(ms); return d.getHours() + d.getMinutes() / 60; };
+  if (alarm == null) {
+    // First-time setup: offer it in the morning only, so the card doesn't sit there all day.
+    const morning = localHour(Date.now()) < 12;
+    box.hidden = !morning;
+    if (!morning) return;
+    $('dozePromptQ').textContent = 'Set your usual alarm time';
+    $('dozePromptHint').textContent = 'Once it is set, the lie-in prompt shows after your alarm.';
+    $('dozeAlarmRow').hidden = false;
+    $('btnDozeYes').hidden = true;
+    return;
+  }
+  $('btnDozeYes').hidden = false;
+  $('dozePromptQ').textContent = 'Did you doze after your alarm?';
+  const r = SleepSessions.dozePromptNeeded(Date.now(), alarm, dozeSessionsCache, hkLocalDateStr, localHour);
+  box.hidden = !r.needed;
+  if (!r.needed) return;
+  const fmt = ms => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  $('dozePromptHint').textContent = `Count sleep from ${fmt(r.suggestedStart)} to ${fmt(r.suggestedEnd)}? Ignoring this changes nothing.`;
+  if ($alarmRow) $alarmRow.hidden = true;
+  box.dataset.start = String(r.suggestedStart);
+  box.dataset.end = String(r.suggestedEnd);
+}
+
+$('btnDozeAlarm')?.addEventListener('click', () => {
+  const row = $('dozeAlarmRow');
+  const input = $('dozeAlarmInput');
+  if (!row || !input) return;
+  const alarm = readAlarmHour();
+  if (alarm != null) {
+    const h = Math.floor(alarm), m = Math.round((alarm - h) * 60);
+    input.value = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  }
+  row.hidden = !row.hidden;
+});
+
+$('btnDozeAlarmSave')?.addEventListener('click', () => {
+  const input = $('dozeAlarmInput');
+  const m = /^(\d{2}):(\d{2})$/.exec(input?.value || '');
+  if (!m) return;
+  writeAlarmHour(Number(m[1]) + Number(m[2]) / 60);
+  $('dozeAlarmRow').hidden = true;
+  renderDozePrompt();
+});
+
+$('btnDozeYes')?.addEventListener('click', async () => {
+  const box = $('dozePrompt');
+  const start = Number(box?.dataset.start), end = Number(box?.dataset.end);
+  if (!currentUser || !Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
+  const asleepHrs = Math.round((end - start) / 360000) / 10;
+  const { error } = await db.from('sleep_sessions').insert({
+    user_id: currentUser.id,
+    start_at: new Date(start).toISOString(),
+    end_at: new Date(end).toISOString(),
+    wake_date: hkLocalDateStr(Date.now()),
+    kind: 'doze',
+    source: 'manual',
+    asleep_hrs: asleepHrs,
+  });
+  if (error && error.code !== '23505') { showToast("Couldn't save the lie-in: " + error.message, true); return; }
+  showToast('Lie-in counted as sleep.');
+  await loadDozeSessions();
+  renderDozePrompt();
+});
 
 function renderFeelCheckin() {
   const box = $('feelCheckin');

@@ -4740,3 +4740,8 @@ body { font-size: 15px; }
 .lf-quota[data-tone="low"] .lf-quota__fill { background: #e6a23c; }
 .lf-quota[data-tone="empty"] .lf-quota__fill { background: var(--danger, #c0392b); }
 .lf-quota__text { margin: 0; }
+
+/* One-tap lie-in prompt (dozePrompt) */
+.doze-prompt__actions, .doze-prompt__alarm { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.doze-prompt__alarm label { display: flex; gap: 8px; align-items: center; }
+

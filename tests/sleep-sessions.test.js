@@ -88,3 +88,24 @@ test('applyNapCredit: earlier naps cut debt (never below 0); tonight\'s nap cuts
   assert.equal(r.needHours, 8.5);
   assert.equal(S.applyNapCredit({ needHours: 9, debtHours: 0.5 }, naps, '2026-11-03').debtHours, 0);
 });
+
+test('dozePromptNeeded: offered 15 min to 3 h after a set alarm, when no morning sleep is recorded yet', () => {
+  const now = at(2026, 11, 3, 6, 45); // 06:45, alarm 05:30
+  const none = [];
+  const r = S.dozePromptNeeded(now, 5.5, none, localDate, localHour);
+  assert.equal(r.needed, true);
+  assert.ok(Math.abs(r.suggestedStart - at(2026, 11, 3, 5, 30)) < 1000);
+  assert.equal(r.suggestedEnd, now);
+});
+
+test('dozePromptNeeded: hidden when no alarm is set, too early, too late, or morning sleep already exists', () => {
+  const now = at(2026, 11, 3, 6, 45);
+  assert.equal(S.dozePromptNeeded(now, null, [], localDate, localHour).needed, false);
+  assert.equal(S.dozePromptNeeded(at(2026, 11, 3, 5, 40), 5.5, [], localDate, localHour).needed, false);
+  assert.equal(S.dozePromptNeeded(at(2026, 11, 3, 9, 45), 5.5, [], localDate, localHour).needed, false);
+  const doze = classify([
+    raw(at(2026, 11, 2, 23, 0), at(2026, 11, 3, 5, 45), 6.5),
+    raw(at(2026, 11, 3, 6, 0), at(2026, 11, 3, 7, 10), 1.0),
+  ]);
+  assert.equal(S.dozePromptNeeded(now, 5.5, doze, localDate, localHour).needed, false);
+});

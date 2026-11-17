@@ -431,6 +431,19 @@
             </div>
             <div class="feel-checkin__hint" id="feelCheckinHint"></div>
           </div>
+          <!-- One-tap lie-in prompt after the alarm (see renderDozePrompt in app.js). Ignoring it changes nothing. -->
+          <div class="feel-checkin doze-prompt" id="dozePrompt" hidden>
+            <div class="feel-checkin__q" id="dozePromptQ">Did you doze after your alarm?</div>
+            <div class="feel-checkin__hint" id="dozePromptHint"></div>
+            <div class="doze-prompt__actions">
+              <button type="button" class="btn btn--primary btn--small" id="btnDozeYes">Yes, count it as sleep</button>
+              <button type="button" class="btn btn--ghost btn--small" id="btnDozeAlarm">Set alarm time</button>
+            </div>
+            <div class="doze-prompt__alarm" id="dozeAlarmRow" hidden>
+              <label class="field-hint">Alarm <input type="time" id="dozeAlarmInput"></label>
+              <button type="button" class="btn btn--ghost btn--small" id="btnDozeAlarmSave">Save</button>
+            </div>
+          </div>
         </div>
 
         <!-- Rule-based insights (see refreshInsights in app.js) -->
