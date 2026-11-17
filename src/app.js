@@ -13007,6 +13007,7 @@ let lfBarcodeDetector = null;
 let lfBarcodeScanRAF = null;
 let lfZxingControls = null; // ZXing's IScannerControls — the Safari fallback path (see startBarcodeScan)
 let lfZxingScanAttempts = 0; // frames checked so far this scan session — diagnostic only, see startBarcodeScan
+let lfBarcodeHandled = false; // set once a barcode is accepted this session; ZXing can fire the same hit several times before stop() lands
 let lfSelectedCustomFoodId = null; // set when the review form was populated from an existing custom_foods row (scan/search) — avoids re-saving a duplicate
 let lfPendingBarcode = null; // carries a scanned (found-or-not) barcode into save, so a not-found product is still remembered for next time
 let lfFavToggleActive = false; // ⭐ toggle in the review form — also save this entry as a one-item saved meal
@@ -13577,8 +13578,14 @@ async function startBarcodeScan() {
     } else {
       const reader = new window.ZXingBrowser.BrowserMultiFormatReader();
       lfZxingScanAttempts = 0;
+      lfBarcodeHandled = false;
       lfZxingControls = await reader.decodeFromStream(lfBarcodeStream, el.lfScanVideo, (result, error) => {
         if (result) {
+          // Guard first: lfZxingControls isn't assigned until decodeFromStream
+          // resolves, so stopBarcodeScan() can't stop the callback from firing
+          // again for the same barcode — without this each frame re-ran the lookup.
+          if (lfBarcodeHandled) return;
+          lfBarcodeHandled = true;
           const barcode = result.getText();
           stopBarcodeScan();
           handleScannedBarcode(barcode);
