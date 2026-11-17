@@ -86,3 +86,10 @@ test('groupSleepSessions joins a night, keeps a nap separate, counts only asleep
   assert.equal(s[0].end, T0 + 7 * H);
   assert.equal(s[1].asleepHrs, 0.5);
 });
+
+test('an afternoon nap (quality 1) raises the level at evening compared with the night alone', () => {
+  const nightOnly = [{ start: T0, end: T0 + 7 * H, asleepHrs: 7, quality: 1 }];
+  const withNap = [...nightOnly, { start: T0 + 15 * H, end: T0 + 17.5 * H, asleepHrs: 2.5, quality: 1, kind: 'nap' }];
+  const at = sleeps => B.simulate({ ...base, start: T0, now: T0 + 19 * H, startLevel: 40, sleeps }).level;
+  assert.ok(at(withNap) > at(nightOnly) + 1, `${at(withNap)} vs ${at(nightOnly)}`);
+});

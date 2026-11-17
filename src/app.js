@@ -3819,6 +3819,7 @@ $('feelCheckin')?.addEventListener('click', async (e) => {
    and whenever it comes back to the foreground; in between the % ticks
    on at the current drain/charge rate. Tap it for the breakdown. */
 const { simulate: bbSimulate, sleepQuality: bbSleepQuality, zoneOf: bbZoneOf, groupSleepSessions: bbGroupSleep } = window.BodyBattery;
+const bbLocalHour = ms => { const d = new Date(ms); return d.getHours() + d.getMinutes() / 60; };
 const BB_FULL_REFRESH_MS = 5 * 60000;
 let bbState = null;      // { result, computedAt, source, sleepLast, workouts }
 let bbHistory = [];      // health_daily rows (from the dashboard load)
@@ -3876,17 +3877,32 @@ async function loadBodyBattery(healthHistory) {
         start: Date.parse(s.startDate), end: Date.parse(s.endDate || s.startDate),
         asleep: !!s.sleepState && s.sleepState !== 'inBed' && s.sleepState !== 'awake',
       })));
+      // Label each session night / nap / doze with the shared classifier.
+      sleeps = SleepSessions.classifySessions(sleeps, hkLocalDateStr, bbLocalHour);
       if (hrSamples.length) source = 'live';
     }
     if (!sleeps.length) {
-      // Web, or HealthKit gave nothing: nightly totals already synced to health_daily.
-      sleeps = hist.filter(h => h.sleep_start && Number(h.sleep_total_hrs) >= 1).map(h => {
+      // Web, or HealthKit gave nothing: nightly totals from health_daily, plus
+      // naps and dozes from sleep_sessions (naps are not in health_daily).
+      const nights = hist.filter(h => h.sleep_start && Number(h.sleep_total_hrs) >= 1).map(h => {
         const s = Date.parse(h.sleep_start), hrs = Number(h.sleep_total_hrs);
-        return { start: s, end: s + hrs * 1.08 * 3600000, asleepHrs: hrs };
+        return { start: s, end: s + hrs * 1.08 * 3600000, asleepHrs: hrs, kind: 'night' };
       }).filter(s => s.end > start - 12 * 3600000);
+      let naps = [];
+      try {
+        const { data: napRows, error: napErr } = await db.from('sleep_sessions')
+          .select('start_at, end_at, asleep_hrs, kind').neq('kind', 'night').gte('end_at', startISO);
+        if (napErr) throw napErr;
+        naps = (napRows || []).map(r => ({
+          start: Date.parse(r.start_at), end: Date.parse(r.end_at), asleepHrs: Number(r.asleep_hrs), kind: r.kind,
+        }));
+      } catch (err) { console.warn('Body Battery nap load failed:', err?.message || err); }
+      sleeps = [...nights, ...naps];
     }
     // Charge quality from that night's HRV / resting HR vs your normal (row = wake date).
+    // Naps and dozes count as sleep at a flat quality of 1 (no HRV/RHR read on them).
     for (const s of sleeps) {
+      if (s.kind === 'nap' || s.kind === 'doze') { s.quality = 1; continue; }
       const day = hkLocalDateStr(s.end);
       const row = hist.find(h => h.log_date === day);
       s.hrvZ = row ? bbZScore(hist, 'hrv_ms', day, row.hrv_ms, true, 0.05) : null;
@@ -3907,7 +3923,8 @@ async function loadBodyBattery(healthHistory) {
 
     // Breakdown runs from the start of last night's sleep (latest session
     // that ended after 18:00 yesterday), else from midnight.
-    const lastNight = sleeps.filter(s => s.end > midnight.getTime() - 6 * 3600000 && (s.end - s.start) > 3 * 3600000)
+    const lastNight = sleeps.filter(s => s.kind !== 'nap' && s.kind !== 'doze'
+        && s.end > midnight.getTime() - 6 * 3600000 && (s.end - s.start) > 3 * 3600000)
       .sort((a, b) => b.end - a.end)[0] || null;
     const result = bbSimulate({
       start, now, startLevel: 40, sleeps, workouts, hrSamples,
