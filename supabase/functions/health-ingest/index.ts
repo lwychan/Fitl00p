@@ -14,6 +14,8 @@
 // to health_daily rows for the token's own user, and only for whitelisted
 // metric columns.
 
+import { sessionRows } from './sessions.ts';
+
 const SB_URL     = Deno.env.get('SUPABASE_URL');
 const SB_SERVICE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 
@@ -47,7 +49,7 @@ Deno.serve(async (req: Request) => {
   if (!SB_URL || !SB_SERVICE) return json({ error: 'Server not configured' }, 500);
 
   const token = req.headers.get('x-ingest-token') || '';
-  let body: { userId?: string; rows?: Record<string, unknown>[]; workouts?: Record<string, unknown>[] };
+  let body: { userId?: string; rows?: Record<string, unknown>[]; workouts?: Record<string, unknown>[]; sleep_sessions?: unknown[] };
   try { body = await req.json(); } catch { return json({ error: 'Bad JSON' }, 400); }
   const userId = body.userId;
   if (!token || !userId || !/^[0-9a-f-]{36}$/i.test(userId) || !Array.isArray(body.rows)) {
@@ -86,12 +88,19 @@ Deno.serve(async (req: Request) => {
     for (const k of WORKOUT_NUM) { const v = w[k]; if (typeof v === 'number' && Number.isFinite(v)) out[k] = v; }
     return [out];
   });
-  if (!rows.length && !workouts.length) return json({ upserted: 0 });
+  // Raw sleep sessions (iOS build, v2+): classified here, stored in
+  // sleep_sessions, and the night for each wake date goes to health_daily.
+  const sess = Array.isArray(body.sleep_sessions) ? sessionRows(body.sleep_sessions, userId) : null;
+  const nights = (sess?.nights ?? []).map(n => ({ ...n, synced_at: now }));
+
+  if (!rows.length && !workouts.length && !sess?.rows.length) return json({ upserted: 0 });
 
   // One request per row, not a bulk array: PostgREST fills a key that's
   // missing from some rows of a bulk upsert with NULL, which would wipe
   // an existing metric on merge — per-row payloads only touch their own keys.
-  for (const row of rows) {
+  // Night rows go last so they override the sleep_* fields an older build
+  // sent for the same wake date (that build kept the last session, nap or not).
+  for (const row of [...rows, ...nights]) {
     const up = await fetch(`${SB_URL}/rest/v1/health_daily?on_conflict=user_id,log_date`, {
       method: 'POST',
       headers: { ...svc, 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal' },
@@ -107,5 +116,14 @@ Deno.serve(async (req: Request) => {
     });
     if (!up.ok) return json({ error: 'Workout upsert failed', detail: (await up.text()).slice(0, 300) }, 500);
   }
-  return json({ upserted: rows.length, workouts: workouts.length });
+  if (sess?.rows.length) {
+    // Bulk is safe here: every row has the same keys. Idempotent on the unique key.
+    const up = await fetch(`${SB_URL}/rest/v1/sleep_sessions?on_conflict=user_id,source,start_at`, {
+      method: 'POST',
+      headers: { ...svc, 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify(sess.rows),
+    });
+    if (!up.ok) return json({ error: 'Sleep session upsert failed', detail: (await up.text()).slice(0, 300) }, 500);
+  }
+  return json({ upserted: rows.length, workouts: workouts.length, sleep_sessions: sess?.rows.length ?? 0 });
 });
