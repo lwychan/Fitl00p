@@ -11681,23 +11681,50 @@ function hkSleepSessionsByWakeDate(samples) {
     }
   }
 
-  const byWakeDate = {};
+  // Every asleep session as a raw record, then classified (night / nap /
+  // doze) by the shared module, the same rule the iOS build and the server
+  // use. health_daily gets the night only; naps no longer overwrite it.
+  const raw = [];
   for (const session of sessions) {
     const segs = session.segments;
     const asleepSegs = segs.filter(s => s.sleepState && s.sleepState !== 'inBed' && s.sleepState !== 'awake');
     if (!asleepSegs.length) continue;
-    const wakeDate = hkLocalDateStr(Math.max(...segs.map(s => new Date(s.endDate || s.startDate).getTime())));
     const hrsOf = state => asleepSegs.filter(s => s.sleepState === state).reduce((a, s) => a + (Number(s.value) || 0), 0) / 60;
-    byWakeDate[wakeDate] = {
-      sleep_total_hrs: hkRound2(asleepSegs.reduce((a, s) => a + (Number(s.value) || 0), 0) / 60),
-      sleep_deep_hrs:  hkRound2(hrsOf('deep')),
-      sleep_rem_hrs:   hkRound2(hrsOf('rem')),
-      sleep_core_hrs:  hkRound2(hrsOf('light')),
-      sleep_start: segs.reduce((a, s) => a.startDate < s.startDate ? a : s, segs[0]).startDate,
-      sleep_end:   segs.reduce((a, s) => (a.endDate || a.startDate) > (s.endDate || s.startDate) ? a : s, segs[0]).endDate,
+    raw.push({
+      start: Math.min(...segs.map(s => new Date(s.startDate).getTime())),
+      end: Math.max(...segs.map(s => new Date(s.endDate || s.startDate).getTime())),
+      asleepHrs: asleepSegs.reduce((a, s) => a + (Number(s.value) || 0), 0) / 60,
+      deepHrs: hrsOf('deep'), remHrs: hrsOf('rem'), coreHrs: hrsOf('light'),
+    });
+  }
+  const localHour = ms => { const d = new Date(ms); return d.getHours() + d.getMinutes() / 60; };
+  const classified = window.SleepSessions.classifySessions(raw, hkLocalDateStr, localHour);
+
+  const byWakeDate = {};
+  for (const s of classified) {
+    if (s.kind !== 'night') continue;
+    byWakeDate[s.wakeDate] = {
+      sleep_total_hrs: hkRound2(s.asleepHrs),
+      sleep_deep_hrs:  hkRound2(s.deepHrs),
+      sleep_rem_hrs:   hkRound2(s.remHrs),
+      sleep_core_hrs:  hkRound2(s.coreHrs),
+      sleep_start: new Date(s.start).toISOString(),
+      sleep_end:   new Date(s.end).toISOString(),
     };
   }
-  return byWakeDate;
+  const sessionRows = classified.map(s => ({
+    start_at: new Date(s.start).toISOString(),
+    end_at: new Date(s.end).toISOString(),
+    wake_date: s.wakeDate,
+    kind: s.kind,
+    source: 'healthkit',
+    asleep_hrs: hkRound2(s.asleepHrs),
+    deep_hrs: hkRound2(s.deepHrs),
+    rem_hrs: hkRound2(s.remHrs),
+    core_hrs: hkRound2(s.coreHrs),
+    flag: s.flag || null,
+  }));
+  return { byWakeDate, sessionRows };
 }
 
 async function hkSyncWorkouts(startISO, endISO) {
@@ -11867,7 +11894,7 @@ async function runHealthKitSync({ days, interactive = false }) {
   const vo2ByDay       = hkByDay(vo2Samples);
   const wristByDay     = hkByDay(wristSamples);
   const bodyFatByDay   = hkByDay(bodyFatSamples);
-  const sleepByWakeDate = hkSleepSessionsByWakeDate(sleepSamples);
+  const { byWakeDate: sleepByWakeDate, sessionRows: sleepSessionRows } = hkSleepSessionsByWakeDate(sleepSamples);
 
   const allDates = new Set([
     ...Object.keys(steps), ...Object.keys(distance), ...Object.keys(calories),
@@ -11906,6 +11933,14 @@ async function runHealthKitSync({ days, interactive = false }) {
   if (rows.length) {
     const { error } = await db.from('health_daily').upsert(rows, { onConflict: 'user_id,log_date' });
     if (error) throw error;
+  }
+
+  // Every session, not just the night. Failure here doesn't fail the sync:
+  // the night has already saved to health_daily above.
+  if (sleepSessionRows.length) {
+    const { error } = await db.from('sleep_sessions')
+      .upsert(sleepSessionRows.map(r => ({ ...r, user_id: currentUser.id })), { onConflict: 'user_id,source,start_at' });
+    if (error) console.error('sleep_sessions upsert failed:', error.message);
   }
 
   try {
