@@ -14,6 +14,7 @@ const MODULES = [
   { name: 'insights',           global: 'Insights' },
   { name: 'briefings',          global: 'Briefings' },
   { name: 'settings-review',    global: 'SettingsReview' },
+  { name: 'sleep-sessions',     global: 'SleepSessions' },
 ];
 const check = process.argv.includes('--check');
 let stale = false;
