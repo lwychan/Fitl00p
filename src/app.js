@@ -13504,7 +13504,7 @@ function openLfEditItem(row) {
   const perServingFat = Math.round((Number(row.fat_g) || 0) / qty * 10) / 10;
   if (el.lfFoodName) el.lfFoodName.value = row.food_name || '';
   if (el.lfBrand) el.lfBrand.value = row.brand || '';
-  if (el.lfServingDesc) el.lfServingDesc.value = row.serving_desc || '';
+  if (el.lfServingDesc) el.lfServingDesc.value = lfServingInput(row.serving_desc);
   if (el.lfQuantity) el.lfQuantity.value = qty;
   if (el.lfCals) el.lfCals.value = perServingCals;
   if (el.lfProtein) el.lfProtein.value = perServingProtein;
@@ -13679,7 +13679,7 @@ async function handleScannedBarcode(barcode) {
 
   showToast(`Barcode ${barcode} not found — add it manually and it'll be remembered next time.`);
   resetLfForm();
-  if (el.lfServingDesc) el.lfServingDesc.value = '100g';
+  if (el.lfServingDesc) el.lfServingDesc.value = '100';
   lfPendingBarcode = barcode;
   selectLfMode(null);
   showLfReviewForm();
@@ -13687,28 +13687,46 @@ async function handleScannedBarcode(barcode) {
 
 async function fetchOpenFoodFacts(barcode) {
   try {
-    const res = await fetch(`https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(barcode)}.json?fields=product_name,brands,nutriments`);
+    const res = await fetch(`https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(barcode)}.json?fields=product_name,brands,nutriments,serving_quantity,serving_size`);
     if (!res.ok) return null;
     const data = await res.json();
     if (data.status !== 1 || !data.product) return null;
     const n = data.product.nutriments || {};
     const cals = n['energy-kcal_100g'] ?? (n['energy_100g'] != null ? n['energy_100g'] / 4.184 : null);
     if (cals == null) return null; // no usable nutrition data — treat as not found
+    // Open Food Facts nutrition is per 100 g. Load the pack's own gram weight
+    // (e.g. "1 serving (27.5 g)") as the portion when it has one, else 100 g.
+    const packG = Number(data.product.serving_quantity);
+    const usePack = Number.isFinite(packG) && packG > 0 && /\d\s*g\b/i.test(data.product.serving_size || '');
+    const f = usePack ? packG / 100 : 1;
+    const rnd1 = v => Math.round(v * f * 10) / 10;
     return {
       name: data.product.product_name || 'Unknown product',
       brand: data.product.brands || null,
-      serving_desc: '100g',
-      serving_qty: 100,
+      serving_desc: usePack ? String(packG) : '100',
+      serving_qty: usePack ? packG : 100,
       serving_unit: 'g',
-      calories_kcal: Math.round(cals),
-      protein_g: Math.round((n.proteins_100g || 0) * 10) / 10,
-      carbs_g: Math.round((n.carbohydrates_100g || 0) * 10) / 10,
-      fat_g: Math.round((n.fat_100g || 0) * 10) / 10,
+      calories_kcal: Math.round(cals * f),
+      protein_g: rnd1(n.proteins_100g || 0),
+      carbs_g: rnd1(n.carbohydrates_100g || 0),
+      fat_g: rnd1(n.fat_100g || 0),
       barcode,
     };
   } catch {
     return null;
   }
+}
+
+// Gram servings: the field shows only the number (its label says "(g)"), and
+// saving stores "27.5g" so the diary still reads with its unit. Other servings
+// ("1 cup", "estimated meal") are shown and stored as typed.
+function lfServingInput(desc) {
+  const m = /^\s*(\d+(?:\.\d+)?)\s*g?\s*$/i.exec(String(desc || ''));
+  return m ? m[1] : (desc || '');
+}
+function lfServingStored(text) {
+  const t = String(text || '').trim();
+  return /^\d+(?:\.\d+)?$/.test(t) ? `${t}g` : t;
 }
 
 // Favourites and manually-typed servings don't carry a separate numeric
@@ -13726,7 +13744,7 @@ function populateLfFormFromFood(food, opts = {}) {
   if (el.lfFoodName) el.lfFoodName.value = food.name || '';
   if (el.lfBrand) el.lfBrand.value = food.brand || '';
   if (el.lfQuantity) el.lfQuantity.value = '1';
-  if (el.lfServingDesc) el.lfServingDesc.value = food.serving_desc || '';
+  if (el.lfServingDesc) el.lfServingDesc.value = lfServingInput(food.serving_desc);
   if (el.lfCals) el.lfCals.value = food.calories_kcal ?? '';
   if (el.lfProtein) el.lfProtein.value = food.protein_g ?? '';
   if (el.lfCarbs) el.lfCarbs.value = food.carbs_g ?? '';
@@ -13858,7 +13876,7 @@ el.btnLfSave?.addEventListener('click', async () => {
   }
   const mealSlot = el.lfMealSlot?.value || defaultMealSlot();
   const brand = el.lfBrand?.value.trim() || null;
-  const servingDesc = el.lfServingDesc?.value.trim() || null;
+  const servingDesc = lfServingStored(el.lfServingDesc?.value) || null;
   const hypoTreatment = !!el.lfHypoTreatment?.checked;
   const wantsShare = !!el.lfShare?.checked && !!HOUSEHOLD_PARTNER[currentUser.id];
 
